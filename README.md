@@ -10,6 +10,18 @@ I have used versions of this workflow personally since January-February 2026. Th
 
 Español: [README.es.md](README.es.md)
 
+## GPT-5.6 Ultra-Style Workflows
+
+OpenAI is previewing GPT-5.6 with an `ultra` mode that uses subagents to speed up complex work. SWARMS targets the same operating pattern from the other side: local-first orchestration where you choose the planner, critic, worker models, provider caps, verification commands, and token budget.
+
+Use SWARMS when you want an Ultra-style agent crew without tying the whole workflow to one vendor mode:
+
+- run everything locally until you enable real providers;
+- route planner, critic, programmer, verifier, and QA roles to different models;
+- mix OpenAI-compatible APIs, LiteLLM, Anthropic-style routes, GLM, Gemini, Codex CLI, Kilo, Aider, or local tests;
+- keep provider caps and reports visible;
+- run Singularity when you want a long-running loop that keeps proposing, implementing, testing, and summarizing work.
+
 ## Integrations
 
 SWARMS includes compatibility paths, wrappers, docs, routing names, or telemetry support for:

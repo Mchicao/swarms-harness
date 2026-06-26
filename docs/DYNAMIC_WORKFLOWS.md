@@ -4,6 +4,18 @@ SWARMS supports an UltraCode-style runtime without copying Claude Code's cost pr
 
 The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, retries, summaries, telemetry, and final reporting.
 
+## GPT-5.6 Ultra-Style Runtime
+
+OpenAI describes GPT-5.6 `ultra` as a mode that uses subagents for complex work. SWARMS is the local-first version of that pattern: the user owns the plan, routing, provider caps, verification commands, and token budget. One run can mix cheap workers, premium planner/critic routes, local tests, and offline mock workers.
+
+This makes SWARMS useful when a user wants Ultra-style fan-out but needs:
+
+- local repo state and reports;
+- provider choice across OpenAI-compatible APIs, LiteLLM, Anthropic-style routes, GLM, Gemini, Codex CLI, Kilo, Aider, and local tests;
+- explicit premium permissions;
+- caps per provider;
+- Singularity loops for ongoing QA, issue triage, and improvement proposals.
+
 ## Why This Exists
 
 Large fan-out should not mean that the orchestrator model carries every worker log in its context. SWARMS stores intermediate state under `.agent/swarm/runs/<run_id>/`:

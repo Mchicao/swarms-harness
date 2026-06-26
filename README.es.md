@@ -10,6 +10,18 @@ Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La id
 
 English: [README.md](README.md)
 
+## Flujos Estilo GPT-5.6 Ultra
+
+OpenAI esta presentando GPT-5.6 con un modo `ultra` que usa subagentes para acelerar trabajo complejo. SWARMS apunta al mismo patron operativo desde otro lugar: orquestacion local-first donde tu eliges planner, critic, modelos worker, provider caps, comandos de verificacion y presupuesto de tokens.
+
+Usa SWARMS cuando quieras un equipo de agentes estilo Ultra sin amarrar todo el flujo a un solo modo de un proveedor:
+
+- corre todo local hasta que habilites proveedores reales;
+- enruta planner, critic, programmer, verifier y QA a modelos distintos;
+- mezcla APIs compatibles con OpenAI, LiteLLM, rutas estilo Anthropic, GLM, Gemini, Codex CLI, Kilo, Aider o tests locales;
+- mantiene provider caps y reportes visibles;
+- corre Singularity cuando quieras un loop largo que siga proponiendo, implementando, testeando y resumiendo trabajo.
+
 ## Integraciones
 
 SWARMS incluye rutas, wrappers, docs o telemetria para:
