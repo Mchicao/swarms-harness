@@ -1,0 +1,36 @@
+{
+  "objective": "Save scarce or expensive model quota by spending intelligence on planning and using cheaper workers for implementation.",
+  "roles": {
+    "planner": {
+      "default_route": "glm52",
+      "premium_route": "codex",
+      "purpose": "Create a high-quality workflow plan with stages, dependencies, artifacts, verification, and budget constraints.",
+      "premium_allowed_by_default": false
+    },
+    "critic": {
+      "default_route": "glm52",
+      "premium_route": "codex",
+      "purpose": "Review the plan for ambiguity, missing verification, dependency mistakes, unsafe scope, and unnecessary premium usage.",
+      "premium_allowed_by_default": false
+    },
+    "programmer": {
+      "default_route": "glm52",
+      "fallback_route": "gemini_flash",
+      "purpose": "Implement focused tasks from an approved plan.",
+      "premium_allowed_by_default": false
+    },
+    "verifier": {
+      "default_route": "local_tests",
+      "fallback_route": "gemini_flash",
+      "premium_route": "codex",
+      "purpose": "Run deterministic checks first, then cheap model review, then premium escalation only when explicitly allowed.",
+      "premium_allowed_by_default": false
+    }
+  },
+  "review_policy": {
+    "require_static_review": true,
+    "require_critic_review_when_task_count_gt": 4,
+    "require_critic_review_when_premium_requested": true,
+    "require_user_approval_when_premium_requested": true
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "goal": "Finish Meendy as an interactive mascot in the Mnemosine-front repo (workroot C:\\Proyectos\\Mindsight\\Mnemosine-front). Work is a review-and-complete pass over an existing partial implementation; do NOT rewrite the screen. Implementation artifacts are limited to exactly two files (repo-relative to the Mnemosine-front root): src/app/(drawer)/(tabs)/companion.tsx and src/components/ui/MeendyAvatar.tsx. Do not touch native dependencies, lockfiles, Android/iOS, env files, or any docs other than this plan. All planner/critic/programmer tasks route glm52 (GLM-5.2); the verifier routes local_tests for local commands only. The worker must ensure: local vitality derived from today's habits; mood derived from vitals/night/breathing; manual water, caffeine and wake-time actions with persistence; every quick action gives feedback; MeendyAvatar animated per mood; stable mobile layout; clean TypeScript.",
+  "planner": {
+    "route": "glm52",
+    "model": "GLM-5.2"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": true,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 8,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "glm52": 2,
+      "local_tests": 2,
+      "gemini_flash": 0,
+      "mock": 0,
+      "codex": 0,
+      "claude": 0
+    }
+  },
+  "stages": [
+    {
+      "name": "Coordination",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "meendy_gap_analysis",
+          "role": "planner",
+          "route": "glm52",
+          "task": "Read the two target files in the Mnemosine-front repo (workroot C:\\Proyectos\\Mindsight\\Mnemosine-front) and HANDOFF.md, then produce a concise gap analysis in your worker summary (NO file output) against these completion criteria: (1) local vitality computed from today's habits via buildMeendyVitals (meal/sleep/hydration/caffeine/body-signal weighting); (2) mood derived from vitals, night-time and breathing via deriveMeendyMood; (3) manual water, caffeine and wake-time actions wired with AsyncStorage persistence and reachable from the UI; (4) every quick action triggers a transient mood plus a floating reaction via triggerPetFeedback; (5) MeendyAvatar renders distinct animations for each mood (neutral, happy, talk, sleepy, stressed, eating, breathing, levelup) and halo opacity tracks vitality; (6) stable mobile layout (ScrollView, safe-area insets, paddingBottom, no clipping or overflow on small phones); (7) clean TypeScript (no implicit any, no unused symbols). Target files (repo-relative): src/app/(drawer)/(tabs)/companion.tsx and src/components/ui/MeendyAvatar.tsx. Do NOT edit any file; output only the gap list and a minimal edit plan. Do not touch native deps, lockfiles, Android/iOS, env, or docs.",
+          "artifacts": [],
+          "needs": [],
+          "verify": []
+        },
+        {
+          "id": "meendy_critic_review",
+          "role": "critic",
+          "route": "glm52",
+          "task": "Review the planner's gap analysis and the two target files for ambiguity, missing verification, unsafe scope, dependency mistakes, and unnecessary rewrite. Confirm the edit plan is minimal and stays within the two allowed files (src/app/(drawer)/(tabs)/companion.tsx and src/components/ui/MeendyAvatar.tsx). Flag any completion criterion that is already satisfied and needs no change, so programmers do not rewrite working code. Confirm the MeendyMood type contract between the two files stays stable. Output a concise go/no-go with refinements; NO file edits.",
+          "artifacts": [],
+          "needs": ["meendy_gap_analysis"],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "GLM Implementation",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "implement_meendy_avatar",
+          "role": "programmer",
+          "route": "glm52",
+          "task": "In the Mnemosine-front repo (workroot C:\\Proyectos\\Mindsight\\Mnemosine-front), review and complete src/components/ui/MeendyAvatar.tsx so every MeendyMood (neutral, happy, talk, sleepy, stressed, eating, breathing, levelup) has a distinct, smooth animation (bob, pulse, shake, sparkle as appropriate) and the halo opacity tracks the vitality prop. Keep the exported MeendyMood type and the MeendyAvatarProps signature (mood, size, isLoading, vitality) strictly stable because src/app/(drawer)/(tabs)/companion.tsx depends on them; do not remove or rename any mood. Only edit this one file. Do not add native dependencies, lockfiles, or image assets. Resolve any TypeScript errors you introduce.",
+          "artifacts": ["src/components/ui/MeendyAvatar.tsx"],
+          "needs": ["meendy_critic_review"],
+          "verify": []
+        },
+        {
+          "id": "implement_companion_screen",
+          "role": "programmer",
+          "route": "glm52",
+          "task": "In the Mnemosine-front repo (workroot C:\\Proyectos\\Mindsight\\Mnemosine-front), review and complete src/app/(drawer)/(tabs)/companion.tsx so that: buildMeendyVitals derives vitality from today's habits (meals, sleep, hydration, caffeine, body signal); deriveMeendyMood maps vitals, night-time and breathing state to a mood; addWaterCup, recordCaffeine and persistWakeupTime persist to AsyncStorage and are reachable from the UI (quick-action grid for water and caffeine; wake time in the schedule modal); every quick action (cariño, agua, comida, cafeína, respirar, diario) calls triggerPetFeedback with a transient mood and shows the floating reaction; and the layout stays stable on small phones (ScrollView, safe-area insets, paddingBottom, action grid wraps without overflow). Keep the MeendyAvatar import and the MeendyMood values aligned with src/components/ui/MeendyAvatar.tsx. Only edit this one file. Do not touch native deps, lockfiles, Android/iOS, env, or docs. Resolve any TypeScript errors you introduce.",
+          "artifacts": ["src/app/(drawer)/(tabs)/companion.tsx"],
+          "needs": ["implement_meendy_avatar"],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "verify_meendy_local",
+          "role": "verifier",
+          "route": "local_tests",
+          "task": "Run local checks from the Mnemosine-front repo root (C:\\Proyectos\\Mindsight\\Mindsight-front is NOT correct; use C:\\Proyectos\\Mindsight\\Mnemosine-front). Primary check: npx tsc --noEmit (TypeScript typecheck). If tsconfig.json is absent, fall back to npx expo-doctor as a structural check. Always run git diff --check for whitespace and merge-marker hygiene. Confirm that ONLY the two allowed files changed (src/app/(drawer)/(tabs)/companion.tsx and src/components/ui/MeendyAvatar.tsx) and that no native deps, lockfiles, Android/iOS, env, or docs were modified. Do NOT modify any file; only run checks and report pass/fail with the relevant error excerpts.",
+          "artifacts": [
+            "src/app/(drawer)/(tabs)/companion.tsx",
+            "src/components/ui/MeendyAvatar.tsx"
+          ],
+          "needs": ["implement_companion_screen"],
+          "verify": [
+            "npx tsc --noEmit",
+            "npx expo-doctor",
+            "git diff --check"
+          ]
+        }
+      ]
+    }
+  ]
+}

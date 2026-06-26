@@ -1,0 +1,16 @@
+{
+  "global_max_concurrency": 8,
+  "max_total_workers": 1000,
+  "provider_concurrency": {
+    "mock": 64,
+    "opencode_glm52": 6,
+    "gemini_flash": 3,
+    "codex": 1,
+    "claude": 0
+  },
+  "defaults": {
+    "require_plan_before_run": true,
+    "expensive_providers_opt_in": true,
+    "persist_intermediate_results": true
+  }
+}

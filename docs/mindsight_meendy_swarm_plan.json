@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "goal": "GLM 5.2 coordinates (planner + critic) and GLM 5.2 workers (programmer) finish the Meendy interactive pet in C:/Proyectos/Mindsight/Mnemosine-front. Implementation artifacts allowed ONLY: C:/Proyectos/Mindsight/Mnemosine-front/src/app/(drawer)/(tabs)/companion.tsx and C:/Proyectos/Mindsight/Mnemosine-front/src/components/ui/MeendyAvatar.tsx. Verification is local (git diff --check + npx tsc --noEmit). No premium routes.",
+  "planner": {
+    "route": "glm52",
+    "model": "GLM-5.2"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": true,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 6,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "glm52": 2,
+      "local_tests": 1,
+      "mock": 0,
+      "gemini_flash": 0,
+      "codex": 0,
+      "claude": 0
+    }
+  },
+  "stages": [
+    {
+      "name": "Discovery",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "diff_review",
+          "role": "planner",
+          "route": "glm52",
+          "task": "Review the current partial git diff for the Meendy companion in C:/Proyectos/Mindsight/Mnemosine-front. Identify what is already implemented and what is missing across: vitals (hunger/energy/happiness), actions (feed/play/sleep), moods state, and screen layout in companion.tsx; and mood animations in MeendyAvatar.tsx. Emit a concise completion checklist as task output only (no new files). Implementation artifacts allowed ONLY: C:/Proyectos/Mindsight/Mnemosine-front/src/app/(drawer)/(tabs)/companion.tsx and C:/Proyectos/Mindsight/Mnemosine-front/src/components/ui/MeendyAvatar.tsx.",
+          "artifacts": [],
+          "needs": [],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "PlanReview",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "plan_critic",
+          "role": "critic",
+          "route": "glm52",
+          "task": "Critic-review the diff_review checklist and the partial diff for scope creep, React Native correctness, and strict adherence to the two-file boundary. Confirm the plan is safe to implement. No premium. Output review notes only (no new files).",
+          "artifacts": [],
+          "needs": ["diff_review"],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "Implementation",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "companion_complete",
+          "role": "programmer",
+          "route": "glm52",
+          "task": "Complete the Meendy companion screen in C:/Proyectos/Mindsight/Mnemosine-front/src/app/(drawer)/(tabs)/companion.tsx: finish vitals (hunger/energy/happiness), actions (feed/play/sleep), moods state, and screen layout. Do NOT edit any other file. Preserve existing imports, types, and style conventions.",
+          "artifacts": ["Mindsight/Mnemosine-front/src/app/(drawer)/(tabs)/companion.tsx"],
+          "needs": ["diff_review", "plan_critic"],
+          "verify": []
+        },
+        {
+          "id": "avatar_anims",
+          "role": "programmer",
+          "route": "glm52",
+          "task": "Complete mood animations in C:/Proyectos/Mindsight/Mnemosine-front/src/components/ui/MeendyAvatar.tsx (e.g. happy/sad/neutral/sleeping), using the React Native Animated API consistent with the existing component. Do NOT edit any other file. Preserve existing imports, types, and style conventions.",
+          "artifacts": ["Mindsight/Mnemosine-front/src/components/ui/MeendyAvatar.tsx"],
+          "needs": ["diff_review", "plan_critic"],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "local_verify",
+          "role": "verifier",
+          "route": "local_tests",
+          "task": "Verify the two edited files in C:/Proyectos/Mindsight/Mnemosine-front with whitespace/conflict checks and TypeScript typecheck. Do NOT edit any file.",
+          "artifacts": [
+            "Mindsight/Mnemosine-front/src/app/(drawer)/(tabs)/companion.tsx",
+            "Mindsight/Mnemosine-front/src/components/ui/MeendyAvatar.tsx"
+          ],
+          "needs": ["companion_complete", "avatar_anims"],
+          "verify": [
+            "git -C C:/Proyectos/Mindsight/Mnemosine-front diff --check",
+            "cd C:/Proyectos/Mindsight/Mnemosine-front && npx tsc --noEmit"
+          ]
+        }
+      ]
+    }
+  ]
+}

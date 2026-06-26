@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "goal": "Implement a reshard/decompress utility pair with tests and docs.",
+  "planner": {
+    "route": "glm52",
+    "model": "GLM-5.2"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": true,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 12,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "mock": 3,
+      "glm52": 2,
+      "gemini_flash": 1,
+      "codex": 0,
+      "claude": 0
+    }
+  },
+  "stages": [
+    {
+      "name": "Discovery",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "reshard_plan",
+          "role": "planner",
+          "route": "mock",
+          "task": "Inspect requirements and create docs/bench_notes/reshard_plan.md with edge cases and verification strategy.",
+          "artifacts": ["docs/bench_notes/reshard_plan.md"],
+          "needs": [],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "Implementation",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "compress",
+          "role": "programmer",
+          "route": "mock",
+          "task": "Implement bench_apps/reshard/compress.py. It must copy an input directory into shard_N folders under an output directory, with at most 3 files per shard and no writes outside the output directory.",
+          "artifacts": ["bench_apps/reshard/compress.py"],
+          "needs": ["reshard_plan"],
+          "verify": []
+        },
+        {
+          "id": "decompress",
+          "role": "programmer",
+          "route": "mock",
+          "task": "Implement bench_apps/reshard/decompress.py. It must reconstruct the original flat files from a resharded directory into a target directory, preserving file contents.",
+          "artifacts": ["bench_apps/reshard/decompress.py"],
+          "needs": ["reshard_plan"],
+          "verify": []
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "tests",
+          "role": "verifier",
+          "route": "mock",
+          "task": "Create bench_tests/test_bench_reshard.py with roundtrip tests, output-boundary checks, and deterministic shard naming. Do not edit bench_apps/.",
+          "artifacts": ["bench_tests/test_bench_reshard.py"],
+          "needs": ["compress", "decompress"],
+          "verify": ["python -m pytest bench_tests/test_bench_reshard.py -q"]
+        }
+      ]
+    }
+  ]
+}

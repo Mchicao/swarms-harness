@@ -1,0 +1,87 @@
+{
+  "_schema": "Copy this file to config/swarm_router.local.json and edit for your own machine. Do not commit local config.",
+  "version": "2026-06-19.local-example",
+  "fallback_route": "glm52",
+  "preferences": {
+    "quality_weight": 0.50,
+    "cost_weight": 0.40,
+    "quota_saving_weight": 0.10
+  },
+  "aliases": {
+    "mock": "mock",
+    "glm": "glm52",
+    "glm52": "glm52",
+    "gemini": "gemini_flash",
+    "antigravity": "gemini_flash",
+    "codex": "codex"
+  },
+  "role_routes": {
+    "backend": "glm52",
+    "frontend": "glm52",
+    "debug": "glm52",
+    "general": "glm52",
+    "docs": "glm52",
+    "qa": "glm52",
+    "lite": "mock",
+    "free": "mock",
+    "codex": "codex"
+  },
+  "providers": {
+    "mock": {
+      "enabled": true,
+      "provider": "mock",
+      "model": "mock-worker",
+      "canonical_model": "mock-worker",
+      "wrapper": "mock",
+      "health_key": "mock",
+      "metric_key": "mock",
+      "relative_cost": 0.0,
+      "quality": 0.20,
+      "scarcity": 0.0,
+      "strengths": ["offline", "test", "doctor", "ci", "demo", "cheap"],
+      "weaknesses": ["real coding"]
+    },
+    "glm52": {
+      "enabled": true,
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.2",
+      "canonical_model": "glm-5.2",
+      "wrapper": "opencode",
+      "health_key": "opencode",
+      "metric_key": "glm",
+      "relative_cost": 0.20,
+      "quality": 0.78,
+      "scarcity": 0.25,
+      "strengths": ["backend", "frontend", "refactor", "debug", "tests", "api", "multi-file"],
+      "weaknesses": ["vision", "very hard architecture"]
+    },
+    "gemini_flash": {
+      "enabled": false,
+      "provider": "antigravity_cli",
+      "model": "gemini-3.5-flash",
+      "canonical_model": "gemini-3.5-flash",
+      "wrapper": "gemini",
+      "health_key": "antigravity_cli",
+      "metric_key": "gemini",
+      "relative_cost": 0.35,
+      "quality": 0.68,
+      "scarcity": 0.35,
+      "strengths": ["docs", "review", "summarize", "frontend", "test"],
+      "weaknesses": ["deep debug", "large migration", "opaque plan quota telemetry"]
+    },
+    "codex": {
+      "enabled": false,
+      "provider": "codex_cli",
+      "model": "gpt-5.5-codex",
+      "canonical_model": "gpt-5.5-codex",
+      "wrapper": "codex",
+      "health_key": "codex_cli",
+      "metric_key": "codex",
+      "relative_cost": 1.0,
+      "quality": 0.92,
+      "scarcity": 0.90,
+      "strengths": ["critical", "architecture", "hard", "security", "subtle", "large", "multi-file"],
+      "weaknesses": ["simple", "docs", "boilerplate", "scarce quota"]
+    }
+  }
+}

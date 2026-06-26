@@ -1,0 +1,107 @@
+[
+  {
+    "instance_id": "micro-reshard-roundtrip",
+    "benchmark_family": "terminal_deepswe_inspired_micro",
+    "tags": ["terminal-bench-inspired", "data-processing", "parallelizable", "python"],
+    "description": "Build a small reshard/decompress utility pair with tests and docs. This mirrors Terminal-Bench style data-processing tasks while staying cheap to run.",
+    "stages": [
+      {
+        "name": "Discovery",
+        "tasks": [
+          "[docs] Inspect the requirements and create docs/bench_notes/reshard_plan.md with edge cases and verification strategy."
+        ]
+      },
+      {
+        "name": "Parallel implementation",
+        "tasks": [
+          "[backend] @needs(reshard_plan) Implement bench_apps/reshard/compress.py. It must copy an input directory into shard_N folders under an output directory, with at most 3 files per shard and no writes outside the output directory.",
+          "[backend] @needs(reshard_plan) Implement bench_apps/reshard/decompress.py. It must reconstruct the original flat files from a resharded directory into a target directory, preserving file contents.",
+          "[qa] @needs(compress.py, decompress.py) Create bench_tests/test_bench_reshard.py with roundtrip tests, output-boundary checks, and deterministic shard naming. Do not edit bench_apps/."
+        ]
+      },
+      {
+        "name": "Integration",
+        "tasks": [
+          "[qa] @needs(test_bench_reshard.py) Run pytest bench_tests/test_bench_reshard.py -q and fix failures."
+        ]
+      }
+    ],
+    "verify_command": "python -m pytest bench_tests/test_bench_reshard.py -q",
+    "success_artifacts": [
+      "bench_apps/reshard/compress.py",
+      "bench_apps/reshard/decompress.py",
+      "bench_tests/test_bench_reshard.py",
+      "docs/bench_notes/reshard_plan.md"
+    ]
+  },
+  {
+    "instance_id": "micro-config-precedence",
+    "benchmark_family": "deepswe_inspired_micro",
+    "tags": ["software-engineering", "multi-file", "config", "python"],
+    "description": "Implement a typed config loader with file/env/CLI precedence. This is closer to DeepSWE-style feature work than a one-line bug fix.",
+    "stages": [
+      {
+        "name": "Discovery",
+        "tasks": [
+          "[docs] Write docs/bench_notes/config_loader_plan.md defining the config schema, precedence order, and failure cases."
+        ]
+      },
+      {
+        "name": "Parallel implementation",
+        "tasks": [
+          "[backend] @needs(config_loader_plan) Implement bench_apps/config_loader/loader.py with load_config(path, env=None, cli=None). Precedence must be defaults < JSON file < env < CLI.",
+          "[backend] @needs(config_loader_plan) Implement bench_apps/config_loader/schema.py with validation for host, port, debug, retries, and tags.",
+          "[qa] @needs(loader.py, schema.py) Create bench_tests/test_bench_config_loader.py covering precedence, type coercion, validation errors, and missing files. Do not edit bench_apps/."
+        ]
+      },
+      {
+        "name": "Integration",
+        "tasks": [
+          "[qa] @needs(test_bench_config_loader.py) Run pytest bench_tests/test_bench_config_loader.py -q and fix failures."
+        ]
+      }
+    ],
+    "verify_command": "python -m pytest bench_tests/test_bench_config_loader.py -q",
+    "success_artifacts": [
+      "bench_apps/config_loader/loader.py",
+      "bench_apps/config_loader/schema.py",
+      "bench_tests/test_bench_config_loader.py",
+      "docs/bench_notes/config_loader_plan.md"
+    ]
+  },
+  {
+    "instance_id": "micro-xml-diff-patch",
+    "benchmark_family": "deepswe_inspired_micro",
+    "tags": ["software-engineering", "algorithmic", "multi-file", "python"],
+    "description": "Build a small XML diff/patch utility. This is inspired by DeepSWE examples that require sustained multi-file implementation with behavior verifiers.",
+    "stages": [
+      {
+        "name": "Discovery",
+        "tasks": [
+          "[docs] Write docs/bench_notes/xml_patch_plan.md explaining the supported XML subset, operation format, and test strategy."
+        ]
+      },
+      {
+        "name": "Parallel implementation",
+        "tasks": [
+          "[backend] @needs(xml_patch_plan) Implement bench_apps/xmlpatch/diff.py that compares two XML files and emits JSON operations for changed text, added elements, and removed elements.",
+          "[backend] @needs(xml_patch_plan) Implement bench_apps/xmlpatch/patch.py that applies the JSON operations to reproduce the target XML.",
+          "[qa] @needs(diff.py, patch.py) Create bench_tests/test_bench_xmlpatch.py with nested elements, attributes, changed text, additions, removals, and roundtrip behavior. Do not edit bench_apps/."
+        ]
+      },
+      {
+        "name": "Integration",
+        "tasks": [
+          "[qa] @needs(test_bench_xmlpatch.py) Run pytest bench_tests/test_bench_xmlpatch.py -q and fix failures."
+        ]
+      }
+    ],
+    "verify_command": "python -m pytest bench_tests/test_bench_xmlpatch.py -q",
+    "success_artifacts": [
+      "bench_apps/xmlpatch/diff.py",
+      "bench_apps/xmlpatch/patch.py",
+      "bench_tests/test_bench_xmlpatch.py",
+      "docs/bench_notes/xml_patch_plan.md"
+    ]
+  }
+]

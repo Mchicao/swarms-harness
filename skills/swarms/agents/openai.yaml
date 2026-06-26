@@ -1,0 +1,3 @@
+display_name: SWARMS
+short_description: Run and maintain the quota-saving SWARMS worktree orchestrator.
+default_prompt: Use SWARMS safely: keep mock defaults, protect expensive model quota, validate with doctor/tests, and only run real providers when explicitly requested.

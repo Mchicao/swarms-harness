@@ -1,0 +1,92 @@
+{
+  "_schema": "Open-source safe SWARMS router. Defaults run offline with the mock provider. Copy config/swarm_router.local.example.json to config/swarm_router.local.json to enable real CLIs.",
+  "version": "2026-06-19.oss-safe-default",
+  "fallback_route": "mock",
+  "preferences": {
+    "_quality_weight": "Higher means route hard work to stronger models sooner.",
+    "quality_weight": 0.45,
+    "_cost_weight": "Higher means prefer cheap/free/local providers more aggressively.",
+    "cost_weight": 0.45,
+    "_quota_saving_weight": "Higher means protect scarce plans such as Claude, Codex, Gemini Pro, or other paid subscriptions.",
+    "quota_saving_weight": 0.10
+  },
+  "aliases": {
+    "mock": "mock",
+    "offline": "mock",
+    "test": "mock",
+    "glm": "glm52",
+    "glm52": "glm52",
+    "gemini": "gemini_flash",
+    "antigravity": "gemini_flash",
+    "codex": "codex"
+  },
+  "role_routes": {
+    "backend": "mock",
+    "frontend": "mock",
+    "debug": "mock",
+    "general": "mock",
+    "docs": "mock",
+    "qa": "mock",
+    "lite": "mock",
+    "free": "mock",
+    "codex": "mock"
+  },
+  "providers": {
+    "mock": {
+      "enabled": true,
+      "provider": "mock",
+      "model": "mock-worker",
+      "canonical_model": "mock-worker",
+      "wrapper": "mock",
+      "health_key": "mock",
+      "metric_key": "mock",
+      "relative_cost": 0.0,
+      "quality": 0.20,
+      "scarcity": 0.0,
+      "strengths": ["offline", "test", "doctor", "ci", "demo", "cheap"],
+      "weaknesses": ["real coding", "reasoning", "unknown tasks"]
+    },
+    "glm52": {
+      "enabled": false,
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.2",
+      "canonical_model": "glm-5.2",
+      "wrapper": "opencode",
+      "health_key": "opencode",
+      "metric_key": "glm",
+      "relative_cost": 0.20,
+      "quality": 0.78,
+      "scarcity": 0.25,
+      "strengths": ["backend", "frontend", "refactor", "debug", "tests", "api", "multi-file"],
+      "weaknesses": ["vision", "very hard architecture"]
+    },
+    "gemini_flash": {
+      "enabled": false,
+      "provider": "antigravity_cli",
+      "model": "gemini-3.5-flash",
+      "canonical_model": "gemini-3.5-flash",
+      "wrapper": "gemini",
+      "health_key": "antigravity_cli",
+      "metric_key": "gemini",
+      "relative_cost": 0.35,
+      "quality": 0.68,
+      "scarcity": 0.35,
+      "strengths": ["docs", "review", "summarize", "frontend", "test"],
+      "weaknesses": ["deep debug", "large migration", "opaque plan quota telemetry"]
+    },
+    "codex": {
+      "enabled": false,
+      "provider": "codex_cli",
+      "model": "gpt-5.5-codex",
+      "canonical_model": "gpt-5.5-codex",
+      "wrapper": "codex",
+      "health_key": "codex_cli",
+      "metric_key": "codex",
+      "relative_cost": 1.0,
+      "quality": 0.92,
+      "scarcity": 0.90,
+      "strengths": ["critical", "architecture", "hard", "security", "subtle", "large", "multi-file"],
+      "weaknesses": ["simple", "docs", "boilerplate", "scarce quota"]
+    }
+  }
+}

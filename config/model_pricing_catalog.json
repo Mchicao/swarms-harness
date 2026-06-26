@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026-06-19.oss-safe-default",
+  "currency": "USD",
+  "effective_at": "2026-06-19",
+  "notes": "Open-source default pricing catalog. Mock is free. Real model prices are placeholders and should be overridden in config/model_pricing_catalog.local.json.",
+  "models": {
+    "mock-worker": {
+      "provider": "mock",
+      "plan": "offline",
+      "input_per_1m": 0.0,
+      "cache_read_input_per_1m": 0.0,
+      "cache_write_input_per_1m": 0.0,
+      "output_per_1m": 0.0,
+      "reasoning_output_per_1m": 0.0,
+      "pricing_status": "offline_mock"
+    },
+    "glm-5.2": {
+      "provider": "opencode",
+      "plan": "user_configured",
+      "input_per_1m": 0.0,
+      "cache_read_input_per_1m": 0.0,
+      "cache_write_input_per_1m": 0.0,
+      "output_per_1m": 0.0,
+      "reasoning_output_per_1m": 0.0,
+      "pricing_status": "user_must_configure"
+    },
+    "gemini-3.5-flash": {
+      "provider": "antigravity_cli",
+      "plan": "user_plan_quota",
+      "input_per_1m": 0.0,
+      "cache_read_input_per_1m": 0.0,
+      "cache_write_input_per_1m": 0.0,
+      "output_per_1m": 0.0,
+      "reasoning_output_per_1m": 0.0,
+      "pricing_status": "opaque_plan_quota"
+    },
+    "gpt-5.5-codex": {
+      "provider": "codex_cli",
+      "plan": "scarce_expensive_plan",
+      "input_per_1m": 0.0,
+      "cache_read_input_per_1m": 0.0,
+      "cache_write_input_per_1m": 0.0,
+      "output_per_1m": 0.0,
+      "reasoning_output_per_1m": 0.0,
+      "pricing_status": "disabled_by_default"
+    }
+  }
+}

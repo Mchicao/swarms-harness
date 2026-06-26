@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swarms-harness"
+version = "0.1.0"
+description = "Experimental quota-saving workflow harness for coding agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Matias Chicao" }
+]
+keywords = ["coding-agents", "workflow", "orchestration", "llm", "quota"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+yaml = [
+  "PyYAML>=6",
+]
+
+[project.urls]
+Homepage = "https://github.com/Mchicao/swarms-harness"
+Issues = "https://github.com/Mchicao/swarms-harness/issues"
+
+[project.scripts]
+swarms = "scripts.swarm:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scripts", "scripts.*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+  ".cache",
+  ".agent",
+  ".swarm_worktrees",
+  "scripts/agy_call.py",
+  "scripts/architect.py",
+  "scripts/goal_evaluator.py",
+  "scripts/record_metric.py",
+  "scripts/run_agentic_swarm_benchmark.py",
+  "scripts/run_swarm_benchmark.py",
+  "scripts/scout_limits.py",
+  "scripts/summarize_telemetry.py",
+  "scripts/summarizer.py",
+  "scripts/task_cleanup.py",
+  "scripts/validate_agent.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/doctor.py" = ["UP036"]
