@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">SWARMS quota-saving coding workflow harness</title>
+  <desc id="desc">A clean technical banner showing planning, provider caps, worker lanes, verification, and telemetry.</desc>
+  <rect width="1280" height="640" fill="#f6f3ec"/>
+  <rect x="64" y="64" width="1152" height="512" rx="18" fill="#101417"/>
+  <rect x="92" y="92" width="1096" height="456" rx="12" fill="#f8f7f2"/>
+
+  <text x="132" y="160" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="64" font-weight="800" fill="#111518">SWARMS</text>
+  <text x="136" y="203" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" fill="#3b454c">Plan with expensive models. Execute with cheaper workers. Keep the runtime honest.</text>
+
+  <g font-family="Inter, Segoe UI, Arial, sans-serif">
+    <rect x="132" y="276" width="180" height="86" rx="10" fill="#dfe8e5" stroke="#111518" stroke-width="2"/>
+    <text x="162" y="313" font-size="19" font-weight="700" fill="#111518">Planner</text>
+    <text x="162" y="341" font-size="15" fill="#45525a">Opus / Codex / GLM</text>
+
+    <rect x="382" y="248" width="190" height="70" rx="10" fill="#efe1c5" stroke="#111518" stroke-width="2"/>
+    <text x="412" y="289" font-size="18" font-weight="700" fill="#111518">Static review</text>
+
+    <rect x="382" y="342" width="190" height="70" rx="10" fill="#efe1c5" stroke="#111518" stroke-width="2"/>
+    <text x="412" y="383" font-size="18" font-weight="700" fill="#111518">Provider caps</text>
+
+    <rect x="650" y="218" width="178" height="58" rx="10" fill="#d7e3f1" stroke="#111518" stroke-width="2"/>
+    <text x="683" y="254" font-size="17" font-weight="700" fill="#111518">GLM 5.2</text>
+
+    <rect x="650" y="300" width="178" height="58" rx="10" fill="#d7e3f1" stroke="#111518" stroke-width="2"/>
+    <text x="676" y="336" font-size="17" font-weight="700" fill="#111518">Gemini Flash</text>
+
+    <rect x="650" y="382" width="178" height="58" rx="10" fill="#d7e3f1" stroke="#111518" stroke-width="2"/>
+    <text x="692" y="418" font-size="17" font-weight="700" fill="#111518">Mock CI</text>
+
+    <rect x="908" y="276" width="196" height="86" rx="10" fill="#dce7d0" stroke="#111518" stroke-width="2"/>
+    <text x="950" y="313" font-size="19" font-weight="700" fill="#111518">Verify</text>
+    <text x="950" y="341" font-size="15" fill="#45525a">tests, logs, report.json</text>
+  </g>
+
+  <g stroke="#111518" stroke-width="3" fill="none">
+    <path d="M312 319 H382"/>
+    <path d="M572 283 C604 283 614 247 650 247"/>
+    <path d="M572 377 C604 377 614 411 650 411"/>
+    <path d="M828 247 C866 247 876 319 908 319"/>
+    <path d="M828 329 H908"/>
+    <path d="M828 411 C866 411 876 319 908 319"/>
+  </g>
+
+  <g fill="#111518">
+    <path d="M376 319 l-10 -6 v12 z"/>
+    <path d="M644 247 l-10 -6 v12 z"/>
+    <path d="M644 411 l-10 -6 v12 z"/>
+    <path d="M902 319 l-10 -6 v12 z"/>
+  </g>
+
+  <text x="136" y="500" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" fill="#53616a">Personal workflow since Jan-Feb 2026. Public default: offline mock. Real providers: opt-in.</text>
+</svg>

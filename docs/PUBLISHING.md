@@ -15,7 +15,7 @@ cd C:\Proyectos\SWARMS
 git init
 git add .
 git status --short
-git commit -m "Initial public alpha"
+git commit -m "Initial public release"
 git branch -M main
 git remote add origin https://github.com/Mchicao/swarms-harness.git
 git push -u origin main
@@ -44,6 +44,6 @@ python scripts\swarm.py run --plan docs\workflow_plan_example.json --force --run
 
 ## Suggested Repository Metadata
 
-- Description: `Experimental quota-saving workflow harness for coding agents.`
+- Description: `Quota-saving workflow harness for coding agents.`
 - Topics: `coding-agents`, `llm`, `workflow`, `orchestration`, `python`, `developer-tools`
 - Website: `https://github.com/Mchicao`

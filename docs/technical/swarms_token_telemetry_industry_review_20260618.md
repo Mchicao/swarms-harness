@@ -348,5 +348,4 @@ SWARMS no deberia convertirse inmediatamente en un gateway completo como LiteLLM
 2. Telemetria normalizada y auditable por request/generation.
 3. Presupuestos ejecutables antes de gastar, no solo reportes despues de gastar.
 
-La implementacion actual esta cerca para un V1 experimental, pero no es suficiente para tomar decisiones economicas reales. El siguiente salto de calidad es reemplazar costos hardcodeados y regex heuristics por un pipeline de ingestion normalizado, con `api_reported` como fuente de verdad, `missing` como estado honesto, pricing versionado y guardrails de presupuesto.
-
+La implementacion actual esta cerca para un V1 publico, pero no es suficiente para tomar decisiones economicas reales. El siguiente salto de calidad es reemplazar costos hardcodeados y regex heuristics por un pipeline de ingestion normalizado, con `api_reported` como fuente de verdad, `missing` como estado honesto, pricing versionado y guardrails de presupuesto.

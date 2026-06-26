@@ -1,5 +1,5 @@
-# Swarm V10 Singularity V2 - The Infinite Loop
-# Usage: ./start_singularity_v2.ps1 [-MaxCycles 10]
+# SWARMS Singularity V2 - Extended Loop
+# Usage: ./scripts/start_singularity_v2.ps1 [-MaxCycles 10]
 
 param(
     [int]$MaxCycles = 10
@@ -8,12 +8,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "   ♾️  SINGULARITY V2 - OPUS & GEMINI LOOP   " -ForegroundColor Magenta
+Write-Host "      SINGULARITY V2 - PLANNER & WORKER LOOP " -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
 
 # 0. PRE-FLIGHT CHECK
-Write-Host "[LOOP] Verificando dependencias críticas..." -ForegroundColor Yellow
-python scripts/utils/ensure_dependencies.py
+Write-Host "[LOOP] Checking public SWARMS entrypoint..." -ForegroundColor Yellow
+python scripts/swarm.py doctor
 
 $cycle = 1
 
@@ -27,27 +27,26 @@ while ($cycle -le $MaxCycles) {
     Write-Host ">>> CICLO $cycle / $MaxCycles <<<" -ForegroundColor Cyan
     Write-Host "--------------------------------"
     
-    # 1. ARCHITECT PHASE (Opus)
-    Write-Host "[LOOP] Convocando al Arquitecto (Opus)..." -ForegroundColor Yellow
-    python scripts/agents/architect_opus.py
+    # 1. ARCHITECT PHASE
+    Write-Host "[LOOP] Running architect phase..." -ForegroundColor Yellow
+    python scripts/architect.py
     
     if (-not (Test-Path ".agent/tasks_singularity.md")) {
         Write-Host "[LOOP] El Arquitecto no generó tareas. Finalizando bucle." -ForegroundColor Green
         break
     }
 
-    # 2. ROUTER PHASE (Métricas)
-    Write-Host "[LOOP] Enrutando tareas inteligentemente..." -ForegroundColor Yellow
-    python scripts/agents/smart_router.py
+    # 2. ROUTER PHASE
+    Write-Host "[LOOP] Routing tasks with current provider policy..." -ForegroundColor Yellow
+    python scripts/smart_router.py --task-file ".agent/tasks_singularity.md" --format text
 
-    # 3. BUILDER PHASE (Swarm)
-    Write-Host "[LOOP] Lanzando Swarm de Constructores..." -ForegroundColor Yellow
-    # Aseguramos que parallel_swarm use el archivo correcto
-    pwsh scripts/agents/parallel_swarm.ps1 -TaskFile ".agent/tasks_singularity.md" -ModelProvider "hybrid" -WorkerCount 4
+    # 3. BUILDER PHASE
+    Write-Host "[LOOP] Launching worker swarm..." -ForegroundColor Yellow
+    pwsh scripts/parallel_swarm.ps1 -TaskFile ".agent/tasks_singularity.md" -ProviderStrategy "auto" -WorkerCount 4
 
-    # 4. SUMMARIZER PHASE (Flash)
-    Write-Host "[LOOP] Generando resumen para el siguiente ciclo..." -ForegroundColor Yellow
-    python scripts/agents/summarizer.py
+    # 4. SUMMARIZER PHASE
+    Write-Host "[LOOP] Summarizing cycle state..." -ForegroundColor Yellow
+    python scripts/summarizer.py
 
     Write-Host "[LOOP] Ciclo $cycle Completado." -ForegroundColor Green
     $cycle++
@@ -57,5 +56,5 @@ while ($cycle -le $MaxCycles) {
 }
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "   ♾️  SINGULARITY COMPLETO                 " -ForegroundColor Magenta
+Write-Host "      SINGULARITY COMPLETE                 " -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta

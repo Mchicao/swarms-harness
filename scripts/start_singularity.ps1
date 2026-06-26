@@ -1,5 +1,5 @@
-# Swarm V8 Singularity Loop
-# Usage: ./start_singularity.ps1 [-MaxCycles 5]
+# SWARMS Singularity Loop
+# Usage: ./scripts/start_singularity.ps1 [-MaxCycles 5] [-ProjectName my-project]
 
 param(
     [int]$MaxCycles = 5,
@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "   ♾️  SWARM V8 SINGULARITY STARTED         " -ForegroundColor Magenta
+Write-Host "      SWARMS SINGULARITY STARTED           " -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
 
 $cycle = 1
@@ -26,7 +26,7 @@ while ($cycle -le $MaxCycles) {
     
     # 1. ARCHITECT PHASE
     Write-Host "[LOOP] Summoning Architect..." -ForegroundColor Yellow
-    $archCmd = "python scripts/swarm/architect.py"
+    $archCmd = "python scripts/architect.py"
     if ($ProjectName -ne "") { $archCmd += " --project `"$ProjectName`"" }
     Invoke-Expression $archCmd
     
@@ -37,7 +37,7 @@ while ($cycle -le $MaxCycles) {
     
     # 2. SWARM PHASE
     Write-Host "[LOOP] Unleashing Swarm..." -ForegroundColor Yellow
-    $swarmCmd = "pwsh scripts/swarm/parallel_swarm.ps1"
+    $swarmCmd = "pwsh scripts/parallel_swarm.ps1"
     if ($ProjectName -ne "") { $swarmCmd += " -ProjectName `"$ProjectName`"" }
     Invoke-Expression $swarmCmd
     
@@ -56,5 +56,5 @@ while ($cycle -le $MaxCycles) {
 }
 
 Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "   ♾️  SINGULARITY COMPLETE                 " -ForegroundColor Magenta
+Write-Host "      SINGULARITY COMPLETE                 " -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta

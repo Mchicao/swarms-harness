@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">SWARMS runtime map</title>
+  <desc id="desc">A runtime map showing Singularity loops, workflow plans, worker pools, safety controls, and telemetry output.</desc>
+  <rect width="1280" height="720" fill="#f7f5ef"/>
+  <text x="80" y="86" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="42" font-weight="800" fill="#101417">Runtime map</text>
+  <text x="80" y="126" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" fill="#46535b">The harness keeps state on disk so the coordinator does not carry every worker log in context.</text>
+
+  <g font-family="Inter, Segoe UI, Arial, sans-serif" stroke="#101417" stroke-width="2">
+    <rect x="80" y="190" width="210" height="106" rx="10" fill="#efe1c5"/>
+    <text x="112" y="230" font-size="21" font-weight="800" fill="#101417" stroke="none">Singularity</text>
+    <text x="112" y="260" font-size="15" fill="#46535b" stroke="none">architect → swarm → summary</text>
+
+    <rect x="380" y="164" width="220" height="70" rx="10" fill="#dfe8e5"/>
+    <text x="412" y="207" font-size="19" font-weight="800" fill="#101417" stroke="none">workflow_plan.json</text>
+
+    <rect x="380" y="264" width="220" height="70" rx="10" fill="#dfe8e5"/>
+    <text x="421" y="307" font-size="19" font-weight="800" fill="#101417" stroke="none">plan_review.py</text>
+
+    <rect x="690" y="150" width="226" height="92" rx="10" fill="#d7e3f1"/>
+    <text x="724" y="190" font-size="19" font-weight="800" fill="#101417" stroke="none">Provider pools</text>
+    <text x="724" y="219" font-size="15" fill="#46535b" stroke="none">mock, GLM, Gemini, Codex</text>
+
+    <rect x="690" y="276" width="226" height="92" rx="10" fill="#d7e3f1"/>
+    <text x="724" y="316" font-size="19" font-weight="800" fill="#101417" stroke="none">Worker lanes</text>
+    <text x="724" y="345" font-size="15" fill="#46535b" stroke="none">locks, retries, worktrees</text>
+
+    <rect x="1000" y="190" width="200" height="106" rx="10" fill="#dce7d0"/>
+    <text x="1032" y="230" font-size="21" font-weight="800" fill="#101417" stroke="none">Reports</text>
+    <text x="1032" y="260" font-size="15" fill="#46535b" stroke="none">events, telemetry, cost</text>
+
+    <rect x="235" y="472" width="810" height="96" rx="10" fill="#101417"/>
+    <text x="278" y="515" font-size="20" font-weight="800" fill="#f7f5ef" stroke="none">Quota warning</text>
+    <text x="278" y="546" font-size="17" fill="#f7f5ef" stroke="none">Singularity can run many cycles. Use max cycles, provider caps, and stop files before using paid routes.</text>
+  </g>
+
+  <g stroke="#101417" stroke-width="3" fill="none">
+    <path d="M290 243 H380"/>
+    <path d="M600 199 H690"/>
+    <path d="M600 299 H690"/>
+    <path d="M916 196 H1000"/>
+    <path d="M916 322 C955 322 965 243 1000 243"/>
+    <path d="M185 296 C185 412 278 443 410 472"/>
+  </g>
+  <g fill="#101417">
+    <path d="M374 243 l-10 -6 v12 z"/>
+    <path d="M684 199 l-10 -6 v12 z"/>
+    <path d="M684 299 l-10 -6 v12 z"/>
+    <path d="M994 243 l-10 -6 v12 z"/>
+  </g>
+</svg>

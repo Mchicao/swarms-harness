@@ -1,6 +1,6 @@
 # Limitations
 
-SWARMS is alpha software. The project is publicable as an offline MVP, not as a complete multi-provider coding platform.
+SWARMS is a personal workflow released publicly. The offline path is the safest first run; real-provider routes depend on local CLIs, local credentials, and provider limits.
 
 ## What Works Today
 
@@ -11,7 +11,7 @@ SWARMS is alpha software. The project is publicable as an offline MVP, not as a 
 - The offline `mock` worker supports tests, demos, and CI without credentials.
 - Reports are written under `.agent/`, which is ignored by Git.
 
-## What Is Experimental
+## What Needs Local Setup
 
 - Real provider routes such as `glm52`, `gemini_flash`, `codex`, and `claude`.
 - Token and cost telemetry from external CLIs.

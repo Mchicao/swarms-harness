@@ -1,8 +1,8 @@
 # Roadmap
 
-SWARMS is published as an alpha project. The first public goal is to make the offline orchestration flow understandable, reproducible, and safe.
+SWARMS is a public release of a personal workflow that has been in use since January-February 2026. The current public goal is to keep the offline path reproducible while making real-provider routes explicit and local-only.
 
-## Phase 0: Public Alpha
+## Phase 0: Public Release
 
 - Keep `mock` as the only enabled provider in committed config.
 - Maintain the single public CLI in `scripts/swarm.py`.
@@ -12,7 +12,7 @@ SWARMS is published as an alpha project. The first public goal is to make the of
 
 ## Phase 1: Provider Adapter Hardening
 
-- Add real adapter contracts for GLM 5.2, Gemini Flash, Codex, and local shell verification.
+- Tighten adapter contracts for GLM 5.2, Gemini Flash, Codex, and local shell verification.
 - Require explicit local configuration before any real provider call.
 - Keep premium routes blocked unless `premium_allowed=true` and local config enables them.
 - Record token usage as `api_reported`, `cli_reported`, `estimated`, or `missing`.
@@ -41,4 +41,4 @@ SWARMS is published as an alpha project. The first public goal is to make the of
 - Replacing Claude Code, Codex, or other full coding agents.
 - Calling paid APIs by default.
 - Hiding provider cost or missing telemetry.
-- Claiming production readiness before real-provider runs are repeatable.
+- Pretending real-provider cost is predictable without telemetry.

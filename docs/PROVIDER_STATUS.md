@@ -1,6 +1,6 @@
 # Provider Status
 
-SWARMS separates route names from provider execution. A route can be documented before it is enabled in committed defaults.
+SWARMS separates route names from provider execution. A route can exist in code, docs, telemetry, or local configuration while still staying disabled in committed defaults.
 
 ## Current Public Defaults
 
@@ -8,8 +8,8 @@ SWARMS separates route names from provider execution. A route can be documented 
 | --- | --- | --- | --- |
 | `mock` | Supported | Enabled | Offline worker for tests, demos, and CI. |
 | `local_tests` | Reserved | Disabled | Intended for deterministic shell/test verification tasks. |
-| `glm52` | Experimental | Disabled | Intended low-cost programmer/planner route through local user configuration. |
-| `gemini_flash` | Experimental | Disabled | Intended low-cost docs/review/test route through local user configuration. |
+| `glm52` | Implemented route | Disabled | Low-cost programmer/planner route through OpenCode or Z.AI-style local setup. |
+| `gemini_flash` | Implemented route | Disabled | Low-cost docs/review/test route through Antigravity CLI local setup. |
 | `codex` | Reserved premium | Disabled | Must require explicit user approval and premium policy. |
 | `claude` | Reserved premium | Disabled | Must require explicit user approval and premium policy. |
 | `opus` | Reserved premium | Disabled | Planning/escalation only; not enabled by default. |
@@ -22,6 +22,10 @@ SWARMS separates route names from provider execution. A route can be documented 
 - Treat every real coding agent as code execution with file access.
 - Record missing token usage honestly instead of reporting fake zero-cost runs.
 - Keep premium routes blocked unless the plan and local config both allow them.
+
+## Singularity Token Risk
+
+Singularity can run repeated architect, worker, watcher, retry, and summary phases. With real providers enabled, one run can consume far more tokens than a single coding-agent session. Start with `mock`, keep `MaxCycles` low, and set provider caps before using GLM, Gemini, Codex, Claude, or Opus routes.
 
 ## Local Configuration
 
