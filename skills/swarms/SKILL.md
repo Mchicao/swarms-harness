@@ -20,17 +20,41 @@ Do not call legacy runners directly unless the user explicitly asks for legacy c
 
 - Preserve the offline `mock` default.
 - Do not run real providers unless the user explicitly asks.
-- Treat Claude, Codex, Gemini/Antigravity, OpenCode, and paid APIs as quota-spending providers.
+- Treat OpenAI, LiteLLM, Anthropic, Claude, Codex, Gemini/Antigravity, OpenCode, Kilo, Aider, and paid APIs as user-configured quota-spending providers.
 - Never interpret missing token telemetry as zero real usage.
 - Spend intelligence on planning and critique; keep runtime orchestration deterministic.
 
 ## Role Split
 
-- Planner: GLM 5.2 by default, Codex only when explicitly justified.
-- Critic: GLM 5.2 first, Codex only for high-risk/high-cost plans.
+- Planner: GLM 5.2 by default, premium OpenAI/Codex/Anthropic-style routes only when explicitly justified.
+- Critic: GLM 5.2 first, premium routes only for high-risk/high-cost plans.
 - Runtime: `scripts/swarm.py` and `scripts/workflow_runtime.py`, no model.
 - Programmer workers: mock by default; cheap configured providers when requested.
 - Verifier workers: local tests first; cheap model review second; premium escalation only by policy.
+
+## Configuration Help
+
+When a user asks to configure SWARMS:
+
+1. Read `config/swarm_router.json`, `config/swarm_router.local.example.json`, `config/role_policy.json`, and `docs/CONFIG.md`.
+2. Ask which provider families they want to use: OpenAI-compatible API, LiteLLM gateway, Anthropic, Gemini/Antigravity, GLM/OpenCode/Z.AI, Codex CLI, Kilo, Aider, local tests, or mock.
+3. Keep secrets out of the repo. Use environment variables or ignored local config.
+4. Create or update `config/swarm_router.local.json` only when the user approves.
+5. Run `python scripts/swarm.py doctor` and the mock plan before routing real work.
+6. Make provider caps explicit. Do not infer that a high subscription limit means unlimited spending.
+
+## Singularity Help
+
+Singularity is for autonomous loops: propose improvements, inspect issues, create tasks, run workers, perform QA, validate features, summarize state, then continue. It can run for long periods on a local machine.
+
+Before helping with Singularity, confirm:
+
+- maximum cycles or an explicit 24/7 intent;
+- allowed providers;
+- worker count and provider caps;
+- stop condition, including `STOP_SINGULARITY`;
+- expected verification commands;
+- whether the user accepts high token usage.
 
 ## Repository Detection
 

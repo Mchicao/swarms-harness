@@ -35,6 +35,19 @@ The target is many logical workers with bounded live concurrency:
 
 This is intentionally different from launching 100 expensive CLIs at once. The workflow may contain hundreds of tasks, but only the provider pools with available budget are allowed to run concurrently.
 
+## Singularity Loop
+
+Singularity is the long-running mode for users who want local agents working while they are away:
+
+- read issues and local notes;
+- propose improvements;
+- create or update workflow plans;
+- launch worker pools;
+- run QA and validation;
+- summarize state for the next cycle.
+
+This mode makes sense for users with large token budgets, local models, or provider plans they are willing to spend. It should still use provider caps and stop conditions. A 24/7 loop without caps can burn through API credit or subscription quota quickly.
+
 ## Commands
 
 Plan without running workers:

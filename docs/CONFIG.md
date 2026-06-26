@@ -34,6 +34,14 @@ Example:
 
 ## Real Provider Notes
 
+SWARMS is local-first. The repo does not ship provider credentials. Each user decides which plans, APIs, CLIs, and model routes to enable in local config.
+
+OpenAI-compatible APIs can be added as local routes when the user provides the base URL, model name, and key through environment variables or ignored config.
+
+LiteLLM can sit in front of multiple providers. In that setup, SWARMS should route to the local LiteLLM endpoint and let LiteLLM own provider credentials.
+
+Anthropic-style routes should be treated as premium planner, critic, or escalation routes. They should remain blocked unless the plan and local config both allow them.
+
 `opencode` can expose token usage in JSON output, so SWARMS can price and compare it.
 
 `agy`/Antigravity can consume Google AI Pro quota. In current headless mode, token counts are not reliably exposed, so SWARMS records those events as `missing_usage_events`.
