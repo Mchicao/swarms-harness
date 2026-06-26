@@ -1,6 +1,6 @@
 # SWARMS
 
-![Portada del flujo SWARMS](assets/swarms-cover.svg)
+![Portada del flujo SWARMS](images/swarms-cover.png)
 
 Orquestacion local-first para coding agents.
 
@@ -68,7 +68,7 @@ swarms run --plan docs/workflow_plan_example.json --force --global-max-concurren
 
 ## Modelo De Runtime
 
-![Mapa del runtime SWARMS](assets/runtime-map.svg)
+![Mapa del runtime SWARMS](images/runtime-map.png)
 
 ```text
 objetivo

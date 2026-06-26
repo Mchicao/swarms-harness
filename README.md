@@ -1,6 +1,6 @@
 # SWARMS
 
-![SWARMS workflow cover](assets/swarms-cover.svg)
+![SWARMS workflow cover](images/swarms-cover.png)
 
 Local-first orchestration for coding agents.
 
@@ -68,7 +68,7 @@ swarms run --plan docs/workflow_plan_example.json --force --global-max-concurren
 
 ## Runtime Model
 
-![SWARMS runtime map](assets/runtime-map.svg)
+![SWARMS runtime map](images/runtime-map.png)
 
 ```text
 goal
