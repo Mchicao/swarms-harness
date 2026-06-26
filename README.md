@@ -94,6 +94,16 @@ pwsh scripts/start_singularity.ps1 -MaxCycles 5
 
 You control the risk. With only `mock`, Singularity is a local dry run. With real providers, high worker counts, and high cycle limits, it can consume a large amount of tokens. Use provider caps, `MaxCycles`, and a `STOP_SINGULARITY` file when you test it.
 
+## Ideas To Implement
+
+SWARMS should eventually connect the autonomous loop to the tools where engineering work already lives:
+
+- Trello: read cards, create implementation plans, move cards after validation.
+- Hermes Agent: use Hermes as another local agent route or coordination surface.
+- Discord: post cycle summaries, request approvals, and accept lightweight commands.
+- JIRA: read tickets, plan work, update status, and attach verification reports.
+- Microsoft Teams: send QA summaries, escalation notices, and Singularity cycle reports.
+
 ## Provider Policy
 
 Default role intent:

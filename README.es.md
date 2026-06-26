@@ -94,6 +94,16 @@ pwsh scripts/start_singularity.ps1 -MaxCycles 5
 
 Tu controlas el riesgo. Con `mock`, Singularity es una simulacion local. Con proveedores reales, muchos workers y muchos ciclos, puede consumir muchisimos tokens. Usa provider caps, `MaxCycles` y un archivo `STOP_SINGULARITY` cuando lo pruebes.
 
+## Ideas Por Implementar
+
+SWARMS deberia conectarse con las herramientas donde ya vive el trabajo de ingenieria:
+
+- Trello: leer cards, crear planes de implementacion y mover cards despues de validar.
+- Hermes Agent: usar Hermes como otra ruta local de agente o superficie de coordinacion.
+- Discord: publicar resumenes de ciclo, pedir aprobaciones y aceptar comandos livianos.
+- JIRA: leer tickets, planificar trabajo, actualizar estados y adjuntar reportes de verificacion.
+- Microsoft Teams: enviar resumenes de QA, avisos de escalamiento y reportes de ciclos Singularity.
+
 ## Politica De Proveedores
 
 Intencion por rol:

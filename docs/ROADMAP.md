@@ -36,6 +36,14 @@ SWARMS is a public release of a personal workflow that has been in use since Jan
 - Add plan linting messages that are easier for humans to fix.
 - Add bilingual examples for English and Spanish users.
 
+## Phase 5: Work Intake And Notifications
+
+- Trello integration for cards, labels, status movement, and validation notes.
+- Hermes Agent integration as a local agent route or orchestration surface.
+- Discord integration for Singularity cycle summaries, approval prompts, and lightweight commands.
+- JIRA integration for ticket intake, workflow status, and verification attachments.
+- Microsoft Teams integration for QA reports, escalation notices, and long-running loop updates.
+
 ## Non-Goals For Now
 
 - Replacing Claude Code, Codex, or other full coding agents.
