@@ -12,9 +12,9 @@ Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La id
 
 English: [README.md](README.md)
 
-## Flujos Estilo GPT-5.6 Ultra
+## Flujos Estilo Ultra de Claude Code y GPT-5.6
 
-OpenAI esta presentando GPT-5.6 con un modo `ultra` que usa subagentes para acelerar trabajo complejo. SWARMS apunta al mismo patron operativo desde otro lugar: orquestacion local-first donde tu eliges planner, critic, modelos worker, provider caps, comandos de verificacion y presupuesto de tokens.
+Claude Fable 5 puede impulsar flujos multiagente de larga duración en Claude Code: planifica por etapas, delega en subagentes y revisa su propio trabajo. OpenAI también anunció un nuevo modo `ultra` de GPT-5.6 basado en subagentes, pero GPT-5.6 sigue en vista previa limitada y no tiene disponibilidad pública amplia. SWARMS apunta a este patrón operativo desde el lado local-first: tú eliges planner, critic, modelos worker, provider caps, comandos de verificación y presupuesto de tokens.
 
 Usa SWARMS cuando quieras un equipo de agentes estilo Ultra sin amarrar todo el flujo a un solo modo de un proveedor:
 
@@ -122,7 +122,7 @@ SWARMS deberia conectarse con las herramientas donde ya vive el trabajo de ingen
 
 Intencion por rol:
 
-- Planner: FAble y GPT 5.6 Sol son agentes planificadores compatibles cuando se configuran explícitamente; GLM 5.2 sigue siendo el valor seguro por defecto, con Codex o rutas premium estilo Anthropic disponibles cuando el plan lo justifica.
+- Planner: Claude Fable puede configurarse como agente planificador premium. GPT-5.6 Sol se documenta como opción futura mientras su acceso siga limitado; GLM 5.2 permanece como valor seguro por defecto.
 - Critic: GLM 5.2 primero, revision premium para planes riesgosos o caros.
 - Programmer: GLM 5.2, Gemini Flash, OpenAI-compatible, LiteLLM, Kilo, Aider o cualquier ruta que configures.
 - Verifier: tests locales primero, modelo barato despues.
