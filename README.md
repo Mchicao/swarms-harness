@@ -122,7 +122,7 @@ SWARMS should eventually connect the autonomous loop to the tools where engineer
 
 Default role intent:
 
-- Planner: GLM 5.2 by default, Codex or Anthropic-style premium routes when the plan justifies them.
+- Planner: FAble and GPT 5.6 Sol are supported as planning agents when explicitly configured; GLM 5.2 remains the safe default, with Codex or Anthropic-style premium routes available when the plan justifies them.
 - Critic: GLM 5.2 first, premium review for high-risk or high-cost plans.
 - Programmer: GLM 5.2, Gemini Flash, OpenAI-compatible, LiteLLM, Kilo, Aider, or any route you configure.
 - Verifier: local tests first, cheap model review second.

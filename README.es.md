@@ -122,7 +122,7 @@ SWARMS deberia conectarse con las herramientas donde ya vive el trabajo de ingen
 
 Intencion por rol:
 
-- Planner: GLM 5.2 por defecto, Codex o rutas premium estilo Anthropic cuando el plan lo justifica.
+- Planner: FAble y GPT 5.6 Sol son agentes planificadores compatibles cuando se configuran explícitamente; GLM 5.2 sigue siendo el valor seguro por defecto, con Codex o rutas premium estilo Anthropic disponibles cuando el plan lo justifica.
 - Critic: GLM 5.2 primero, revision premium para planes riesgosos o caros.
 - Programmer: GLM 5.2, Gemini Flash, OpenAI-compatible, LiteLLM, Kilo, Aider o cualquier ruta que configures.
 - Verifier: tests locales primero, modelo barato despues.
