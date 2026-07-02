@@ -6,6 +6,8 @@ Local-first orchestration for coding agents.
 
 SWARMS lets you decide which model plans, which model codes, which model reviews, and how many workers may run at the same time. The repo runs offline out of the box. Model calls happen only when you configure your own plans, APIs, CLIs, and routing policy.
 
+Website: https://swarms-orchestrator.vercel.app/
+
 I have used versions of this workflow personally since January-February 2026. The original idea came from Ralph-style coding loops: keep a strong model on planning and review, then let cheaper workers handle implementation, QA, issue triage, and repeated validation.
 
 Español: [README.es.md](README.es.md)

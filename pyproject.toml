@@ -37,6 +37,7 @@ yaml = [
 
 [project.urls]
 Homepage = "https://github.com/Mchicao/swarms-harness"
+Website = "https://swarms-orchestrator.vercel.app/"
 Issues = "https://github.com/Mchicao/swarms-harness/issues"
 
 [project.scripts]

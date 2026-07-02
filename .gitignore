@@ -20,6 +20,17 @@ config/swarm_tasks.md
 **/changes.diff
 **/token_usage.json
 **/.agent_codex_out.txt
+codex_output.md
+
+# Local workflow plans and generated benchmark fixtures
+docs/workflow_*_test_plan.json
+docs/bench_notes/
+bench_apps/
+bench_tests/
+
+# Experimental local-only provider wrappers
+scripts/freebuff_worker.py
+scripts/zcode_worker.py
 
 __pycache__/
 .pytest_cache/

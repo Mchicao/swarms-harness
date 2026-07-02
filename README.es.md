@@ -6,6 +6,8 @@ Orquestacion local-first para coding agents.
 
 SWARMS deja que cada persona decida que modelo planifica, que modelo programa, que modelo revisa y cuantos workers pueden correr al mismo tiempo. El repo funciona offline al clonar. Las llamadas a modelos ocurren solo cuando configuras tus propios planes, APIs, CLIs y politica de routing.
 
+Sitio web: https://swarms-orchestrator.vercel.app/
+
 Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La idea original vino de los loops estilo Ralph: dejar un modelo fuerte en planificacion y revision, y usar workers baratos para implementacion, QA, lectura de issues y validacion repetida.
 
 English: [README.md](README.md)
