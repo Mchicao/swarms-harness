@@ -12,6 +12,37 @@ Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La id
 
 English: [README.md](README.md)
 
+## Novedades — Workers HY3 Gratis (Julio 2026)
+
+Tencent lanzó **Hy3** (295B Mixture-of-Experts, 21B activo) para disponibilidad
+general el 1 de julio de 2026. SWARMS ahora incluye cinco rutas gratuitas para
+correr HY3 como workers programadores en paralelo — sin atarse a un solo
+proveedor y sin tarjeta de crédito para los tiers gratuitos.
+
+| Ruta | Proveedor | Model ID | ¿Gratis? |
+|---|---|---|---|
+| `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Tier gratis |
+| `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Promo gratis |
+| `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Variante gratis |
+| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Acceso vía gateway |
+| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Créditos de prueba |
+
+Corre tres workers HY3 en paralelo a costo cero:
+
+```bash
+python scripts/swarm.py run --plan docs/workflow_plan_example.json --force \
+  --global-max-concurrency 3 --provider-cap hy3_gitlawb=3
+```
+
+Una nueva ruta de **Hermes Agent** (`hermes`) también agrega un subagente
+completo con tool-calling y fallback Mixture-of-Agents — no es un solo modelo,
+sino un agente que rutea modelos con skills y auto-corrección.
+
+Todas las rutas HY3 están **desactivadas por defecto** (mock sigue siendo el
+default seguro de open-source). Habilitá las que quieras en
+`config/swarm_router.local.json` y configurá las API keys correspondientes en
+tu entorno.
+
 ## Flujos Estilo Ultra de Claude Code y GPT-5.6
 
 Claude Fable 5 puede impulsar flujos multiagente de larga duración en Claude Code: planifica por etapas, delega en subagentes y revisa su propio trabajo. OpenAI también anunció un nuevo modo `ultra` de GPT-5.6 basado en subagentes, pero GPT-5.6 sigue en vista previa limitada y no tiene disponibilidad pública amplia. SWARMS apunta a este patrón operativo desde el lado local-first: tú eliges planner, critic, modelos worker, provider caps, comandos de verificación y presupuesto de tokens.

@@ -127,6 +127,8 @@ def check_mock_route() -> bool:
             "- [ ] [backend] implement offline demo",
             "--strategy",
             "auto",
+            "--config",
+            "config/swarm_router.json",
             "--format",
             "json",
         ]

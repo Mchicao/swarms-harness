@@ -12,6 +12,36 @@ I have used versions of this workflow personally since January-February 2026. Th
 
 Español: [README.es.md](README.es.md)
 
+## What's New — Free HY3 Workers (July 2026)
+
+Tencent released **Hy3** (295B Mixture-of-Experts, 21B active) for general
+availability on July 1, 2026. SWARMS now ships five free routes for running
+HY3 as parallel programmer workers — no single-vendor lock-in, no credit card
+required for the free tiers.
+
+| Route | Provider | Model ID | Free? |
+|---|---|---|---|
+| `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Free tier |
+| `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Free promo |
+| `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Free variant |
+| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Gateway access |
+| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Trial credits |
+
+Run three parallel HY3 workers at zero cost:
+
+```bash
+python scripts/swarm.py run --plan docs/workflow_plan_example.json --force \
+  --global-max-concurrency 3 --provider-cap hy3_gitlawb=3
+```
+
+A new **Hermes Agent** route (`hermes`) also adds a full tool-calling subagent
+with Mixture-of-Agents fallback — not a single model, but a routing agent with
+skills and self-correction.
+
+All HY3 routes are **disabled by default** (mock stays the safe open-source
+default). Enable the ones you want in `config/swarm_router.local.json` and set
+the matching API keys in your environment.
+
 ## Claude Code and GPT-5.6 Ultra-Style Workflows
 
 Claude Fable 5 can power long-running, multi-agent workflows in Claude Code by planning across stages, delegating to subagents, and checking its own work. OpenAI has also announced a new GPT-5.6 `ultra` mode built around subagents, but GPT-5.6 remains in limited preview rather than broad public availability. SWARMS targets this operating pattern from the local-first side: you choose the planner, critic, worker models, provider caps, verification commands, and token budget.

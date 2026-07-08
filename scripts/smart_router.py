@@ -49,9 +49,9 @@ def _strip_comment_keys(obj: Any) -> Any:
     return obj
 
 
-def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
-    if path == DEFAULT_CONFIG and LOCAL_CONFIG.exists():
-        path = LOCAL_CONFIG
+def load_config(path: Path | None = None) -> dict[str, Any]:
+    if path is None:
+        path = LOCAL_CONFIG if LOCAL_CONFIG.exists() else DEFAULT_CONFIG
     return _strip_comment_keys(_load_json(path, {}))
 
 
@@ -183,7 +183,7 @@ def candidate_score(
 def choose_route(
     task_raw: str,
     strategy: str = "auto",
-    config_path: Path = DEFAULT_CONFIG,
+    config_path: Path | None = None,
     limits_path: Path = DEFAULT_LIMITS,
     metrics_path: Path = DEFAULT_METRICS,
 ) -> dict[str, Any]:
@@ -280,7 +280,7 @@ def provider_for_powershell(route: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def route_tasks(task_file: Path = LEGACY_TASK_FILE) -> None:
+def route_tasks(task_file: Path = LEGACY_TASK_FILE, config_path: Path | None = None) -> None:
     if not task_file.exists():
         print(f"{task_file} not found.")
         return
@@ -288,7 +288,7 @@ def route_tasks(task_file: Path = LEGACY_TASK_FILE) -> None:
     new_lines = []
     for line in lines:
         if re.search(r"-\s*\[\s*\]", line) and "[ROUTE:" not in line:
-            route = choose_route(line)
+            route = choose_route(line, config_path=config_path)
             new_lines.append(line.replace("- [ ]", f"- [ ] [ROUTE:{route['id']}]", 1))
         else:
             new_lines.append(line)
@@ -302,15 +302,16 @@ def main() -> int:
     parser.add_argument("--task-file", type=Path, help="Legacy task file to annotate")
     parser.add_argument("--strategy", default="auto")
     parser.add_argument("--format", choices=["json", "powershell"], default="json")
+    parser.add_argument("--config", type=Path, help="Router configuration JSON")
     args = parser.parse_args()
 
     if args.task_file:
-        route_tasks(args.task_file)
+        route_tasks(args.task_file, config_path=args.config)
         return 0
     if not args.task:
         parser.error("--task is required unless --task-file is used")
 
-    route = choose_route(args.task, strategy=args.strategy)
+    route = choose_route(args.task, strategy=args.strategy, config_path=args.config)
     payload = provider_for_powershell(route) if args.format == "powershell" else route
     print(json.dumps(payload, ensure_ascii=False))
     return 0

@@ -4,7 +4,7 @@ from scripts import smart_router
 
 
 def write_config(tmp_path, overrides=None):
-    config = smart_router.load_config()
+    config = smart_router.load_config(smart_router.DEFAULT_CONFIG)
     if overrides:
         config.update(overrides)
     path = tmp_path / "router.json"

@@ -42,3 +42,8 @@ dist/
 *.log
 *.jsonl
 nul
+
+# Local ZCode config (credentials, session state) — never commit
+.zcode/
+text_*.json
+uv.lock

@@ -29,10 +29,53 @@ DEFAULT_RUNS_DIR = PROJECT_ROOT / ".agent" / "swarm" / "runs"
 ROUTE_PROVIDER_MAP = {
     "mock": ("mock", "mock-worker", "mock"),
     "glm52": ("opencode", "glm-5.2", "opencode"),
-    "gemini_flash": ("antigravity_cli", "gemini-3.5-flash", "gemini"),
+    "gemini_flash": ("antigravity_cli", "Gemini 3.5 Flash (Low)", "gemini"),
     "codex": ("codex_cli", "gpt-5.5-codex", "codex"),
     "local_tests": ("local", "local-tests", "shell"),
+    # HY3 (Tencent Hunyuan, GA model) via OpenAI-compatible providers. Disabled
+    # by default in config/swarm_router.json; enable in the local (gitignored)
+    # config and set the matching *_API_KEY env var to use them. Model ids are
+    # provider-specific (verified live 2026-07-07):
+    #   - OpenRouter:  tencent/hy3:free (free variant) or tencent/hy3 (paid)
+    #   - Novita:      tencent/hy3
+    #   - GitLawb:     tencent/hy3 (resolves to :free via Novita backend)
+    #   - SiliconFlow: tencent/Hy3  (capital H; GA, paid per-token)
+    #   - Kilo:        tencent/hy3  (OpenAI-compat gateway)
+    "hy3_openrouter": ("openrouter", "tencent/hy3:free", "openai_compat"),
+    "hy3_novita": ("novita", "tencent/hy3", "openai_compat"),
+    "hy3_gitlawb": ("gitlawb", "tencent/hy3", "openai_compat"),
+    "hy3_siliconflow": ("siliconflow", "tencent/Hy3", "openai_compat"),
+    "hy3_kilo": ("kilo", "tencent/hy3", "openai_compat"),
+    # HY3 via OpenCode Zen free tier — reuses the existing opencode_worker,
+    # no new env vars (auth handled by OpenCode's own auth store).
+    "hy3_opencode": ("opencode", "opencode/hy3-free", "opencode"),
+    # Hermes Agent (Nous Research) as a full subagent. Not a single model —
+    # a tool-calling agent with its own provider routing, skills, and MoA
+    # fallback. Empty model = use Hermes's configured default (here: glm-5.2);
+    # a plan can override the model/provider per task. Disabled by default in
+    # config/swarm_router.json; enable in the local config to use.
+    "hermes": ("hermes", "", "hermes"),
 }
+WORKER_SCRIPTS = {
+    "mock": "mock_worker.py",
+    "gemini": "gemini_worker.py",
+    "opencode": "opencode_worker.py",
+    "codex": "codex_worker.py",
+    "openai_compat": "openai_compat_worker.py",
+    "hermes": "hermes_worker.py",
+}
+# For openai_compat workers: which env var holds the API key per provider.
+# Base URL may also live in an env var (e.g. OPENROUTER_BASE_URL); the worker
+# falls back to a sane default (openrouter.ai/api/v1) when unset.
+OPENAI_COMPAT_KEY_ENV = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "novita": "NOVITA_API_KEY",
+    "gitlawb": "GITLAWB_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "kilo": "KILO_API_KEY",
+}
+MAX_DEPENDENCY_CONTEXT_CHARS = 12_000
+DEFAULT_WORKER_TIMEOUT = int(os.environ.get("SWARMS_WORKER_TIMEOUT", "600"))
 
 ROLE_RE = re.compile(r"^\[(?P<role>[A-Za-z0-9_-]+)\]\s*(?P<body>.*)$")
 NEEDS_RE = re.compile(r"@needs\((?P<deps>[^)]+)\)")
@@ -98,6 +141,7 @@ class WorkflowTask:
     provider: str = "mock"
     model: str = "mock-worker"
     wrapper: str = "mock"
+    tools_policy: str = "none"
     status: str = "pending"
     attempts: int = 0
     artifacts: list[str] = field(default_factory=list)
@@ -116,6 +160,7 @@ class WorkflowTask:
             "provider": self.provider,
             "model": self.model,
             "wrapper": self.wrapper,
+            "tools_policy": self.tools_policy,
             "status": self.status,
             "attempts": self.attempts,
             "artifacts": self.artifacts,
@@ -262,6 +307,7 @@ class WorkflowRuntime:
                         provider=provider,
                         model=model,
                         wrapper=wrapper,
+                        tools_policy=spec.get("tools_policy", "none"),
                         artifacts=list(spec.get("artifacts", [])),
                     )
                 )
@@ -329,25 +375,74 @@ class WorkflowRuntime:
         ]
         return sorted(ready, key=lambda task: (task.index, task.task_id))
 
-    def write_prompt(self, task: WorkflowTask, work_dir: Path) -> Path:
+    def dependency_outputs(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> str:
+        sections: list[str] = []
+        remaining = MAX_DEPENDENCY_CONTEXT_CHARS
+        for dependency in task.needs:
+            matches = [
+                candidate
+                for candidate in tasks
+                if candidate.task_id != task.task_id
+                and candidate.status == "completed"
+                and task_matches_dependency(candidate, dependency)
+            ]
+            for candidate in matches:
+                log_path = self.results_dir / candidate.task_id / "worker.log"
+                if not log_path.exists() or remaining <= 0:
+                    continue
+                output = log_path.read_text(encoding="utf-8", errors="replace")
+                excerpt = output[-remaining:]
+                sections.append(f"Dependency {candidate.task_id} output:\n{excerpt}")
+                remaining -= len(excerpt)
+        return "\n\n".join(sections)
+
+    def write_prompt(self, task: WorkflowTask, work_dir: Path, tasks: list[WorkflowTask] | None = None) -> Path:
         prompt = work_dir / f"{task.task_id}.prompt.txt"
-        prompt.write_text(
-            "\n".join(
+        dependency_context = self.dependency_outputs(task, tasks or [])
+        lines = [
+            "You are a SWARMS worker with a narrow task.",
+            f"Role: {task.role}",
+            f"Task: {task.text}",
+            f"Allowed artifacts: {', '.join(task.artifacts) or '(task-defined)'}",
+        ]
+        if dependency_context:
+            lines.extend(
                 [
-                    "You are a SWARMS worker with a narrow task.",
-                    f"Role: {task.role}",
-                    f"Task: {task.text}",
-                    f"Allowed artifacts: {', '.join(task.artifacts) or '(task-defined)'}",
-                    "Return only the required artifact changes and keep output concise.",
+                    "Use these completed dependency outputs as input:",
+                    dependency_context,
                 ]
             )
-            + "\n",
+        lines.append("Return only the required result and keep output concise.")
+        prompt.write_text(
+            "\n".join(lines) + "\n",
             encoding="utf-8",
         )
         return prompt
 
-    def run_mock_task(self, task: WorkflowTask) -> dict[str, Any]:
-        owner = f"mock-{task.task_id}-{uuid.uuid4().hex[:8]}"
+    def worker_command(self, task: WorkflowTask, prompt: Path, status_path: Path) -> list[str]:
+        script_name = WORKER_SCRIPTS.get(task.wrapper)
+        if not script_name:
+            raise ValueError(f"Unsupported worker wrapper: {task.wrapper!r}")
+        command = [sys.executable, str(PROJECT_ROOT / "scripts" / script_name), "--prompt", str(prompt)]
+        if task.wrapper != "mock":
+            command.extend(
+                [
+                    "--status",
+                    str(status_path),
+                    "--model",
+                    task.model,
+                    "--tools-policy",
+                    task.tools_policy,
+                ]
+            )
+        if task.wrapper == "openai_compat":
+            key_env = OPENAI_COMPAT_KEY_ENV.get(task.provider, "OPENAI_COMPAT_API_KEY")
+            base_url_env = f"{task.provider.upper()}_BASE_URL"
+            command.extend(["--key-env", key_env, "--base-url-env", base_url_env])
+        return command
+
+    def run_task(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> dict[str, Any]:
+        owner = f"{task.provider}-{task.task_id}-{uuid.uuid4().hex[:8]}"
         if not self.claim_store.try_claim(task.task_id, owner):
             return {"success": False, "error": "task already claimed"}
         task.status = "in_progress"
@@ -357,13 +452,33 @@ class WorkflowRuntime:
         self.event("task_started", task_id=task.task_id, provider=task.provider, model=task.model)
         work_dir = self.results_dir / task.task_id
         work_dir.mkdir(parents=True, exist_ok=True)
-        prompt = self.write_prompt(task, work_dir)
+        prompt = self.write_prompt(task, work_dir, tasks)
         output_log = work_dir / "worker.log"
-        command = [sys.executable, str(PROJECT_ROOT / "scripts" / "mock_worker.py"), "--prompt", str(prompt)]
+        status_path = work_dir / "status.json"
         started = time.time()
-        proc = subprocess.run(command, cwd=work_dir, text=True, capture_output=True, timeout=120)
-        output_log.write_text((proc.stdout or "") + (proc.stderr or ""), encoding="utf-8")
-        success = proc.returncode == 0
+        try:
+            command = self.worker_command(task, prompt, status_path)
+            proc = subprocess.run(
+                command,
+                cwd=work_dir,
+                text=True,
+                capture_output=True,
+                timeout=DEFAULT_WORKER_TIMEOUT,
+                encoding="utf-8",
+                errors="replace",
+            )
+            returncode = proc.returncode
+            output = (proc.stdout or "") + (proc.stderr or "")
+        except (OSError, ValueError) as exc:
+            returncode = 127
+            output = f"{type(exc).__name__}: {exc}\n"
+        except subprocess.TimeoutExpired as exc:
+            returncode = 124
+            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            output = f"{stdout}{stderr}\nWorker timed out after {DEFAULT_WORKER_TIMEOUT}s\n"
+        output_log.write_text(output, encoding="utf-8")
+        success = returncode == 0
         task.status = "completed" if success else "failed"
         task.error = None if success else output_log.read_text(encoding="utf-8", errors="replace")[-2000:]
         task.ended_at = utc_now()
@@ -372,7 +487,7 @@ class WorkflowRuntime:
         result = {
             "task_id": task.task_id,
             "success": success,
-            "returncode": proc.returncode,
+            "returncode": returncode,
             "duration_seconds": round(time.time() - started, 3),
             "provider": task.provider,
             "model": task.model,
@@ -404,7 +519,7 @@ class WorkflowRuntime:
                     task.status = "queued"
                     self.save_task(task)
                     self.provider_active[task.provider] = self.provider_active.get(task.provider, 0) + 1
-                    active[executor.submit(self.run_mock_task, task)] = task
+                    active[executor.submit(self.run_task, task, tasks)] = task
                     launched = True
 
                 if not active and not launched:
@@ -435,6 +550,7 @@ class WorkflowRuntime:
         counts: dict[str, int] = {}
         for task in tasks:
             counts[task.status] = counts.get(task.status, 0) + 1
+        has_real_provider = any(task.provider != "mock" for task in tasks)
         return {
             "run_id": self.run_id,
             "status": status,
@@ -450,7 +566,8 @@ class WorkflowRuntime:
                 "cache_write": 0,
                 "output": 0,
                 "reasoning": 0,
-                "known_cost_usd": 0.0,
+                "known_cost_usd": None if has_real_provider else 0.0,
+                "usage_source": "missing" if has_real_provider else "offline_mock",
             },
         }
 
