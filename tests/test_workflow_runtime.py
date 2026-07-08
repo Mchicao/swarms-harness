@@ -311,3 +311,46 @@ def test_hermes_route_dispatches_to_hermes_worker(tmp_path):
     assert "--base-url-env" not in command
     # tools-policy is still passed through the standard contract.
     assert command[command.index("--tools-policy") + 1] == "full"
+    # The plain hermes route has empty model — no --provider injection needed.
+    assert "--provider" not in command
+
+
+def test_hy3_hermes_route_forces_free_model_and_nous_provider(tmp_path):
+    """Safety-critical: hy3_hermes must inject --provider nous so Hermes
+    never falls back to its paid glm-5.2 Z.AI default. This is the route users
+    pick when they want $0 cost guaranteed."""
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Implement",
+                        "tasks": [
+                            {
+                                "id": "impl",
+                                "role": "programmer",
+                                "route": "hy3_hermes",
+                                "task": "Add a helper function.",
+                                "artifacts": [],
+                                "needs": [],
+                                "tools_policy": "none",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="hy3hermes", run_root=tmp_path)
+    task = runtime.build_tasks_from_plan(plan_path)[0]
+    command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
+
+    assert task.model == "tencent/hy3:free"
+    assert Path(command[1]).name == "hermes_worker.py"
+    assert command[command.index("--model") + 1] == "tencent/hy3:free"
+    # CRITICAL: --provider nous MUST be injected so Hermes uses the Nous Portal
+    # free tier (tencent/hy3:free is $0 there), not its paid glm-5.2 default.
+    assert "--provider" in command
+    assert command[command.index("--provider") + 1] == "nous"

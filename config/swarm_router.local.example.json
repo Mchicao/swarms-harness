@@ -187,6 +187,21 @@
       "scarcity": 0.30,
       "strengths": ["agentic", "tool-calling", "multi-file", "self-correcting", "fallback", "architecture", "debug", "tests", "skills"],
       "weaknesses": ["heavier per-task token cost than a bare completion", "needs hermes CLI configured locally"]
+    },
+    "hy3_hermes": {
+      "_doc": "Hermes Agent forced to HY3 free (tencent/hy3:free via Nous Portal). $0 guaranteed: the runtime injects --provider nous so Hermes never uses its paid glm-5.2 default. Requires hermes CLI with Nous Portal login (hermes login nous). Recommended when you want agent capabilities (tool-calling, self-correction) on a free model.",
+      "enabled": true,
+      "provider": "hermes",
+      "model": "tencent/hy3:free",
+      "canonical_model": "hy3",
+      "wrapper": "hermes",
+      "health_key": "hermes",
+      "metric_key": "hy3_hermes",
+      "relative_cost": 0.0,
+      "quality": 0.78,
+      "scarcity": 0.10,
+      "strengths": ["agentic", "tool-calling", "multi-file", "self-correcting", "free", "architecture", "debug", "tests"],
+      "weaknesses": ["vision", "free-tier rate limits", "heavier token cost than bare completion"]
     }
   }
 }

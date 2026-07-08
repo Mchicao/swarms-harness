@@ -55,6 +55,12 @@ ROUTE_PROVIDER_MAP = {
     # a plan can override the model/provider per task. Disabled by default in
     # config/swarm_router.json; enable in the local config to use.
     "hermes": ("hermes", "", "hermes"),
+    # HY3 via Hermes Agent, forced to the FREE variant via Nous Portal. This
+    # route passes both -m and --provider to hermes_worker so Hermes NEVER
+    # falls back to its glm-5.2 default (which is on a paid Z.AI plan). Safe
+    # for users who don't want charges: model is tencent/hy3:free ($0) and
+    # provider is nous (Nous Portal free tier, verified working 2026-07-08).
+    "hy3_hermes": ("hermes", "tencent/hy3:free", "hermes"),
 }
 WORKER_SCRIPTS = {
     "mock": "mock_worker.py",
@@ -439,6 +445,11 @@ class WorkflowRuntime:
             key_env = OPENAI_COMPAT_KEY_ENV.get(task.provider, "OPENAI_COMPAT_API_KEY")
             base_url_env = f"{task.provider.upper()}_BASE_URL"
             command.extend(["--key-env", key_env, "--base-url-env", base_url_env])
+        # For hermes routes that carry a HY3 model, force --provider nous so
+        # Hermes uses the Nous Portal free tier (tencent/hy3:free is $0 there),
+        # not its paid glm-5.2 Z.AI default.
+        if task.wrapper == "hermes" and task.model.startswith("tencent/hy3"):
+            command.extend(["--provider", "nous"])
         return command
 
     def run_task(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> dict[str, Any]:
