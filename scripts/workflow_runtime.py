@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,7 +29,7 @@ DEFAULT_TASKS_FILE = PROJECT_ROOT / "docs" / "agentic_swarm_micro_tasks.json"
 DEFAULT_RUNS_DIR = PROJECT_ROOT / ".agent" / "swarm" / "runs"
 ROUTE_PROVIDER_MAP = {
     "mock": ("mock", "mock-worker", "mock"),
-    "glm52": ("opencode", "glm-5.2", "opencode"),
+    "glm52": ("opencode", "zai-coding-plan/glm-5.2", "opencode"),
     "gemini_flash": ("antigravity_cli", "Gemini 3.5 Flash (Low)", "gemini"),
     "codex": ("codex_cli", "gpt-5.5-codex", "codex"),
     "local_tests": ("local", "local-tests", "shell"),
@@ -330,8 +331,12 @@ class WorkflowRuntime:
         return artifacts
 
     def initialize(self, instance_id: str | None = None, force: bool = False) -> list[WorkflowTask]:
-        if self.run_dir.exists() and not force:
+        workflow_state = self.run_dir / "workflow.json"
+        if workflow_state.exists() and not force:
             return self.load_tasks()
+        if force and self.run_dir.exists():
+            shutil.rmtree(self.run_dir)
+            self.claim_store = ClaimStore(self.run_dir / "claims")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         tasks = self.build_tasks(instance_id)
         for task in tasks:

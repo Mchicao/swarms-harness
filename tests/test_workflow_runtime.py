@@ -45,6 +45,27 @@ def test_workflow_dry_run_writes_planned_report(tmp_path):
     assert saved["status"] == "planned"
 
 
+def test_new_workflow_initializes_without_force(tmp_path):
+    runtime = WorkflowRuntime(run_id="fresh", run_root=tmp_path, global_max_concurrency=2)
+
+    report = runtime.run("micro-reshard-roundtrip", dry_run=True)
+
+    assert report["status"] == "planned"
+    assert report["task_counts"] == {"pending": 5}
+
+
+def test_force_reinitialization_removes_stale_task_files(tmp_path):
+    runtime = WorkflowRuntime(run_id="reused", run_root=tmp_path, global_max_concurrency=2)
+    runtime.run("micro-reshard-roundtrip", dry_run=True)
+    stale = runtime.tasks_dir / "stale.json"
+    stale.write_text('{"stale": true}', encoding="utf-8")
+
+    runtime.run("micro-reshard-roundtrip", dry_run=True, force=True)
+
+    assert not stale.exists()
+    assert len(runtime.load_tasks()) == 5
+
+
 def test_mock_workflow_executes_dependency_waves(tmp_path):
     runtime = WorkflowRuntime(
         run_id="mock-run",
@@ -94,6 +115,41 @@ def test_gemini_route_dispatches_to_agy_low_worker(tmp_path):
     assert Path(command[1]).name == "gemini_worker.py"
     assert command[command.index("--model") + 1] == "Gemini 3.5 Flash (Low)"
     assert command[command.index("--tools-policy") + 1] == "none"
+
+
+def test_glm52_route_uses_installed_opencode_model_identifier(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Review",
+                        "tasks": [
+                            {
+                                "id": "review",
+                                "role": "critic",
+                                "route": "glm52",
+                                "task": "Review a bounded change.",
+                                "artifacts": [],
+                                "needs": [],
+                                "tools_policy": "none",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="glm52", run_root=tmp_path)
+    task = runtime.build_tasks_from_plan(plan_path)[0]
+    command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
+
+    assert task.provider == "opencode"
+    assert task.model == "zai-coding-plan/glm-5.2"
+    assert Path(command[1]).name == "opencode_worker.py"
+    assert command[command.index("--model") + 1] == "zai-coding-plan/glm-5.2"
 
 
 def test_dependency_outputs_are_included_in_downstream_prompt(tmp_path):

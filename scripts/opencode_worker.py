@@ -66,7 +66,7 @@ def opencode_complete(
         model,
         "-f",
         str(prompt_file),
-        "--dangerously-skip-permissions",
+        "--auto",
         "Complete the task described in the attached file. Write only the required code changes.",
     ]
 
