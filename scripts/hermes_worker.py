@@ -54,14 +54,13 @@ def hermes_complete(
     provider: str = DEFAULT_PROVIDER,
     max_turns: int = DEFAULT_MAX_TURNS,
     timeout: int = DEFAULT_TIMEOUT,
-    yolo: bool = True,
+    yolo: bool = False,
 ) -> str:
     """Call Hermes headless and return the assistant response text.
 
     ``-q`` (query) + ``-Q`` (quiet) is the headless single-shot path.
-    ``--max-turns`` bounds the internal agent loop. ``--yolo`` auto-approves
-    the agent's own tool hooks so it can actually do work non-interactively
-    (mirrors opencode_worker's ``--dangerously-skip-permissions``).
+    ``--max-turns`` bounds the internal agent loop. ``--yolo`` is used only
+    when the caller explicitly grants the ``full`` tools policy.
     """
     cmd = [
         HERMES_BIN,
@@ -95,13 +94,10 @@ def hermes_complete(
     output = (proc.stdout or "").strip()
     if proc.returncode != 0 and not output:
         stderr_tail = (proc.stderr or "")[-400:].strip()
-        raise RuntimeError(
-            f"Hermes exited {proc.returncode} with no stdout. stderr: {stderr_tail}"
-        )
+        raise RuntimeError(f"Hermes exited {proc.returncode} with no stdout. stderr: {stderr_tail}")
     if not output:
         raise RuntimeError(
-            f"Hermes produced no stdout. returncode={proc.returncode} "
-            f"stderr={(proc.stderr or '')[-200:]!r}"
+            f"Hermes produced no stdout. returncode={proc.returncode} stderr={(proc.stderr or '')[-200:]!r}"
         )
     return output
 
@@ -110,16 +106,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Hermes Agent worker (headless).")
     parser.add_argument("--prompt", type=Path, required=True, help="Path to prompt file.")
     parser.add_argument("--status", type=Path, default=None, help="Optional status output path.")
-    parser.add_argument("--model", default=DEFAULT_MODEL,
-                        help="Model id (empty = Hermes default). e.g. glm-5.2, tencent/hy3.")
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER,
-                        help="Provider name (empty = auto). e.g. zai, openrouter, google.")
-    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS,
-                        help="Max agent turns (bounds the loop).")
+    parser.add_argument(
+        "--model", default=DEFAULT_MODEL, help="Model id (empty = Hermes default). e.g. glm-5.2, tencent/hy3."
+    )
+    parser.add_argument(
+        "--provider", default=DEFAULT_PROVIDER, help="Provider name (empty = auto). e.g. zai, openrouter, google."
+    )
+    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, help="Max agent turns (bounds the loop).")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    parser.add_argument("--tools-policy", default="none", choices=["none", "full"],
-                        help="Contract compatibility. Hermes always has its own toolsets; "
-                             "--tools-policy=full is a no-op kept for the runtime contract.")
+    parser.add_argument(
+        "--tools-policy",
+        default="none",
+        choices=["none", "full"],
+        help="Contract compatibility. Hermes always has its own toolsets; "
+        "--tools-policy=full is a no-op kept for the runtime contract.",
+    )
     args = parser.parse_args(argv)
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
@@ -131,12 +132,12 @@ def main(argv: list[str] | None = None) -> int:
             provider=args.provider,
             max_turns=args.max_turns,
             timeout=args.timeout,
+            yolo=args.tools_policy == "full",
         )
         print(output)
         if args.status:
             args.status.write_text(
-                json.dumps({"success": True, "provider": "hermes",
-                            "model": args.model or "(hermes-default)"}),
+                json.dumps({"success": True, "provider": "hermes", "model": args.model or "(hermes-default)"}),
                 encoding="utf-8",
             )
         return 0

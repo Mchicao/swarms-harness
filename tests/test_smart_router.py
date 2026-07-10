@@ -12,8 +12,16 @@ def write_config(tmp_path, overrides=None):
     return path
 
 
+def enable_route(tmp_path, route_id):
+    config = smart_router.load_config(smart_router.DEFAULT_CONFIG)
+    config["providers"][route_id]["enabled"] = True
+    path = tmp_path / "router.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    return path
+
+
 def test_directive_wins_over_strategy(tmp_path):
-    config_path = write_config(tmp_path)
+    config_path = enable_route(tmp_path, "codex")
     route = smart_router.choose_route(
         "- [ ] [backend] [[route:codex]] fix critical bug",
         strategy="auto",
@@ -64,7 +72,7 @@ def test_default_auto_routes_to_mock(tmp_path):
 
 
 def test_glm_only_uses_opencode_glm52(tmp_path):
-    config_path = write_config(tmp_path)
+    config_path = enable_route(tmp_path, "glm52")
     route = smart_router.choose_route(
         "- [ ] [backend] implement API",
         strategy="glm-only",
@@ -76,6 +84,30 @@ def test_glm_only_uses_opencode_glm52(tmp_path):
     assert route["wrapper"] == "opencode"
     assert route["model"] == "zai-coding-plan/glm-5.2"
     assert route["canonical_model"] == "glm-5.2"
+
+
+def test_disabled_directive_falls_back_to_enabled_route(tmp_path):
+    config_path = write_config(tmp_path)
+    route = smart_router.choose_route(
+        "- [ ] [backend] [[route:codex]] fix critical bug",
+        strategy="auto",
+        config_path=config_path,
+        limits_path=tmp_path / "missing.yaml",
+        metrics_path=tmp_path / "missing.json",
+    )
+
+    assert route["id"] == "mock"
+    assert route["routing_reason"].startswith("disabled directive ignored")
+
+
+def test_partial_local_config_preserves_default_provider_definitions():
+    merged = smart_router._merge_dicts(
+        {"providers": {"mock": {"enabled": True}, "glm52": {"enabled": False, "model": "glm"}}},
+        {"providers": {"glm52": {"enabled": True}}},
+    )
+
+    assert merged["providers"]["mock"]["enabled"] is True
+    assert merged["providers"]["glm52"] == {"enabled": True, "model": "glm"}
 
 
 def test_ambiguous_directive_falls_back_to_auto(tmp_path):

@@ -58,7 +58,7 @@
     "gemini_flash": {
       "enabled": false,
       "provider": "antigravity_cli",
-      "model": "gemini-3.5-flash",
+      "model": "Gemini 3.5 Flash (Low)",
       "canonical_model": "gemini-3.5-flash",
       "wrapper": "gemini",
       "health_key": "antigravity_cli",

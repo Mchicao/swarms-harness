@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+try:
+    from .paths import PROJECT_ROOT
+except ImportError:  # pragma: no cover - direct script execution path.
+    from paths import PROJECT_ROOT
 
 
 def ok(message: str) -> None:
@@ -76,10 +79,11 @@ def check_legacy_powershell_parser() -> bool:
 
 def check_public_cli() -> bool:
     commands = [
-        [sys.executable, "scripts/swarm.py", "review", "--plan", "docs/workflow_plan_example.json"],
+        [sys.executable, "-m", "scripts.swarm", "review", "--plan", "docs/workflow_plan_example.json"],
         [
             sys.executable,
-            "scripts/swarm.py",
+            "-m",
+            "scripts.swarm",
             "dry-run",
             "--plan",
             "docs/workflow_plan_example.json",
@@ -122,7 +126,8 @@ def check_mock_route() -> bool:
     result = run(
         [
             sys.executable,
-            "scripts/smart_router.py",
+            "-m",
+            "scripts.smart_router",
             "--task",
             "- [ ] [backend] implement offline demo",
             "--strategy",

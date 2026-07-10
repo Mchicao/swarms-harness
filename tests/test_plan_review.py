@@ -1,11 +1,12 @@
 import json
+from pathlib import Path
 
 from scripts.plan_review import review_plan
 from scripts.workflow_runtime import WorkflowRuntime
 
 
 def load_example_plan():
-    return json.loads(open("docs/workflow_plan_example.json", encoding="utf-8").read())
+    return json.loads(Path("docs/workflow_plan_example.json").read_text(encoding="utf-8"))
 
 
 def test_example_plan_passes_static_review():
@@ -35,6 +36,46 @@ def test_static_review_detects_missing_dependencies():
 
     assert not result["ok"]
     assert any(finding["code"] == "missing_dependency" for finding in result["findings"])
+
+
+def test_static_review_rejects_nested_artifact_traversal():
+    plan = load_example_plan()
+    plan["stages"][1]["tasks"][0]["artifacts"] = ["bench_apps/../../outside.py"]
+
+    result = review_plan(plan)
+
+    assert not result["ok"]
+    assert any(finding["code"] == "unsafe_artifact_path" for finding in result["findings"])
+
+
+def test_static_review_rejects_unknown_tools_policy():
+    plan = load_example_plan()
+    plan["stages"][0]["tasks"][0]["tools_policy"] = "yolo"
+
+    result = review_plan(plan)
+
+    assert not result["ok"]
+    assert any(finding["code"] == "invalid_tools_policy" for finding in result["findings"])
+
+
+def test_static_review_reports_malformed_types_without_crashing():
+    plan = load_example_plan()
+    plan["budget_policy"]["max_total_workers"] = "many"
+    plan["stages"][0]["tasks"][0]["route"] = {"bad": "route"}
+    plan["stages"][0]["tasks"][0]["artifacts"] = "docs/output.md"
+
+    result = review_plan(plan)
+
+    assert not result["ok"]
+    codes = {finding["code"] for finding in result["findings"]}
+    assert {"worker_budget", "invalid_route", "invalid_artifacts"} <= codes
+
+
+def test_static_review_rejects_non_object_plan():
+    result = review_plan([])
+
+    assert not result["ok"]
+    assert result["findings"][0]["code"] == "plan_type"
 
 
 def test_runtime_accepts_external_workflow_plan(tmp_path):

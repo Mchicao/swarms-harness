@@ -50,6 +50,18 @@ include-package-data = true
 where = ["."]
 include = ["scripts", "scripts.*"]
 
+[tool.setuptools.data-files]
+"swarms_harness/config" = [
+  "config/role_policy.json",
+  "config/swarm_router.json",
+  "config/workflow_policy.json",
+]
+"swarms_harness/docs" = [
+  "docs/agentic_swarm_micro_tasks.json",
+  "docs/workflow_plan_example.json",
+]
+"swarms_harness/scripts" = ["scripts/parallel_swarm.ps1"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"

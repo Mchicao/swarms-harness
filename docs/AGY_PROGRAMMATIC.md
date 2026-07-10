@@ -69,8 +69,9 @@ o la petición falla sin respuesta. Labels confirmados en uso histórico:
 ## Autenticación
 
 `agy` autentica vía keyring OAuth (silent auth) con la cuenta Google
-configurada. No requiere `GOOGLE_API_KEY`. El flag `--dangerously-skip-permissions`
-evita prompts de permisos de herramientas (necesario para no interrumpir).
+configurada. No requiere `GOOGLE_API_KEY`. El wrapper usa `--sandbox` por
+defecto y no omite permisos. Solo `tools_policy=full` agrega
+`--dangerously-skip-permissions` de forma explícita.
 
 Para entornos sin keyring, se puede usar ADC: `USE_ADC=1 agy ...`.
 
