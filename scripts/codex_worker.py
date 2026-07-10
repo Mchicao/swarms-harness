@@ -34,18 +34,20 @@ def find_codex_binary() -> str:
 
 def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple[int, str, str]:
     """Ejecuta codex exec y retorna (returncode, stdout, stderr)."""
-    del model  # The Codex CLI selects its configured model.
     binary = find_codex_binary()
     sandbox = "workspace-write" if tools_policy != "none" else "read-only"
+    reasoning_effort = os.environ.get("CODEX_REASONING_EFFORT", "medium")
     cwd = Path.cwd()
     out_file = cwd / "codex_output.md"
     cmd = [
         binary,
         "exec",
+        "--model",
+        model,
         "-s",
         sandbox,
         "-c",
-        "reasoning_effort=medium",
+        f"model_reasoning_effort={reasoning_effort}",
         "-o",
         str(out_file),
         "--json",

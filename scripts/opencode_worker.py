@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 
 DEFAULT_MODEL = os.environ.get("OPENCODE_MODEL", "zai-coding-plan/glm-5.2")
-DEFAULT_TIMEOUT = int(os.environ.get("OPENCODE_TIMEOUT", "300"))
+DEFAULT_TIMEOUT = int(os.environ.get("OPENCODE_TIMEOUT", "600"))
 OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 
 
