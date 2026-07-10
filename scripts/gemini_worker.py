@@ -49,20 +49,20 @@ def gemini_complete(
     If tools_policy is 'none', runs the agy call in a temporary clean directory
     to prevent it from loading workspace-level AGENTS.md rules.
     """
-    if tools_policy == "none":
-        import shutil
-        import tempfile
+    if tools_policy == "full":
+        return agy_complete(prompt, model=model, timeout=timeout, skip_permissions=True, sandbox=False)
 
-        old_cwd = os.getcwd()
-        tmp_dir = tempfile.mkdtemp(prefix="swarms_gemini_")
-        os.chdir(tmp_dir)
-        try:
-            return agy_complete(prompt, model=model, timeout=timeout)
-        finally:
-            os.chdir(old_cwd)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-    else:
-        return agy_complete(prompt, model=model, timeout=timeout)
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="swarms_gemini_") as tmp_dir:
+        return agy_complete(
+            prompt,
+            model=model,
+            timeout=timeout,
+            skip_permissions=False,
+            sandbox=True,
+            cwd=tmp_dir,
+        )
 
 
 def main() -> int:

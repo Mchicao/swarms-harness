@@ -18,14 +18,18 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .paths import PROJECT_ROOT, WORKSPACE_ROOT
+except ImportError:  # pragma: no cover - direct script execution path.
+    from paths import PROJECT_ROOT, WORKSPACE_ROOT
+
+try:
     import yaml
 except Exception:  # pragma: no cover - PyYAML is expected in the repo env.
     yaml = None
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = PROJECT_ROOT / "config" / "swarm_router.json"
-LOCAL_CONFIG = PROJECT_ROOT / "config" / "swarm_router.local.json"
+LOCAL_CONFIG = WORKSPACE_ROOT / "config" / "swarm_router.local.json"
 DEFAULT_LIMITS = PROJECT_ROOT / "config" / "swarm_limits.yaml"
 DEFAULT_METRICS = PROJECT_ROOT / "config" / "swarm_metrics.json"
 LEGACY_TASK_FILE = PROJECT_ROOT / ".agent" / "tasks_singularity.md"
@@ -49,9 +53,23 @@ def _strip_comment_keys(obj: Any) -> Any:
     return obj
 
 
+def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     if path is None:
-        path = LOCAL_CONFIG if LOCAL_CONFIG.exists() else DEFAULT_CONFIG
+        default = _strip_comment_keys(_load_json(DEFAULT_CONFIG, {}))
+        if LOCAL_CONFIG.exists():
+            local = _strip_comment_keys(_load_json(LOCAL_CONFIG, {}))
+            return _merge_dicts(default, local)
+        return default
     return _strip_comment_keys(_load_json(path, {}))
 
 
@@ -193,9 +211,12 @@ def choose_route(
     providers = config.get("providers", {})
     aliases = {normalize_name(k): v for k, v in config.get("aliases", {}).items()}
 
+    def enabled(route_id: str | None) -> bool:
+        return bool(route_id in providers and providers[route_id].get("enabled", True))
+
     role = extract_role(task_raw)
     directive_route, directive_reason = extract_directive(task_raw, aliases)
-    if directive_route and directive_route in providers:
+    if directive_route and enabled(directive_route):
         provider = dict(providers[directive_route])
         provider.update(
             {
@@ -207,22 +228,34 @@ def choose_route(
             }
         )
         return provider
+    if directive_route in providers:
+        directive_reason = "disabled_directive"
 
     if strategy in {"mock-only", "glm-only", "gemini-only", "codex-only"}:
-        route = {
+        requested_route = {
             "mock-only": "mock",
             "glm-only": "glm52",
             "gemini-only": "gemini_flash",
             "codex-only": "codex",
         }[strategy]
-        if route not in providers:
+        route = requested_route
+        if not enabled(route):
             route = config.get("fallback_route", "mock")
+        if not enabled(route):
+            raise ValueError(f"No enabled route is available for strategy {strategy!r}")
         provider = dict(providers[route])
-        provider.update({"id": route, "routing_method": strategy, "routing_reason": strategy, "task_role": role})
+        provider.update(
+            {
+                "id": route,
+                "routing_method": strategy,
+                "routing_reason": strategy if route == requested_route else "strategy unavailable; fallback",
+                "task_role": role,
+            }
+        )
         return provider
 
     role_route = config.get("role_routes", {}).get(role)
-    if strategy == "role-based" and role_route in providers:
+    if strategy == "role-based" and enabled(role_route):
         provider = dict(providers[role_route])
         provider.update(
             {"id": role_route, "routing_method": "role-based", "routing_reason": f"role {role}", "task_role": role}
@@ -242,7 +275,9 @@ def choose_route(
 
     if not viable:
         fallback = config.get("fallback_route", "glm52")
-        provider = dict(providers.get(fallback) or next(iter(providers.values())))
+        if not enabled(fallback):
+            raise ValueError("Router has no enabled providers")
+        provider = dict(providers[fallback])
         provider.update(
             {
                 "id": fallback,
@@ -257,6 +292,8 @@ def choose_route(
     chosen["routing_method"] = "auto"
     if directive_reason == "ambiguous_directive":
         chosen["routing_reason"] = "ambiguous directive ignored; auto selected best configured score"
+    elif directive_reason == "disabled_directive":
+        chosen["routing_reason"] = "disabled directive ignored; auto selected best configured score"
     else:
         chosen["routing_reason"] = "best configured score after preferences, role, health and history"
     chosen["task_role"] = role

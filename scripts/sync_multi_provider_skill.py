@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,20 +21,22 @@ DEFAULT_TARGET = (
 def _files(root: Path) -> dict[Path, bytes]:
     if not root.exists():
         return {}
-    return {
-        path.relative_to(root): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
 def sync_skill(source: Path = DEFAULT_SOURCE, target: Path = DEFAULT_TARGET, *, check: bool = False) -> bool:
     """Copy the canonical skill tree or report whether the target is identical."""
+    source = source.resolve()
+    target = target.resolve()
+    if source == target or source in target.parents or target in source.parents:
+        raise ValueError("Source and target skill trees must not overlap")
     source_files = _files(source)
     if not source_files or Path("SKILL.md") not in source_files:
         raise FileNotFoundError(f"Canonical skill is missing: {source}")
 
     target_files = _files(target)
+    if target_files and Path("SKILL.md") not in target_files:
+        raise ValueError(f"Refusing to replace a non-skill directory: {target}")
     in_sync = source_files == target_files
     if check:
         return in_sync

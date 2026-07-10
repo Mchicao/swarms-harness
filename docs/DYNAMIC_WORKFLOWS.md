@@ -2,16 +2,16 @@
 
 SWARMS supports an UltraCode-style runtime without copying Claude Code's cost profile.
 
-The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, retries, summaries, telemetry, and final reporting.
+The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, summaries, telemetry, and final reporting. Automatic retries are not implemented.
 
 ## GPT-5.6 Ultra-Style Runtime
 
-OpenAI describes GPT-5.6 `ultra` as a mode that uses subagents for complex work. SWARMS is the local-first version of that pattern: the user owns the plan, routing, provider caps, verification commands, and token budget. One run can mix cheap workers, premium planner/critic routes, local tests, and offline mock workers.
+OpenAI describes GPT-5.6 `ultra` as a mode that uses subagents for complex work. SWARMS is the local-first version of that pattern: the user owns the plan, routing, provider caps, verification metadata, and token budget. Deterministic `verify` commands remain metadata today; callers must run them separately.
 
 This makes SWARMS useful when a user wants Ultra-style fan-out but needs:
 
 - local repo state and reports;
-- provider choice across OpenAI-compatible APIs, LiteLLM, Anthropic-style routes, GLM, Gemini, Codex CLI, Kilo, Aider, and local tests;
+- provider choice across configured OpenAI-compatible APIs, GLM, Gemini, Codex CLI, Hermes, and offline mock workers;
 - explicit premium permissions;
 - caps per provider;
 - Singularity loops for ongoing QA, issue triage, and improvement proposals.
@@ -37,7 +37,7 @@ The target is many logical workers with bounded live concurrency:
   "global_max_concurrency": 8,
   "provider_concurrency": {
     "mock": 64,
-    "opencode_glm52": 6,
+    "glm52": 6,
     "gemini_flash": 3,
     "codex": 1,
     "claude": 0

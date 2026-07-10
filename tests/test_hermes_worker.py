@@ -5,7 +5,8 @@ the exact command shape without depending on the CLI being configured.
 """
 
 import json
-from pathlib import Path
+
+import pytest
 
 from scripts import hermes_worker as worker
 
@@ -33,7 +34,7 @@ def test_hermes_complete_uses_headless_flags(monkeypatch):
     assert cmd[1] == "chat"
     assert "-q" in cmd and cmd[cmd.index("-q") + 1] == "do the thing"
     assert "-Q" in cmd
-    assert "--yolo" in cmd
+    assert "--yolo" not in cmd
     # max-turns must be present and integer-string to bound the agent loop.
     assert cmd[cmd.index("--max-turns") + 1] == str(worker.DEFAULT_MAX_TURNS)
     # Empty model/provider must NOT add -m / --provider (let Hermes default).
@@ -56,16 +57,26 @@ def test_hermes_complete_passes_model_and_provider_when_set(monkeypatch):
     assert cmd[cmd.index("--provider") + 1] == "zai"
 
 
+def test_hermes_complete_adds_yolo_only_when_explicit(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc(stdout="ok")
+
+    monkeypatch.setattr(worker.subprocess, "run", fake_run)
+    worker.hermes_complete("prompt", yolo=True)
+
+    assert "--yolo" in captured["cmd"]
+
+
 def test_hermes_complete_raises_on_no_stdout_with_bad_exit(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _FakeProc(stdout="", stderr="boom", returncode=1)
 
     monkeypatch.setattr(worker.subprocess, "run", fake_run)
-    try:
+    with pytest.raises(RuntimeError, match="exited 1"):
         worker.hermes_complete("prompt")
-        assert False, "expected RuntimeError"
-    except RuntimeError as e:
-        assert "exited 1" in str(e)
 
 
 def test_hermes_complete_recovers_when_stderr_noisy_but_stdout_present(monkeypatch):
@@ -78,8 +89,7 @@ def test_hermes_complete_recovers_when_stderr_noisy_but_stdout_present(monkeypat
 
 
 def test_main_writes_status_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker.subprocess, "run",
-                        lambda cmd, **k: _FakeProc(stdout="THE_OUTPUT"))
+    monkeypatch.setattr(worker.subprocess, "run", lambda cmd, **k: _FakeProc(stdout="THE_OUTPUT"))
     prompt = tmp_path / "prompt.txt"
     prompt.write_text("task", encoding="utf-8")
     status = tmp_path / "status.json"

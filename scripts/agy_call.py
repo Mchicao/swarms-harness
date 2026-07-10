@@ -25,12 +25,12 @@ USAGE
 CLI:
     python scripts/agy_call.py "Say OK" --model "Gemini 3.5 Flash (Low)"
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -85,7 +85,7 @@ def _extract_from_transcript(db_path: Path) -> str:
         return ""
     last_content = ""
     try:
-        with open(transcript, "r", encoding="utf-8", errors="replace") as f:
+        with transcript.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -121,9 +121,7 @@ def _extract_from_protobuf(db_path: Path) -> str:
     con = sqlite3.connect(str(db_path))
     try:
         cur = con.cursor()
-        rows = cur.execute(
-            "SELECT step_payload FROM steps WHERE step_type = 15 ORDER BY idx"
-        ).fetchall()
+        rows = cur.execute("SELECT step_payload FROM steps WHERE step_type = 15 ORDER BY idx").fetchall()
         candidates: list[str] = []
         for (payload,) in rows:
             if not payload:
@@ -188,13 +186,9 @@ def _decode_string_fields(raw: bytes) -> list[tuple[str, bytes]]:
     while i < n:
         if raw[i] == 0x0A and i + 1 < n:
             length, j = _read_varint(raw, i + 1)
-            if (
-                length is not None
-                and 1 <= length <= 8000
-                and j + length <= n
-            ):
-                chunk = raw[j:j + length]
-                trailing = raw[j + length:j + length + 16]
+            if length is not None and 1 <= length <= 8000 and j + length <= n:
+                chunk = raw[j : j + length]
+                trailing = raw[j + length : j + length + 16]
                 try:
                     text = chunk.decode("utf-8")
                 except UnicodeDecodeError:
@@ -216,9 +210,7 @@ def _is_clean_text(text: str) -> bool:
         return False
     # An answer can be prose (needs letters) OR a short numeric/code token.
     has_letters = bool(re.search(r"[A-Za-zÀ-ÿ]{2,}", text))
-    is_numeric = bool(re.fullmatch(r"[\d.,\s+\-*/=()]{1,40}", text)) and any(
-        c.isdigit() for c in text
-    )
+    is_numeric = bool(re.fullmatch(r"[\d.,\s+\-*/=()]{1,40}", text)) and any(c.isdigit() for c in text)
     return has_letters or is_numeric
 
 
@@ -250,9 +242,7 @@ def _looks_like_answer(frag: str) -> bool:
         return False
     # Accept prose (needs letters) OR a short numeric/code-only token.
     has_letters = bool(re.search(r"[A-Za-zÀ-ÿ]{2,}", frag))
-    is_numeric = bool(re.fullmatch(r"[\d.,\s+\-*/=()]{1,40}", frag)) and any(
-        c.isdigit() for c in frag
-    )
+    is_numeric = bool(re.fullmatch(r"[\d.,\s+\-*/=()]{1,40}", frag)) and any(c.isdigit() for c in frag)
     return has_letters or is_numeric
 
 
@@ -261,7 +251,9 @@ def agy_complete(
     *,
     model: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
-    skip_permissions: bool = True,
+    skip_permissions: bool = False,
+    sandbox: bool = True,
+    cwd: str | Path | None = None,
 ) -> str:
     """Run agy in print mode and return the assistant's answer.
 
@@ -283,32 +275,33 @@ def agy_complete(
     cmd: list[str] = [AGY_BIN]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
+    if sandbox:
+        cmd.append("--sandbox")
     if model:
         cmd += ["--model", model]
     cmd += ["--print", prompt]
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
     # stdout is usually empty in headless mode; keep it as a first attempt.
     direct = (proc.stdout or "").strip()
     if direct:
         return direct
+    if proc.returncode != 0:
+        raise RuntimeError(f"agy exited {proc.returncode}: {(proc.stderr or '')[:300]}")
 
     # Otherwise: wait for a new/updated conversation DB and read from it.
     # agy needs ~10-20s for auth + model setup before it writes the answer.
     deadline = time.time() + 60
     answer = ""
     while time.time() < deadline:
-        time.sleep(2.0)
         after = _list_conv_dbs()
-        new_or_updated = [
-            p for p in after
-            if p.name not in before or p.stat().st_mtime > before.get(p.name, 0)
-        ]
+        new_or_updated = [p for p in after if p.name not in before or p.stat().st_mtime > before.get(p.name, 0)]
         if new_or_updated:
             latest = max(new_or_updated, key=lambda p: p.stat().st_mtime)
             answer = _extract_answer(latest)
             if answer:
                 break
+        time.sleep(2.0)
     if not answer:
         raise RuntimeError(
             f"agy produced no stdout and no parseable answer. "
@@ -323,8 +316,7 @@ def main() -> int:
     ap.add_argument(
         "--model",
         default=os.environ.get("AGY_MODEL"),
-        help="Model label, e.g. 'Gemini 3.5 Flash (Medium)'. "
-             "Defaults to $AGY_MODEL.",
+        help="Model label, e.g. 'Gemini 3.5 Flash (Medium)'. Defaults to $AGY_MODEL.",
     )
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     args = ap.parse_args()

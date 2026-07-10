@@ -32,12 +32,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    from .paths import WORKSPACE_ROOT
+except ImportError:  # pragma: no cover - direct script execution path.
+    from paths import WORKSPACE_ROOT
+
 DEFAULT_MODEL = os.environ.get("OPENCODE_MODEL", "zai-coding-plan/glm-5.2")
 DEFAULT_TIMEOUT = int(os.environ.get("OPENCODE_TIMEOUT", "600"))
 OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def opencode_complete(
@@ -66,13 +68,16 @@ def opencode_complete(
         model,
         "-f",
         str(prompt_file),
-        "--auto",
         "Complete the task described in the attached file. Write only the required code changes.",
     ]
+    if tools_policy == "full":
+        cmd.insert(-1, "--auto")
+    else:
+        cmd.insert(-1, "--pure")
 
     target_cwd = cwd
     if tools_policy == "full" and not target_cwd:
-        target_cwd = PROJECT_ROOT
+        target_cwd = WORKSPACE_ROOT
 
     try:
         proc = subprocess.run(

@@ -12,31 +12,30 @@ I have used versions of this workflow personally since January-February 2026. Th
 
 Español: [README.es.md](README.es.md)
 
-## What's New — Free HY3 Workers (July 2026)
+## HY3 Provider Routes
 
-Tencent released **Hy3** (295B Mixture-of-Experts, 21B active) for general
-availability on July 1, 2026. SWARMS now ships five free routes for running
-HY3 as parallel programmer workers — no single-vendor lock-in, no credit card
-required for the free tiers.
+SWARMS includes several configurable HY3 routes. Provider pricing, promotions,
+and account requirements can change; verify them with the provider before a
+real run.
 
 | Route | Provider | Model ID | Free? |
 |---|---|---|---|
 | `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Free tier |
 | `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Free promo |
 | `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Free variant |
-| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Gateway access |
-| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Trial credits |
+| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Provider-dependent |
+| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Paid |
 
-Run three parallel HY3 workers at zero cost:
+The bundled example plan is intentionally mock-only. For a private plan whose
+tasks explicitly use `hy3_gitlawb`, the execution shape is:
 
 ```bash
-python scripts/swarm.py run --plan docs/workflow_plan_example.json --force \
+python scripts/swarm.py run --plan path/to/hy3-plan.json --force \
   --global-max-concurrency 3 --provider-cap hy3_gitlawb=3
 ```
 
-A new **Hermes Agent** route (`hermes`) also adds a full tool-calling subagent
-with Mixture-of-Agents fallback — not a single model, but a routing agent with
-skills and self-correction.
+The **Hermes Agent** adapter can run a tool-calling subagent only after local
+configuration pins an explicit model. An unpinned route is rejected.
 
 All HY3 routes are **disabled by default** (mock stays the safe open-source
 default). Enable the ones you want in `config/swarm_router.local.json` and set
@@ -44,13 +43,13 @@ the matching API keys in your environment.
 
 ## Claude Code and GPT-5.6 Ultra-Style Workflows
 
-Claude Fable 5 can power long-running, multi-agent workflows in Claude Code by planning across stages, delegating to subagents, and checking its own work. OpenAI has also announced a new GPT-5.6 `ultra` mode built around subagents, but GPT-5.6 remains in limited preview rather than broad public availability. SWARMS targets this operating pattern from the local-first side: you choose the planner, critic, worker models, provider caps, verification commands, and token budget.
+Claude Fable 5 can power long-running, multi-agent workflows in Claude Code by planning across stages, delegating to subagents, and checking its own work. OpenAI has also announced a new GPT-5.6 `ultra` mode built around subagents, but GPT-5.6 remains in limited preview rather than broad public availability. SWARMS targets this operating pattern from the local-first side: you choose the planner, critic, worker models, provider caps, verification metadata, and token budget.
 
 Use SWARMS when you want an Ultra-style agent crew without tying the whole workflow to one vendor mode:
 
 - run everything locally until you enable real providers;
 - route planner, critic, programmer, verifier, and QA roles to different models;
-- mix OpenAI-compatible APIs, LiteLLM, Anthropic-style routes, GLM, Gemini, Codex CLI, Kilo, Aider, or local tests;
+- mix configured OpenAI-compatible APIs, GLM, Gemini, Codex CLI, Hermes, or offline mock workers;
 - keep provider caps and reports visible;
 - run Singularity when you want a long-running loop that keeps proposing, implementing, testing, and summarizing work.
 
@@ -64,8 +63,7 @@ SWARMS includes compatibility paths, wrappers, docs, routing names, or telemetry
 - GLM 5.2 through OpenCode or Z.AI-style routes.
 - Gemini 3.5 Flash through Antigravity CLI.
 - Codex CLI for premium orchestration or escalation.
-- Kilo and Aider-style worker wrappers in the worktree runner.
-- Local shell/test verification.
+- OpenAI-compatible gateway routes configured by the user.
 - Offline `mock` workers for CI, demos, and safe setup.
 - Token/cost parsing for Codex logs, OpenCode logs, stdout-like CLI usage, cache reads, cache writes, and reasoning tokens.
 - A bundled SWARMS skill in `skills/swarms/` so a user's agent can help configure plans, providers, caps, and verification.
@@ -76,7 +74,7 @@ The committed router enables only `mock`. That keeps a clone local and free. You
 
 You choose the policy:
 
-- Plans define roles, tasks, dependencies, artifacts, verification commands, and premium permissions.
+- Plans define roles, tasks, dependencies, expected artifacts, verification metadata, and premium permissions.
 - `config/role_policy.json` defines planner, critic, programmer, and verifier intent.
 - `config/swarm_router.json` is the safe local default.
 - `config/swarm_router.local.example.json` shows how to enable your own providers.
@@ -155,7 +153,7 @@ Default role intent:
 - Planner: Claude Fable can be configured as a premium planning agent. GPT-5.6 Sol is documented as a future option while access remains limited; GLM 5.2 stays the safe default.
 - Critic: GLM 5.2 first, premium review for high-risk or high-cost plans.
 - Programmer: GLM 5.2, Gemini Flash, OpenAI-compatible, LiteLLM, Kilo, Aider, or any route you configure.
-- Verifier: local tests first, cheap model review second.
+- Verifier: run deterministic tests outside the harness first, then use cheap model review.
 - Premium routes: explicit plan permission plus local config.
 
 See `docs/PROVIDER_STATUS.md`, `docs/CONFIG.md`, `docs/DYNAMIC_WORKFLOWS.md`, and `AGENTS.md`.

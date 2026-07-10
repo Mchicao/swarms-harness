@@ -11,14 +11,19 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+try:
+    from .paths import PROJECT_ROOT
+except ImportError:  # pragma: no cover - direct script execution path.
+    from paths import PROJECT_ROOT
+
 DEFAULT_ROLE_POLICY = PROJECT_ROOT / "config" / "role_policy.json"
 PREMIUM_ROUTES = {"codex", "claude", "opus", "gpt55", "gpt-5.5"}
 ALLOWED_BENCHMARK_PREFIXES = ("bench_apps/", "bench_tests/", "docs/bench_notes/")
 VALID_ROLES = {"planner", "critic", "programmer", "verifier", "docs", "backend", "qa", "debug", "general"}
+VALID_TOOLS_POLICIES = {"none", "full"}
 
 
 @dataclass
@@ -41,10 +46,16 @@ def load_json(path: Path) -> Any:
 
 def iter_tasks(plan: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     tasks: list[tuple[str, dict[str, Any]]] = []
-    for stage in plan.get("stages", []):
-        stage_name = stage.get("name", "Unnamed")
-        for task in stage.get("tasks", []):
-            tasks.append((stage_name, task))
+    stages = plan.get("stages", [])
+    if not isinstance(stages, list):
+        return tasks
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        stage_name = str(stage.get("name", "Unnamed"))
+        stage_tasks = stage.get("tasks", [])
+        if isinstance(stage_tasks, list):
+            tasks.extend((stage_name, task) for task in stage_tasks if isinstance(task, dict))
     return tasks
 
 
@@ -55,8 +66,27 @@ def is_premium_route(route: str | None) -> bool:
     return lowered in PREMIUM_ROUTES or any(marker in lowered for marker in PREMIUM_ROUTES)
 
 
-def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None) -> dict[str, Any]:
+def is_safe_repo_path(value: Any) -> bool:
+    """Return whether *value* is a normalized path below the repository root."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    return not path.is_absolute() and ":" not in normalized and ".." not in path.parts
+
+
+def review_plan(plan: Any, role_policy: dict[str, Any] | None = None) -> dict[str, Any]:
     findings: list[Finding] = []
+    if not isinstance(plan, dict):
+        finding = Finding("error", "plan_type", "Workflow plan must be a JSON object")
+        return {
+            "ok": False,
+            "errors": 1,
+            "warnings": 0,
+            "findings": [finding.to_dict()],
+            "task_count": 0,
+            "routes": {},
+        }
     role_policy = role_policy or {}
     review_policy = plan.get("review_policy", {})
     budget_policy = plan.get("budget_policy", {})
@@ -70,7 +100,11 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
     if not tasks:
         findings.append(Finding("error", "no_tasks", "Plan must include at least one task"))
 
-    max_total_workers = int(budget_policy.get("max_total_workers", len(tasks) or 0))
+    try:
+        max_total_workers = int(budget_policy.get("max_total_workers", len(tasks) or 0))
+    except (TypeError, ValueError):
+        max_total_workers = 0
+        findings.append(Finding("error", "worker_budget", "max_total_workers must be an integer"))
     if len(tasks) > max_total_workers:
         findings.append(
             Finding(
@@ -79,11 +113,14 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
         )
 
     provider_concurrency = budget_policy.get("provider_concurrency", {})
+    if not isinstance(provider_concurrency, dict):
+        provider_concurrency = {}
+        findings.append(Finding("error", "provider_capacity", "provider_concurrency must be an object"))
     task_ids: set[str] = set()
     task_routes: dict[str, str] = {}
     for stage_name, task in tasks:
         task_id = task.get("id")
-        if not task_id:
+        if not isinstance(task_id, str) or not task_id.strip():
             findings.append(Finding("error", "missing_task_id", f"Task in stage {stage_name!r} is missing id"))
             continue
         if task_id in task_ids:
@@ -91,10 +128,16 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
         task_ids.add(task_id)
         role = task.get("role", "general")
         route = task.get("route", "mock")
+        if not isinstance(route, str) or not route:
+            findings.append(Finding("error", "invalid_route", f"Invalid route {route!r}", task_id))
+            route = ""
         task_routes[task_id] = route
 
-        if role not in VALID_ROLES:
+        if not isinstance(role, str) or role not in VALID_ROLES:
             findings.append(Finding("error", "invalid_role", f"Invalid role {role!r}", task_id))
+        tools_policy = task.get("tools_policy", "none")
+        if not isinstance(tools_policy, str) or tools_policy not in VALID_TOOLS_POLICIES:
+            findings.append(Finding("error", "invalid_tools_policy", f"Invalid tools_policy {tools_policy!r}", task_id))
         if is_premium_route(route) and not premium_allowed:
             findings.append(
                 Finding(
@@ -104,13 +147,22 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
                     task_id,
                 )
             )
-        if provider_concurrency and int(provider_concurrency.get(route, 0)) <= 0:
-            findings.append(
-                Finding("error", "provider_capacity", f"Route {route!r} has zero provider_concurrency", task_id)
-            )
-        if not task.get("task"):
+        if provider_concurrency:
+            try:
+                route_capacity = int(provider_concurrency.get(route, 0))
+            except (TypeError, ValueError):
+                route_capacity = 0
+            if route_capacity <= 0:
+                findings.append(
+                    Finding("error", "provider_capacity", f"Route {route!r} has zero provider_concurrency", task_id)
+                )
+        task_text = task.get("task")
+        if not isinstance(task_text, str) or not task_text.strip():
             findings.append(Finding("error", "missing_task_text", "Task must include task text", task_id))
         artifacts = task.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            artifacts = []
+            findings.append(Finding("error", "invalid_artifacts", "Task artifacts must be a list", task_id))
         if not artifacts and role in {"programmer", "verifier", "backend", "qa"}:
             findings.append(
                 Finding(
@@ -122,7 +174,7 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
             )
         for artifact in artifacts:
             normalized = str(artifact).replace("\\", "/")
-            if normalized.startswith("../") or normalized.startswith("/") or ":" in normalized:
+            if not is_safe_repo_path(artifact):
                 findings.append(
                     Finding("error", "unsafe_artifact_path", f"Artifact path is not repo-relative: {artifact}", task_id)
                 )
@@ -145,8 +197,12 @@ def review_plan(plan: dict[str, Any], role_policy: dict[str, Any] | None = None)
 
     for _, task in tasks:
         task_id = task.get("id")
-        for dep in task.get("needs", []):
-            if dep not in task_ids:
+        needs = task.get("needs", [])
+        if not isinstance(needs, list):
+            findings.append(Finding("error", "invalid_dependencies", "Task needs must be a list", task_id))
+            continue
+        for dep in needs:
+            if not isinstance(dep, str) or dep not in task_ids:
                 findings.append(
                     Finding("error", "missing_dependency", f"Dependency {dep!r} does not match any task id", task_id)
                 )

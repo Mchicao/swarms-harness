@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -45,12 +46,20 @@ DEFAULT_TIMEOUT = int(os.environ.get("OPENAI_COMPAT_TIMEOUT", "300"))
 
 
 def _resolve_base_url(base_url_env: str, base_url: str | None) -> str:
-    """Env var wins, then explicit flag, then the OpenRouter fallback."""
-    if base_url_env and os.environ.get(base_url_env):
-        return os.environ[base_url_env].rstrip("/")
+    """Resolve and validate the endpoint without risking credential downgrade."""
     if base_url:
-        return base_url.rstrip("/")
-    return DEFAULT_BASE_URL_FALLBACK
+        value = base_url
+    elif base_url_env and os.environ.get(base_url_env):
+        value = os.environ[base_url_env]
+    else:
+        value = DEFAULT_BASE_URL_FALLBACK
+
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError(f"Invalid provider base URL: {value!r}")
+    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Provider base URL must use HTTPS unless it targets loopback")
+    return value.rstrip("/")
 
 
 def openai_compat_complete(
@@ -71,7 +80,10 @@ def openai_compat_complete(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a focused coding worker. Implement exactly what the user asks. Output only the required code or a concise result."},
+            {
+                "role": "system",
+                "content": "You are a focused coding worker. Implement exactly what the user asks. Output only the required code or a concise result.",
+            },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
@@ -94,9 +106,7 @@ def openai_compat_complete(
             detail = exc.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        raise RuntimeError(
-            f"HTTP {exc.code} from {url}: {detail or exc.reason}"
-        ) from exc
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {detail or exc.reason}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Network error calling {url}: {exc.reason}") from exc
 
@@ -116,36 +126,42 @@ def openai_compat_complete(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="SWARMS worker for any OpenAI-compatible chat-completions endpoint."
-    )
+    parser = argparse.ArgumentParser(description="SWARMS worker for any OpenAI-compatible chat-completions endpoint.")
     parser.add_argument("--prompt", type=Path, required=True, help="Path to prompt file.")
     parser.add_argument("--status", type=Path, default=None, help="Optional status output path.")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    parser.add_argument("--tools-policy", default="none", choices=["none", "full"],
-                        help="Accepted for contract compatibility; this worker never grants tools.")
-    parser.add_argument("--base-url-env", default=DEFAULT_BASE_URL_ENV,
-                        help="Env var name holding the base URL (e.g. OPENROUTER_BASE_URL).")
-    parser.add_argument("--key-env", default=DEFAULT_KEY_ENV,
-                        help="Env var name holding the API key (e.g. OPENROUTER_API_KEY).")
-    parser.add_argument("--base-url", default=None,
-                        help="Base URL override (local testing); env var and fallback are ignored when set.")
+    parser.add_argument(
+        "--tools-policy",
+        default="none",
+        choices=["none", "full"],
+        help="Accepted for contract compatibility; this worker never grants tools.",
+    )
+    parser.add_argument(
+        "--base-url-env",
+        default=DEFAULT_BASE_URL_ENV,
+        help="Env var name holding the base URL (e.g. OPENROUTER_BASE_URL).",
+    )
+    parser.add_argument(
+        "--key-env", default=DEFAULT_KEY_ENV, help="Env var name holding the API key (e.g. OPENROUTER_API_KEY)."
+    )
+    parser.add_argument(
+        "--base-url", default=None, help="Base URL override (local testing); env var and fallback are ignored when set."
+    )
     args = parser.parse_args(argv)
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
 
     api_key = os.environ.get(args.key_env, "")
     if not api_key:
-        msg = (f"Missing API key: set ${args.key_env}. No real provider call was made.")
+        msg = f"Missing API key: set ${args.key_env}. No real provider call was made."
         print(f"[openai_compat_worker] ERROR: {msg}", file=sys.stderr)
         if args.status:
             args.status.write_text(json.dumps({"success": False, "error": msg}), encoding="utf-8")
         return 2
 
-    base_url = _resolve_base_url(args.base_url_env, args.base_url)
-
     try:
+        base_url = _resolve_base_url(args.base_url_env, args.base_url)
         output = openai_compat_complete(
             prompt,
             model=args.model,
@@ -156,8 +172,15 @@ def main(argv: list[str] | None = None) -> int:
         print(output)
         if args.status:
             args.status.write_text(
-                json.dumps({"success": True, "provider": "openai_compat", "model": args.model,
-                            "base_url": base_url, "key_env": args.key_env}),
+                json.dumps(
+                    {
+                        "success": True,
+                        "provider": "openai_compat",
+                        "model": args.model,
+                        "base_url": base_url,
+                        "key_env": args.key_env,
+                    }
+                ),
                 encoding="utf-8",
             )
         return 0

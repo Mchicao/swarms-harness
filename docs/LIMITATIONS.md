@@ -8,6 +8,8 @@ SWARMS is a personal workflow released publicly. The offline path is the safest 
 - Static plan review catches missing goals, missing task ids, duplicate ids, unsafe artifact paths, missing dependencies, blocked premium routes, and zero provider capacity.
 - The deterministic runtime can execute dependency-aware task waves.
 - Provider caps and global concurrency are enforced for the runtime scheduler.
+- Real routes must exist and be enabled in the selected router config.
+- `tools_policy=none` does not add permission-bypass flags; AGY also uses its sandbox flag.
 - The offline `mock` worker supports tests, demos, and CI without credentials.
 - Reports are written under `.agent/`, which is ignored by Git.
 
@@ -23,6 +25,7 @@ SWARMS is a personal workflow released publicly. The offline path is the safest 
 
 - It does not sandbox real providers.
 - It does not prevent a configured coding CLI from editing files unless the adapter enforces that behavior.
+- It does not yet execute task `verify` metadata or enforce the artifact allowlist against the final diff.
 - It does not guarantee token savings for every task.
 - It does not guarantee that cheap workers produce acceptable code.
 - It does not replace human review for security-sensitive changes.

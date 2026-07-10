@@ -2,7 +2,9 @@ import json
 import time
 from pathlib import Path
 
-from scripts.workflow_runtime import ClaimStore, WorkflowRuntime, WorkflowTask
+import pytest
+
+from scripts.workflow_runtime import ClaimStore, WorkflowRuntime, WorkflowTask, parse_provider_caps
 
 
 def test_workflow_plan_is_deterministic(tmp_path):
@@ -66,6 +68,195 @@ def test_force_reinitialization_removes_stale_task_files(tmp_path):
     assert len(runtime.load_tasks()) == 5
 
 
+@pytest.mark.parametrize("run_id", ["..", ".", "../victim", "..\\victim", "nested/run"])
+def test_run_id_cannot_escape_run_root(tmp_path, run_id):
+    sentinel = tmp_path / "victim" / "keep.txt"
+    sentinel.parent.mkdir()
+    sentinel.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsafe run_id"):
+        WorkflowRuntime(run_id=run_id, run_root=tmp_path)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_provider_cap_is_reserved_within_ready_wave(tmp_path):
+    runtime = WorkflowRuntime(
+        run_id="caps",
+        run_root=tmp_path,
+        global_max_concurrency=4,
+        provider_max_concurrency={"glm52": 1},
+    )
+    tasks = [
+        WorkflowTask(
+            task_id=f"000{index}-task-{index}",
+            source_id=f"task-{index}",
+            stage="Work",
+            index=index,
+            text="[programmer] Work",
+            role="programmer",
+            route="glm52",
+            provider="opencode",
+        )
+        for index in range(3)
+    ]
+
+    assert len(runtime.ready_tasks(tasks)) == 1
+
+
+def test_antigravity_concurrency_is_clamped_until_responses_can_be_correlated(tmp_path):
+    runtime = WorkflowRuntime(
+        run_id="agy-cap",
+        run_root=tmp_path,
+        provider_max_concurrency={"gemini_flash": 3},
+    )
+
+    assert runtime.provider_max_concurrency["gemini_flash"] == 1
+
+
+def test_negative_provider_cap_is_rejected():
+    with pytest.raises(ValueError, match="cannot be negative"):
+        parse_provider_caps(["mock=-1"])
+
+
+def test_plan_dependencies_match_source_id_exactly(tmp_path):
+    runtime = WorkflowRuntime(run_id="exact-deps", run_root=tmp_path)
+    auth = WorkflowTask(
+        task_id="0000-auth",
+        source_id="auth",
+        stage="Work",
+        index=0,
+        text="[programmer] Auth",
+        role="programmer",
+    )
+    authz = WorkflowTask(
+        task_id="0001-authz",
+        source_id="authz",
+        stage="Work",
+        index=1,
+        text="[programmer] Authz",
+        role="programmer",
+        status="completed",
+    )
+    consumer = WorkflowTask(
+        task_id="0002-consumer",
+        source_id="consumer",
+        stage="Work",
+        index=2,
+        text="[qa] Verify",
+        role="qa",
+        needs=["auth"],
+    )
+
+    assert not runtime.dependency_satisfied(consumer, [auth, authz, consumer])
+    auth.status = "completed"
+    assert runtime.dependency_satisfied(consumer, [auth, authz, consumer])
+
+
+def test_interrupted_tasks_become_blocked_instead_of_spinning(tmp_path):
+    runtime = WorkflowRuntime(run_id="resume", run_root=tmp_path)
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+    tasks[0].status = "queued"
+    runtime.save_task(tasks[0])
+
+    resumed = WorkflowRuntime(run_id="resume", run_root=tmp_path)
+    report = resumed.run("micro-reshard-roundtrip", dry_run=True)
+
+    assert report["task_counts"]["blocked"] == 1
+
+
+def test_future_exception_is_persisted_as_failed_result(tmp_path, monkeypatch):
+    runtime = WorkflowRuntime(
+        run_id="future-error",
+        run_root=tmp_path,
+        global_max_concurrency=1,
+        provider_max_concurrency={"mock": 1},
+    )
+
+    def fail_task(*_args, **_kwargs):
+        raise RuntimeError("worker crashed")
+
+    monkeypatch.setattr(runtime, "run_task", fail_task)
+
+    report = runtime.run("micro-reshard-roundtrip", force=True)
+
+    assert report["status"] == "failed"
+    assert report["results"][0]["returncode"] == 70
+    assert "worker crashed" in report["results"][0]["error"]
+
+
+def test_runtime_refuses_disabled_route_before_worker_dispatch(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Review",
+                        "tasks": [
+                            {
+                                "id": "review",
+                                "role": "critic",
+                                "route": "glm52",
+                                "task": "Review only.",
+                                "needs": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = WorkflowRuntime(
+        workflow_plan=plan_path,
+        run_id="disabled",
+        run_root=tmp_path / "runs",
+        router_config=Path("config/swarm_router.json"),
+        provider_max_concurrency={"glm52": 1},
+    )
+
+    with pytest.raises(ValueError, match="Routes are disabled"):
+        runtime.run(force=True)
+
+    assert not runtime.results_dir.exists()
+
+
+def test_runtime_uses_router_config_as_route_source(tmp_path):
+    config = json.loads(Path("config/swarm_router.json").read_text(encoding="utf-8"))
+    config["providers"]["glm52"]["model"] = "custom/glm"
+    config_path = tmp_path / "router.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Review",
+                        "tasks": [
+                            {
+                                "id": "review",
+                                "role": "critic",
+                                "route": "glm52",
+                                "task": "Review only.",
+                                "needs": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = WorkflowRuntime(
+        workflow_plan=plan_path, run_id="configured", run_root=tmp_path, router_config=config_path
+    )
+
+    assert runtime.build_tasks_from_plan(plan_path)[0].model == "custom/glm"
+
+
 def test_mock_workflow_executes_dependency_waves(tmp_path):
     runtime = WorkflowRuntime(
         run_id="mock-run",
@@ -112,7 +303,7 @@ def test_gemini_route_dispatches_to_agy_low_worker(tmp_path):
     command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
 
     assert task.model == "Gemini 3.5 Flash (Low)"
-    assert Path(command[1]).name == "gemini_worker.py"
+    assert command[1:3] == ["-m", "scripts.gemini_worker"]
     assert command[command.index("--model") + 1] == "Gemini 3.5 Flash (Low)"
     assert command[command.index("--tools-policy") + 1] == "none"
 
@@ -148,7 +339,7 @@ def test_glm52_route_uses_installed_opencode_model_identifier(tmp_path):
 
     assert task.provider == "opencode"
     assert task.model == "zai-coding-plan/glm-5.2"
-    assert Path(command[1]).name == "opencode_worker.py"
+    assert command[1:3] == ["-m", "scripts.opencode_worker"]
     assert command[command.index("--model") + 1] == "zai-coding-plan/glm-5.2"
 
 
@@ -230,7 +421,7 @@ def test_hy3_openrouter_route_dispatches_to_openai_compat_worker(tmp_path):
 
     assert task.provider == "openrouter"
     assert task.model == "tencent/hy3:free"
-    assert Path(command[1]).name == "openai_compat_worker.py"
+    assert command[1:3] == ["-m", "scripts.openai_compat_worker"]
     assert command[command.index("--model") + 1] == "tencent/hy3:free"
     # The runtime must inject the provider's key env var so the worker reads
     # the right secret without hardcoding it anywhere in the repo.
@@ -286,7 +477,7 @@ def test_hy3_gitlawb_route_dispatches_to_openai_compat_worker(tmp_path):
 
     assert task.provider == "gitlawb"
     assert task.model == "tencent/hy3"
-    assert Path(command[1]).name == "openai_compat_worker.py"
+    assert command[1:3] == ["-m", "scripts.openai_compat_worker"]
     assert command[command.index("--key-env") + 1] == "GITLAWB_API_KEY"
     assert command[command.index("--base-url-env") + 1] == "GITLAWB_BASE_URL"
 
@@ -324,13 +515,13 @@ def test_hy3_opencode_route_reuses_existing_opencode_worker(tmp_path):
     assert task.model == "opencode/hy3-free"
     # Reuses the existing opencode worker (auth handled by OpenCode's store,
     # no env-var-key injection needed).
-    assert Path(command[1]).name == "opencode_worker.py"
+    assert command[1:3] == ["-m", "scripts.opencode_worker"]
     assert command[command.index("--model") + 1] == "opencode/hy3-free"
     assert "--key-env" not in command
     assert "--base-url-env" not in command
 
 
-def test_hermes_route_dispatches_to_hermes_worker(tmp_path):
+def test_hermes_route_requires_an_explicit_model(tmp_path):
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(
         json.dumps(
@@ -356,19 +547,9 @@ def test_hermes_route_dispatches_to_hermes_worker(tmp_path):
         encoding="utf-8",
     )
     runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="hermes", run_root=tmp_path)
-    task = runtime.build_tasks_from_plan(plan_path)[0]
-    command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
 
-    assert task.provider == "hermes"
-    assert task.wrapper == "hermes"
-    assert Path(command[1]).name == "hermes_worker.py"
-    # Hermes is a routing agent — no OpenAI-compat env-var injection.
-    assert "--key-env" not in command
-    assert "--base-url-env" not in command
-    # tools-policy is still passed through the standard contract.
-    assert command[command.index("--tools-policy") + 1] == "full"
-    # The plain hermes route has empty model — no --provider injection needed.
-    assert "--provider" not in command
+    with pytest.raises(ValueError, match="pin an explicit model"):
+        runtime.build_tasks_from_plan(plan_path)
 
 
 def test_hy3_hermes_route_forces_free_model_and_nous_provider(tmp_path):
@@ -404,7 +585,7 @@ def test_hy3_hermes_route_forces_free_model_and_nous_provider(tmp_path):
     command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
 
     assert task.model == "tencent/hy3:free"
-    assert Path(command[1]).name == "hermes_worker.py"
+    assert command[1:3] == ["-m", "scripts.hermes_worker"]
     assert command[command.index("--model") + 1] == "tencent/hy3:free"
     # CRITICAL: --provider nous MUST be injected so Hermes uses the Nous Portal
     # free tier (tencent/hy3:free is $0 there), not its paid glm-5.2 default.
