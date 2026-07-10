@@ -38,6 +38,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+rust/target/
 
 *.log
 *.jsonl

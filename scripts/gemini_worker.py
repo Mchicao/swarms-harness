@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # Import the existing agy_call wrapper from the same scripts/ directory.
@@ -49,20 +50,23 @@ def gemini_complete(
     If tools_policy is 'none', runs the agy call in a temporary clean directory
     to prevent it from loading workspace-level AGENTS.md rules.
     """
+    kwargs = {"model": model, "timeout": timeout}
     if tools_policy == "full":
-        return agy_complete(prompt, model=model, timeout=timeout, skip_permissions=True, sandbox=False)
+        kwargs.update(skip_permissions=True, sandbox=False)
+        return agy_complete(prompt, **kwargs)
 
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="swarms_gemini_") as tmp_dir:
-        return agy_complete(
-            prompt,
-            model=model,
-            timeout=timeout,
-            skip_permissions=False,
-            sandbox=True,
-            cwd=tmp_dir,
-        )
+        kwargs.update(skip_permissions=False, sandbox=True, cwd=tmp_dir)
+        for attempt in range(2):
+            try:
+                return agy_complete(prompt, **kwargs)
+            except RecursionError:
+                if attempt:
+                    raise
+                time.sleep(2)
+    raise AssertionError("unreachable")
 
 
 def main() -> int:

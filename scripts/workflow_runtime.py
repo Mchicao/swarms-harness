@@ -37,6 +37,7 @@ WORKER_SCRIPTS = {
     "mock": "mock_worker.py",
     "gemini": "gemini_worker.py",
     "opencode": "opencode_worker.py",
+    "kilo": "kilo_worker.py",
     "codex": "codex_worker.py",
     "openai_compat": "openai_compat_worker.py",
     "hermes": "hermes_worker.py",
@@ -82,9 +83,18 @@ def read_text_tail(path: Path, max_bytes: int = 8_000) -> str:
 
 def write_json_atomic(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    for attempt in range(5):
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(path)
+            return
+        except PermissionError:
+            tmp.unlink(missing_ok=True)
+            if attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def parse_role(task_text: str) -> tuple[str, str]:
@@ -483,6 +493,8 @@ class WorkflowRuntime:
             key_env = OPENAI_COMPAT_KEY_ENV.get(task.provider, "OPENAI_COMPAT_API_KEY")
             base_url_env = f"{task.provider.upper()}_BASE_URL"
             command.extend(["--key-env", key_env, "--base-url-env", base_url_env])
+            if task.provider == "gitlawb":
+                command.extend(["--base-url", "https://opengateway.gitlawb.com/v1"])
         # For hermes routes that carry a HY3 model, force --provider nous so
         # Hermes uses the Nous Portal free tier (tencent/hy3:free is $0 there),
         # not its paid glm-5.2 Z.AI default.

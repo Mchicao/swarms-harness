@@ -134,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             yolo=args.tools_policy == "full",
         )
-        print(output)
+        sys.stdout.buffer.write(output.encode("utf-8", errors="replace") + b"\n")
         if args.status:
             args.status.write_text(
                 json.dumps({"success": True, "provider": "hermes", "model": args.model or "(hermes-default)"}),

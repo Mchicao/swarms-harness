@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import workflow_runtime
 from scripts.workflow_runtime import ClaimStore, WorkflowRuntime, WorkflowTask, parse_provider_caps
 
 
@@ -519,6 +520,91 @@ def test_hy3_opencode_route_reuses_existing_opencode_worker(tmp_path):
     assert command[command.index("--model") + 1] == "opencode/hy3-free"
     assert "--key-env" not in command
     assert "--base-url-env" not in command
+
+
+def test_hy3_kilo_route_uses_kilo_cli_worker(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Implement",
+                        "tasks": [
+                            {
+                                "id": "impl",
+                                "role": "programmer",
+                                "route": "hy3_kilo",
+                                "task": "Add a helper function.",
+                                "artifacts": [],
+                                "needs": [],
+                                "tools_policy": "none",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="kilo", run_root=tmp_path)
+    task = runtime.build_tasks_from_plan(plan_path)[0]
+    command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
+
+    assert task.provider == "kilo_cli"
+    assert task.model == "kilo/tencent/hy3:free"
+    assert command[1:3] == ["-m", "scripts.kilo_worker"]
+
+
+def test_gitlawb_route_uses_its_gateway_default(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "name": "Review",
+                        "tasks": [
+                            {
+                                "id": "review",
+                                "route": "hy3_gitlawb",
+                                "task": "Return OK.",
+                                "artifacts": [],
+                                "needs": [],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="gitlawb", run_root=tmp_path)
+    task = runtime.build_tasks_from_plan(plan_path)[0]
+    command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
+
+    assert command[-2:] == ["--base-url", "https://opengateway.gitlawb.com/v1"]
+
+
+def test_write_json_atomic_retries_transient_windows_file_locks(tmp_path, monkeypatch):
+    target = tmp_path / "task.json"
+    original_replace = Path.replace
+    attempts = 0
+
+    def flaky_replace(self, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("locked")
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr(workflow_runtime.time, "sleep", lambda _seconds: None)
+
+    workflow_runtime.write_json_atomic(target, {"status": "completed"})
+
+    assert attempts == 2
+    assert json.loads(target.read_text(encoding="utf-8")) == {"status": "completed"}
 
 
 def test_hermes_route_requires_an_explicit_model(tmp_path):

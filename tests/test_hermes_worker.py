@@ -101,6 +101,15 @@ def test_main_writes_status_success(tmp_path, monkeypatch):
     assert data["provider"] == "hermes"
 
 
+def test_main_writes_unicode_output_as_utf8(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(worker.subprocess, "run", lambda cmd, **k: _FakeProc(stdout="resultado →"))
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("task", encoding="utf-8")
+
+    assert worker.main(["--prompt", str(prompt)]) == 0
+    assert "resultado →" in capsys.readouterr().out
+
+
 def test_main_writes_status_failure_on_error(tmp_path, monkeypatch):
     def boom(cmd, **k):
         return _FakeProc(stdout="", stderr="err", returncode=2)

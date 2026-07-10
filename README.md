@@ -23,7 +23,8 @@ real run.
 | `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Free tier |
 | `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Free promo |
 | `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Free variant |
-| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Provider-dependent |
+| `hy3_kilo` | Kilo CLI | `kilo/tencent/hy3:free` | Free tier |
+| `hy3_hermes` | Hermes / Nous Portal | `tencent/hy3:free` | Free tier |
 | `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Paid |
 
 The bundled example plan is intentionally mock-only. For a private plan whose
@@ -88,6 +89,17 @@ Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms
 ```
 
 After that, an agent can inspect your local provider setup, draft a plan, review it, and run the offline validation path before you enable real routes.
+
+## Rust Coordinator
+
+Workflow plans can use the lower-overhead Rust coordinator on Windows, macOS, and Linux. It keeps provider authentication in the existing local CLI adapters.
+
+```powershell
+cargo run --release --manifest-path rust/Cargo.toml -- doctor
+cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```
+
+See `docs/RUST_RUNTIME.md` for the full flow. Python remains available for legacy benchmark and telemetry compatibility.
 
 ## Quick Start
 

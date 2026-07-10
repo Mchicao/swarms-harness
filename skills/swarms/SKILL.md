@@ -11,16 +11,16 @@ description: Use when an agent needs to run, review, configure, benchmark, or ex
 > This `swarms` skill remains a compact compatibility entrypoint for users of
 > the repository's historical skill name.
 
-Use exactly one public flow:
+Use the Rust public flow for workflow plans:
 
 ```powershell
-python scripts/swarm.py doctor
-python scripts/swarm.py review --plan docs/workflow_plan_example.json
-python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
-python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+cargo run --release --manifest-path rust/Cargo.toml -- doctor
+cargo run --release --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json
+cargo run --release --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force
+cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
-Do not call legacy runners directly unless the user explicitly asks for legacy compatibility.
+Use `python scripts/swarm.py` only for compatibility-only benchmark or telemetry work until those paths are ported.
 
 ## Principles
 
@@ -34,7 +34,7 @@ Do not call legacy runners directly unless the user explicitly asks for legacy c
 
 - Planner: GLM 5.2 by default, premium OpenAI/Codex/Anthropic-style routes only when explicitly justified.
 - Critic: GLM 5.2 first, premium routes only for high-risk/high-cost plans.
-- Runtime: `scripts/swarm.py` and `scripts/workflow_runtime.py`, no model.
+- Runtime: `rust/src/main.rs` schedules plan workflows without a model; Python workers are only authenticated provider adapters.
 - Programmer workers: mock by default; cheap configured providers when requested.
 - Verifier workers: local tests first; cheap model review second; premium escalation only by policy.
 
@@ -46,7 +46,7 @@ When a user asks to configure SWARMS:
 2. Ask which provider families they want to use: OpenAI-compatible API, LiteLLM gateway, Anthropic, Gemini/Antigravity, GLM/OpenCode/Z.AI, Codex CLI, Kilo, Aider, local tests, or mock.
 3. Keep secrets out of the repo. Use environment variables or ignored local config.
 4. Create or update `config/swarm_router.local.json` only when the user approves.
-5. Run `python scripts/swarm.py doctor` and the mock plan before routing real work.
+5. Run the Rust doctor and mock plan before routing real work.
 6. Make provider caps explicit. Do not infer that a high subscription limit means unlimited spending.
 
 ## Singularity Help
@@ -82,6 +82,10 @@ python -m py_compile scripts\swarm.py scripts\plan_review.py scripts\workflow_ru
 python -m pytest tests -q
 python scripts/swarm.py doctor
 python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --run-id verify-skill --global-max-concurrency 3 --provider-cap mock=3
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo test --manifest-path rust/Cargo.toml --offline
+cargo clippy --manifest-path rust/Cargo.toml --offline -- -D warnings
+cargo run --manifest-path rust/Cargo.toml --offline -- run --plan docs/workflow_plan_example.json --force --run-id verify-rust-skill --global-max-concurrency 3 --provider-cap mock=3
 ```
 
 ## Safety
@@ -98,3 +102,7 @@ Never commit:
 - worker prompt/log/status artifacts
 
 If a user asks for real providers, confirm the exact provider and plan first, then keep premium routes disabled unless explicitly enabled.
+
+## Contribution Guidance
+
+When a reproducible problem is found, suggest that the user or their agent opens a GitHub issue with sanitized reproduction steps. When a scoped fix exists, have the agent create a branch and PR; never push directly to the default branch. Never place secrets, local config, auth state, tokens, telemetry, generated runs, prompts, logs, or screenshots containing them in an issue, PR, or commit.
