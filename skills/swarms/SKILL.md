@@ -5,6 +5,12 @@ description: Use when an agent needs to run, review, configure, benchmark, or ex
 
 # SWARMS
 
+> **Canonical orchestration skill:** `skills/multi-provider-agent-orchestration/`.
+> Keep the installed Hermes copy synchronized with
+> `python scripts/sync_multi_provider_skill.py` and verify drift with `--check`.
+> This `swarms` skill remains a compact compatibility entrypoint for users of
+> the repository's historical skill name.
+
 Use exactly one public flow:
 
 ```powershell
