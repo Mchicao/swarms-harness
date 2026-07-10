@@ -23,7 +23,8 @@ una ejecución real.
 | `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Tier gratis |
 | `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Promo gratis |
 | `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Variante gratis |
-| `hy3_kilo` | Kilo AI Gateway | `tencent/hy3` | Depende del proveedor |
+| `hy3_kilo` | Kilo CLI | `kilo/tencent/hy3:free` | Tier gratis |
+| `hy3_hermes` | Hermes / Nous Portal | `tencent/hy3:free` | Tier gratis |
 | `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | De pago |
 
 El plan de ejemplo incluido usa solo `mock`. Para un plan privado cuyas tareas
@@ -90,6 +91,17 @@ Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms
 ```
 
 Despues de eso, un agente puede revisar tu setup local, crear un plan, revisarlo y correr la validacion offline antes de que habilites rutas reales.
+
+## Coordinador Rust
+
+Los workflow plans pueden usar el coordinador Rust de menor consumo en Windows, macOS y Linux. La autenticación de proveedores sigue en los adaptadores CLI locales existentes.
+
+```powershell
+cargo run --release --manifest-path rust/Cargo.toml -- doctor
+cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```
+
+El flujo completo está en `docs/RUST_RUNTIME.md`. Python sigue disponible para compatibilidad de benchmarks y telemetría heredados.
 
 ## Inicio Rapido
 

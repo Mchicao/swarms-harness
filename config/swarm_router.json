@@ -149,19 +149,19 @@
       "weaknesses": ["vision", "paid per-token (no free variant)", "capital-H model id quirk"]
     },
     "hy3_kilo": {
-      "_doc": "Tencent HY3 via Kilo AI Gateway (api.kilo.ai/api/gateway). OpenAI-compatible. Set the Kilo credential env var and enable in config/swarm_router.local.json.",
+      "_doc": "Tencent HY3 free route through the locally authenticated Kilo CLI. Enable it only in config/swarm_router.local.json.",
       "enabled": false,
-      "provider": "kilo",
-      "model": "tencent/hy3",
+      "provider": "kilo_cli",
+      "model": "kilo/tencent/hy3:free",
       "canonical_model": "hy3",
-      "wrapper": "openai_compat",
-      "health_key": "kilo",
+      "wrapper": "kilo",
+      "health_key": "kilo_cli",
       "metric_key": "hy3_kilo",
-      "relative_cost": 0.05,
+      "relative_cost": 0.0,
       "quality": 0.72,
-      "scarcity": 0.10,
+      "scarcity": 0.05,
       "strengths": ["backend", "frontend", "refactor", "debug", "tests", "agentic"],
-      "weaknesses": ["vision", "newer gateway"]
+      "weaknesses": ["vision", "free-tier rate limits"]
     },
     "hy3_opencode": {
       "_doc": "Tencent HY3 via OpenCode Zen free tier (model opencode/hy3-free). Reuses the opencode_worker; auth handled by OpenCode's own store, no extra env vars. Simplest HY3 route.",

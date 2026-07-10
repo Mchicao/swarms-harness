@@ -1,3 +1,4 @@
-display_name: SWARMS
-short_description: Run and maintain the quota-saving SWARMS worktree orchestrator.
-default_prompt: Use SWARMS safely: keep mock defaults, protect expensive model quota, validate with doctor/tests, and only run real providers when explicitly requested.
+interface:
+  display_name: "SWARMS"
+  short_description: "Safely run and maintain SWARMS workflows."
+  default_prompt: "Use $swarms to run a safe Rust SWARMS workflow and validate it."
