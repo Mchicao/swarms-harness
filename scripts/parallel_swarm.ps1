@@ -920,7 +920,8 @@ $taskRaw
                 } elseif ($provider.Wrapper -eq "kilo") {
                     $execLine = "kilo run -m $($provider.Model) --auto -f prompt.txt '$(Get-Content $promptPath -Raw)' 2>&1 | Tee-Object -FilePath '$outputLog'"
                 } elseif ($provider.Wrapper -eq "codex") {
-                    $execLine = "`$promptText = Get-Content prompt.txt -Raw; & `"$env:USERPROFILE\.bun\bin\codex.exe`" exec --full-auto -o '.agent_codex_out.txt' --json `$promptText 2>&1 | Tee-Object -FilePath '$outputLog'"
+                    # SWARMS-CODEX-002: -a es global y debe preceder a exec.
+                    $execLine = "`$promptText = Get-Content prompt.txt -Raw; & codex -a never exec -o '.agent_codex_out.txt' --json `$promptText 2>&1 | Tee-Object -FilePath '$outputLog'"
                 } elseif ($provider.Wrapper -eq "zai_clean") {
                     # Execute clean endpoint using a quick Python script helper with official thinking parameters
                     $apiKeyLine = "if (-not `$env:ZAI_API_KEY) { throw 'ZAI_API_KEY must be set in the environment before running this worker.' }"

@@ -10,6 +10,7 @@ config/swarm_limits.yaml
 config/swarm_tasks.md
 
 .agent/
+logs/
 .cache/
 .swarm_worktrees/
 **/.swarm_worktrees/

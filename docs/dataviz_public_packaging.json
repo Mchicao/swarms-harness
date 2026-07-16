@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "goal": "Cerrar el paquete reproducible público de Gate 0 sin declarar fidelidad visual ni introducir datos privados.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 2, "global_max_concurrency": 2, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 2, "claude": 0}},
+  "default_timeout_seconds": 900,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Paquetes públicos independientes",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "public_cli_package",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Audita el CLI público existente y prepara el paquete mínimo reproducible para demos sintéticas. Lee README.md, Demos/README.md, pyproject.toml, scripts/migrate.py, core/validation/validate_pbip_output.py y Docs/swarm/migrator_baseline.md. Sólo puedes escribir scripts/package_public_demo.py, tests/test_public_package.py y docs/guides/PUBLIC_DEMO_PACKAGE.md; no toques contratos, trackers, core ni datos. Implementa un empaquetador/manifestador determinista que excluya secretos y archivos de cliente, documenta comandos uv reproducibles y prueba con fixtures sintéticos existentes. Si el alcance no puede cerrarse sin inventar un comportamiento, deja un reporte claro en docs/guides/PUBLIC_DEMO_PACKAGE.md. Ejecuta la prueba dirigida y Ruff sobre tus archivos.",
+          "artifacts": ["scripts/package_public_demo.py", "tests/test_public_package.py", "docs/guides/PUBLIC_DEMO_PACKAGE.md"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["uv run pytest -q --basetemp .cache/pytest-public-package tests/test_public_package.py", "uv run ruff check scripts/package_public_demo.py tests/test_public_package.py"]
+        },
+        {
+          "id": "container_package_audit",
+          "role": "critic",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Audita la factibilidad del paquete OCI/Docker para la demo pública sin ejecutar cambios de sistema. Lee pyproject.toml, README.md, apps/dataviz_service, Docs/architecture/SAAS_FOUNDATION_LOCAL.md y Docs/swarm/saas_foundation_review.md. Sólo puedes escribir docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md y docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json. Registra herramientas realmente disponibles, dependencias del servicio, riesgos de incluir datos o credenciales y el conjunto mínimo de pasos reproducibles. No crees Dockerfile ni declares que Docker funciona si no está instalado; distingue auditado, pendiente y bloqueado. Ejecuta validación JSON y git diff --check sobre tus artefactos.",
+          "artifacts": ["docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md", "docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["python -m json.tool docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json", "git diff --check -- docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json"]
+        }
+      ]
+    }
+  ]
+}

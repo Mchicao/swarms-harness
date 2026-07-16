@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from scripts import gemini_worker
 
 
@@ -25,9 +27,12 @@ def test_gemini_full_policy_explicitly_allows_permission_bypass(monkeypatch):
 
     monkeypatch.setattr(gemini_worker, "agy_complete", fake_complete)
 
-    assert gemini_worker.gemini_complete("Implement", tools_policy="full") == "DONE"
+    # SWARMS-004: Gemini debe operar en el repositorio objetivo declarado.
+    workspace = Path("C:/Proyectos/Migrador")
+    assert gemini_worker.gemini_complete("Implement", tools_policy="full", cwd=workspace) == "DONE"
     assert captured["skip_permissions"] is True
     assert captured["sandbox"] is False
+    assert captured["cwd"] == workspace
 
 
 def test_gemini_retries_one_transient_recursion_error(monkeypatch):

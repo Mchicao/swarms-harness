@@ -13,6 +13,21 @@ Copy-Item config\swarm_router.local.example.json config\swarm_router.local.json
 
 Edit only the local file.
 
+Las rutas OpenCode pueden fijar una variante de razonamiento en el proveedor:
+
+```jsonc
+{
+  // SWARMS-CONFIG-001: Solicita el esfuerzo high sin cambiar el model id.
+  "providers": {
+    "glm52": {"enabled": true, "variant": "high"}
+  }
+}
+```
+
+Para ejecutar workers con herramientas sobre otro repositorio, usa
+`--workspace-root`. El router y el código del harness permanecen en SWARMS;
+los agentes leen las reglas y escriben los artefactos en esa raíz objetivo.
+
 ## Token-Saving Defaults
 
 The router scores providers with:

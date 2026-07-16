@@ -9,6 +9,37 @@ license = "MIT"
 name = "swarms-rs"
 path = "src/main.rs"
 
+# SWARMS-UI-CUT-001: The read-only observability state model lives in a tiny
+# always-compiled library so it can be unit-tested offline (serde only) and
+# shared by the feature-gated UI binary. The coordinator CLI (swarms-rs) does
+# not depend on it, so its dependency surface is unchanged when ui-egui is off.
+[lib]
+name = "swarms_ui"
+path = "src/ui_main.rs"
+
+# SWARMS-UI-CUT-002: A second binary, built only when the ui-egui feature is
+# enabled. Without the feature cargo skips this target entirely, so default
+# builds and `cargo run` keep selecting swarms-rs as the single runnable bin.
+[[bin]]
+name = "swarms-ui"
+path = "src/ui_bin.rs"
+required-features = ["ui-egui"]
+
+[features]
+default = []
+# SWARMS-UI-CUT-003: Isolates the UI from the coordinator CLI. eframe is an
+# optional dependency; it is never fetched or compiled unless ui-egui is on.
+ui-egui = ["dep:eframe"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# SWARMS-UI-CUT-004: Start with the Glow renderer only. WGPU, persistence,
+# images and graphics stay out until a functional need justifies measuring them.
+# Windows: glow only (no wgpu). Linux: glow + wayland + x11 for the artifact.
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.35", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.35", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }

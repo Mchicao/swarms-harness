@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from scripts import codex_worker
@@ -30,5 +31,16 @@ def test_run_codex_forwards_requested_model_and_reasoning_effort(monkeypatch, tm
     assert returncode == 0
     assert stdout == "ok"
     assert stderr == ""
+    # SWARMS-CODEX-001: La aprobación global debe preceder al subcomando.
+    assert command[:4] == ["codex", "-a", "never", "exec"]
+    assert "--no-alt-screen" not in command
     assert command[command.index("--model") + 1] == "gpt-5.6-luna"
     assert command[command.index("-c") + 1] == "model_reasoning_effort=high"
+
+
+def test_legacy_parallel_swarm_uses_canonical_codex_cli_order():
+    # SWARMS-CODEX-002: El adaptador legado conserva la misma sintaxis válida.
+    source = Path("scripts/parallel_swarm.ps1").read_text(encoding="utf-8")
+
+    assert "codex -a never exec" in source
+    assert "codex.exe`\" exec --full-auto" not in source

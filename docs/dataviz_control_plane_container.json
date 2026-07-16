@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "goal": "Empaquetar y validar sólo el control plane read-only de DataVIZ como imagen OCI local, sin prometer el worker Windows/.NET.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 1, "global_max_concurrency": 1, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 900,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Control plane OCI local",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "control_plane_container_package",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Implementa un paquete Docker mínimo para el control plane read-only de DataVIZ, ahora que el daemon Docker local responde. Lee apps/dataviz_service completo, Docs/architecture/SAAS_FOUNDATION_LOCAL.md, Docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md y pyproject.toml. Sólo puedes escribir Dockerfile.dataviz-control-plane, .dockerignore.dataviz-control-plane, Docs/guides/DATAVIZ_CONTROL_PLANE_CONTAINER.md y tests/test_control_plane_container.py. La imagen debe usar una base Python 3.12 slim, copiar sólo apps/dataviz_service y ejecutar `python -m apps.dataviz_service serve --port 8000`; debe tener healthcheck para /healthz, usuario no root si es compatible y no incluir Demos, Ejemplos, .cache, output, .venv, credenciales ni scripts/migrate.py. Documenta explícitamente que no contiene el worker de migración ni demuestra pythonnet/.NET. No edites pyproject, core, apps, trackers ni Cargo. Ejecuta la prueba estática dirigida y valida que el Dockerfile no contiene rutas prohibidas; no necesitas construir la imagen si el worker no puede acceder al daemon, pero reporta el error exacto.",
+          "artifacts": ["Dockerfile.dataviz-control-plane", ".dockerignore.dataviz-control-plane", "Docs/guides/DATAVIZ_CONTROL_PLANE_CONTAINER.md", "tests/test_control_plane_container.py"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["uv run pytest -q --basetemp .cache/pytest-control-plane tests/test_control_plane_container.py", "uv run ruff check tests/test_control_plane_container.py", "git diff --check"]
+        }
+      ]
+    }
+  ]
+}
