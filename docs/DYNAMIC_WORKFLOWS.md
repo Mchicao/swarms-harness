@@ -2,7 +2,7 @@
 
 SWARMS supports an UltraCode-style runtime without copying Claude Code's cost profile.
 
-The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, summaries, telemetry, and final reporting. Automatic retries are not implemented.
+The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, summaries, telemetry, and final reporting. Interrupted runs can be resumed from completed task checkpoints; automatic retries are not implemented.
 
 ## GPT-5.6 Ultra-Style Runtime
 
@@ -26,6 +26,10 @@ Large fan-out should not mean that the orchestrator model carries every worker l
 - `results/<task_id>/` - worker prompts, logs, and result JSON.
 - `events.jsonl` - append-only lifecycle events.
 - `report.json` - final summary.
+
+The stable read-only contract for a local observer UI, including nested
+`parent_task_id`, `agent_id`, `subagents`, heartbeat and event fields, is documented in
+`docs/STATE_CONTRACT.md`.
 
 ## Scale Model
 
@@ -72,6 +76,13 @@ Run the deterministic mock workflow:
 
 ```powershell
 python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```
+
+Resume the same run without redoing completed tasks:
+
+```powershell
+# SWARMS-RESUME-003: reusa checkpoints de tareas terminadas.
+python scripts/swarm.py run --plan docs/workflow_plan_example.json --run-id my-run --resume --provider-cap mock=3
 ```
 
 The default provider is `mock`, so these commands do not spend model quota.

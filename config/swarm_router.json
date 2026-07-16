@@ -50,6 +50,7 @@
       "enabled": false,
       "provider": "opencode",
       "model": "zai-coding-plan/glm-5.2",
+      "variant": "high",
       "canonical_model": "glm-5.2",
       "wrapper": "opencode",
       "health_key": "opencode",
