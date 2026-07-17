@@ -1683,35 +1683,78 @@ pub mod ui_egui {
             self.refresh_quotas_if_due();
 
             egui::TopBottomPanel::top("app_header")
-                .exact_height(46.0)
+                .exact_height(52.0)
                 .show(ctx, |ui| {
+                    let theme = crate::ui_theme::Theme::marraqueta();
+                    let palette = theme.palette;
+                    fn mono() -> egui::FontFamily {
+                        egui::FontFamily::Name("IBM Plex Mono".into())
+                    }
+                    fn sans() -> egui::FontFamily {
+                        egui::FontFamily::Name("IBM Plex Sans".into())
+                    }
                     ui.horizontal_centered(|ui| {
-                        ui.label(egui::RichText::new("SWARMS").strong().size(18.0));
-                        ui.label(egui::RichText::new("RUNTIME").small().color(muted()));
+                        // Wordmark block.
+                        ui.add_space(theme.spacing.lg);
+                        ui.label(
+                            egui::RichText::new("SWARMS")
+                                .family(sans())
+                                .strong()
+                                .size(theme.type_scale.wordmark)
+                                .color(palette.text),
+                        );
+                        ui.label(
+                            egui::RichText::new("RUNTIME")
+                                .family(sans())
+                                .size(10.0)
+                                .color(palette.muted),
+                        );
+                        ui.add_space(theme.spacing.lg);
+                        ui.separator();
+                        ui.add_space(theme.spacing.sm);
+
+                        // Breadcrumb + status pill.
                         if let Some(contract) = &self.contract {
-                            ui.separator();
                             ui.label(
                                 egui::RichText::new(&contract.run.project_name)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(220, 220, 226)),
+                                    .family(mono())
+                                    .size(theme.type_scale.mono)
+                                    .color(palette.text),
                             );
-                            ui.label(egui::RichText::new("/").color(muted()));
-                            ui.label(egui::RichText::new(&contract.run.run_id).color(muted()));
                             ui.label(
-                                egui::RichText::new(format!("● {}", contract.run.status.label()))
-                                    .small()
-                                    .color(status_color(contract.run.status.label(), false)),
+                                egui::RichText::new("/")
+                                    .family(mono())
+                                    .color(palette.border),
+                            );
+                            ui.label(
+                                egui::RichText::new(&contract.run.run_id)
+                                    .family(mono())
+                                    .strong()
+                                    .size(theme.type_scale.mono)
+                                    .color(palette.text),
+                            );
+                            ui.add_space(theme.spacing.sm);
+                            crate::ui_theme::status_badge(
+                                ui,
+                                contract.run.status.label(),
+                                false,
+                                crate::ui_theme::BadgeMode::Pill,
+                                &theme,
                             );
                         }
+
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Config").clicked() {
                                 self.config_open = true;
                             }
+                            ui.add_space(theme.spacing.sm);
                             ui.label(
-                                egui::RichText::new("local  •  native Rust")
-                                    .small()
-                                    .color(muted()),
+                                egui::RichText::new("local  ·  native Rust")
+                                    .family(sans())
+                                    .size(theme.type_scale.caption)
+                                    .color(palette.muted),
                             );
+                            ui.add_space(theme.spacing.lg);
                         });
                     });
                 });
