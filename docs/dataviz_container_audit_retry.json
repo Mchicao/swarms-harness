@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "goal": "Completar la auditoría reproducible del paquete OCI/Docker para la demo pública, sin cambios de sistema ni afirmaciones no verificadas.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 1, "global_max_concurrency": 1, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 900,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Auditoría OCI serializada",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "container_package_audit_retry",
+          "role": "critic",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Audita la factibilidad del paquete OCI/Docker para la demo pública sin ejecutar cambios de sistema. Lee pyproject.toml, README.md, apps/dataviz_service, Docs/architecture/SAAS_FOUNDATION_LOCAL.md y Docs/swarm/saas_foundation_review.md. Sólo puedes escribir docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md y docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json; ambos no existen o deben preservarse si aparecieron parcialmente. Registra herramientas realmente disponibles, dependencias del servicio, riesgos de incluir datos o credenciales y el conjunto mínimo de pasos reproducibles. No crees Dockerfile ni declares que Docker funciona si no está instalado; distingue auditado, pendiente y bloqueado. Ejecuta validación JSON y git diff --check sobre tus artefactos. OpenCode se ejecuta serialmente porque el intento paralelo previo falló con `PRAGMA journal_mode = WAL`; no confundas esa causa externa con un defecto del repositorio.",
+          "artifacts": ["docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md", "docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["python -m json.tool docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json", "git diff --check -- docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.md docs/guides/CONTAINER_REPRODUCIBILITY_AUDIT.json"]
+        }
+      ]
+    }
+  ]
+}

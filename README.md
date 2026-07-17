@@ -92,18 +92,39 @@ After that, an agent can inspect your local provider setup, draft a plan, review
 
 ## Rust Coordinator
 
-Workflow plans can use the lower-overhead Rust coordinator on Windows, macOS, and Linux. It keeps provider authentication in the existing local CLI adapters.
+The Rust binary is the sole public runtime. It is self-contained — no Python
+dependency. All adapters (mock, Codex, OpenCode, Kilo, Hermes, agy,
+OpenAI-compatible HTTP) are implemented natively in Rust.
 
-```powershell
-cargo run --release --manifest-path rust/Cargo.toml -- doctor
-cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```bash
+cargo run --manifest-path rust/Cargo.toml -- doctor
+cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force
+cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
-See `docs/RUST_RUNTIME.md` for the full flow. Python remains available for legacy benchmark and telemetry compatibility.
+Optional low-resource native observer:
+
+```bash
+cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
+```
+
+See `docs/RUST_RUNTIME.md` for the full architecture, thinking levels, session
+affinity, and telemetry documentation.
 
 ## Quick Start
 
 Requires Python 3.10+ and Git.
+
+Before enabling legacy real-provider routes on a new machine, inspect the local
+agent inventory:
+
+```powershell
+python scripts/swarm.py preflight --format json
+```
+
+See `docs/AGENT_PREFLIGHT.md`. The Python compatibility runtime refuses
+unverified real agents before creating claims or workers.
 
 ```powershell
 python scripts/swarm.py doctor
@@ -111,6 +132,10 @@ python scripts/swarm.py review --plan docs/workflow_plan_example.json
 python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
 python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
+
+Run-state files are the read-only integration boundary used by observability
+tools and the optional native UI; see `docs/STATE_CONTRACT.md` and
+`docs/SWARM_UI.md`.
 
 Optional editable install:
 

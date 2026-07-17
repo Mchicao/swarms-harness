@@ -1,14 +1,45 @@
 [package]
 name = "swarms-runtime"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Low-overhead deterministic SWARMS coordinator."
+description = "Deterministic, self-contained SWARMS workflow coordinator."
 license = "MIT"
+default-run = "swarms-rs"
 
 [[bin]]
 name = "swarms-rs"
 path = "src/main.rs"
 
+[[bin]]
+name = "swarms-ui"
+path = "src/ui_bin.rs"
+required-features = ["ui-egui"]
+
+[lib]
+name = "swarms_runtime"
+path = "src/lib.rs"
+
+[features]
+default = []
+ui-egui = ["dep:eframe", "dep:egui_extras"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ureq = { version = "2", features = ["json", "tls"] }
+egui_extras = { version = "0.32", optional = true, features = ["image", "svg"] }
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.32", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.32", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.32", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow"] }
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+panic = "abort"

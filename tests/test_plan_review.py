@@ -38,6 +38,16 @@ def test_static_review_detects_missing_dependencies():
     assert any(finding["code"] == "missing_dependency" for finding in result["findings"])
 
 
+def test_static_review_detects_missing_parent_task():
+    plan = load_example_plan()
+    plan["stages"][1]["tasks"][0]["parent_task_id"] = "does_not_exist"
+
+    result = review_plan(plan)
+
+    assert not result["ok"]
+    assert any(finding["code"] == "missing_parent_task" for finding in result["findings"])
+
+
 def test_static_review_rejects_nested_artifact_traversal():
     plan = load_example_plan()
     plan["stages"][1]["tasks"][0]["artifacts"] = ["bench_apps/../../outside.py"]

@@ -10,6 +10,11 @@ config/swarm_limits.yaml
 config/swarm_tasks.md
 
 .agent/
+.agents/skills/
+.gemini/skills/
+.opencode/skills/
+logs/
+.codegraph/
 .cache/
 .swarm_worktrees/
 **/.swarm_worktrees/

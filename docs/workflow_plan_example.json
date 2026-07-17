@@ -1,6 +1,10 @@
 {
   "schema_version": 1,
   "goal": "Implement a reshard/decompress utility pair with tests and docs.",
+  "project": {
+    "id": "swarms-example",
+    "name": "SWARMS Example"
+  },
   "planner": {
     "route": "glm52",
     "model": "GLM-5.2"
@@ -21,6 +25,9 @@
       "claude": 0
     }
   },
+  "thinking": "medium",
+  "default_timeout_seconds": 600,
+  "default_max_attempts": 1,
   "stages": [
     {
       "name": "Discovery",
@@ -48,7 +55,8 @@
           "task": "Implement bench_apps/reshard/compress.py. It must copy an input directory into shard_N folders under an output directory, with at most 3 files per shard and no writes outside the output directory.",
           "artifacts": ["bench_apps/reshard/compress.py"],
           "needs": ["reshard_plan"],
-          "verify": []
+          "verify": [],
+          "thinking": "high"
         },
         {
           "id": "decompress",

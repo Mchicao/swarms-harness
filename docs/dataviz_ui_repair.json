@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "completed_and_superseded",
+  "historical_note": "The UI now lives inline in rust/src/ui_main.rs; the temporary rust/src/app.rs duplicate was removed.",
+  "goal": "Completar el spike UI read-only egui/eframe que quedó parcialmente escrito por un timeout.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 1, "global_max_concurrency": 1, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 1800,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Reparación del spike UI",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "operator_ui_repair",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Completar el spike UI parcial existente. Lee rust/src/ui_main.rs completo, rust/Cargo.toml, docs/UI_RUNTIME_EVALUATION.md, docs/STATE_CONTRACT.md y docs/SWARM_UI_CONTRACT.md antes de editar. El archivo ui_main.rs termina en `#[cfg(feature = \"ui-egui\")] mod app;`: crea rust/src/app.rs con la ventana egui/eframe read-only que consume RunReader, muestra run→stage→task→agent→subagents, detalle en la misma ventana, estados empty/loading/error/stale, repaint bajo demanda y lista virtualizada; crea rust/tests/ui_state.rs con pruebas del modelo sin abrir ventana; crea docs/SWARM_UI.md con uso, límites y bloqueo de linker si aplica. Mantén Cargo CLI sin feature igual, no toques rust/src/main.rs ni Migrador, no inicies workers ni escribas snapshots. Ejecuta cargo fmt, cargo test sin feature y con ui-egui, cargo clippy; si el entorno falla por `link.exe` registra el error exacto pero deja el código compilable a nivel de fuente. No cambies el contrato Python.",
+          "artifacts": ["rust/src/ui_main.rs", "rust/tests/ui_state.rs", "docs/SWARM_UI.md", "rust/Cargo.toml"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["cargo fmt --manifest-path rust/Cargo.toml -- --check", "cargo test --manifest-path rust/Cargo.toml", "cargo test --manifest-path rust/Cargo.toml --features ui-egui", "cargo clippy --manifest-path rust/Cargo.toml --features ui-egui --all-targets -- -D warnings"]
+        }
+      ]
+    }
+  ]
+}

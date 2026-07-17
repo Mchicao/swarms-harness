@@ -101,9 +101,26 @@ cargo run --release --manifest-path rust/Cargo.toml -- doctor
 cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
+Observador nativo opcional y de bajo consumo:
+
+```powershell
+cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
+```
+
 El flujo completo está en `docs/RUST_RUNTIME.md`. Python sigue disponible para compatibilidad de benchmarks y telemetría heredados.
 
 ## Inicio Rapido
+
+En un PC nuevo, inspecciona primero los agentes locales antes de habilitar o
+ejecutar rutas reales:
+
+```powershell
+python scripts/swarm.py preflight --format json
+```
+
+Consulta [docs/AGENT_PREFLIGHT.md](docs/AGENT_PREFLIGHT.md). `doctor` ejecuta
+este inventario primero y `run` rechaza agentes reales no verificados antes de
+crear claims o workers.
 
 Requiere Python 3.10+ y Git.
 
@@ -112,6 +129,24 @@ python scripts/swarm.py doctor
 python scripts/swarm.py review --plan docs/workflow_plan_example.json
 python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
 python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```
+
+Reanuda un run interrumpido con el mismo plan e identificador:
+
+```powershell
+# SWARMS-RESUME-004: conserva checkpoints de tareas terminadas.
+cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --run-id my-run --resume --provider-cap mock=3
+```
+
+Los archivos de estado son una frontera de integración de sólo lectura para
+interfaces locales; consulta `docs/STATE_CONTRACT.md`.
+
+Para coordinar un repositorio vecino, conserva SWARMS como harness y declara
+el destino:
+
+```powershell
+# SWARMS-CLI-001: Ejecuta workers con herramientas en el repositorio objetivo.
+python scripts/swarm.py dry-run --plan C:\proyecto\plan.json --workspace-root C:\proyecto --force
 ```
 
 Instalacion editable opcional:
