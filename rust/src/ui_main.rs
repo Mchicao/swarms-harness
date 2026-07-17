@@ -2193,7 +2193,7 @@ pub mod ui_egui {
                             if let Some(source) = positions.get(dependency) {
                                 painter.line_segment(
                                     [source.right_center(), target.left_center()],
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(62, 64, 74)),
+                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(62, 64, 74)),
                                 );
                             }
                         }
@@ -2208,7 +2208,7 @@ pub mod ui_egui {
                         painter.rect_stroke(
                             *rect,
                             7.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(46, 48, 58)),
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(46, 48, 58)),
                             egui::StrokeKind::Inside,
                         );
                         painter.circle_filled(
@@ -2273,7 +2273,10 @@ pub mod ui_egui {
                     let color = quota_color(remaining);
                     let response = egui::Frame::new()
                         .fill(egui::Color32::from_rgb(20, 22, 27))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 45, 54)))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(42, 45, 54),
+                        ))
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(6, 3))
                         .show(ui, |ui| {
@@ -2433,7 +2436,7 @@ pub mod ui_egui {
                                 let color = status_color(&row.status, row.stale);
                                 let label = format!(
                                     "{}    {}",
-                                    &row.label,
+                                    row.label,
                                     row.model.as_deref().unwrap_or("")
                                 );
                                 let mut rich = egui::RichText::new(&label);
