@@ -16,8 +16,10 @@ from typing import Any
 
 try:
     from .paths import PROJECT_ROOT
+    from .workflow_ir import WorkflowCompileError, compile_plan, validate_plan_limits
 except ImportError:  # pragma: no cover - direct script execution path.
     from paths import PROJECT_ROOT
+    from workflow_ir import WorkflowCompileError, compile_plan, validate_plan_limits
 
 DEFAULT_ROLE_POLICY = PROJECT_ROOT / "config" / "role_policy.json"
 PREMIUM_ROUTES = {"codex", "claude", "opus", "gpt55", "gpt-5.5"}
@@ -87,14 +89,26 @@ def review_plan(plan: Any, role_policy: dict[str, Any] | None = None) -> dict[st
             "task_count": 0,
             "routes": {},
         }
+    try:
+        plan = compile_plan(plan)
+    except WorkflowCompileError as exc:
+        finding = Finding("error", "workflow_compile", str(exc))
+        return {
+            "ok": False,
+            "errors": 1,
+            "warnings": 0,
+            "findings": [finding.to_dict()],
+            "task_count": 0,
+            "routes": {},
+        }
     role_policy = role_policy or {}
     review_policy = plan.get("review_policy", {})
     budget_policy = plan.get("budget_policy", {})
     premium_allowed = bool(review_policy.get("premium_allowed"))
     tasks = iter_tasks(plan)
 
-    if plan.get("schema_version") != 1:
-        findings.append(Finding("error", "schema_version", "workflow_plan schema_version must be 1"))
+    if plan.get("schema_version") not in {1, 2}:
+        findings.append(Finding("error", "schema_version", "workflow_plan schema_version must be 1 or 2"))
     if not plan.get("goal"):
         findings.append(Finding("error", "missing_goal", "Plan must include a goal"))
     if not tasks:
@@ -218,6 +232,11 @@ def review_plan(plan: Any, role_policy: dict[str, Any] | None = None) -> dict[st
                 findings.append(
                     Finding("error", "missing_dependency", f"Dependency {dep!r} does not match any task id", task_id)
                 )
+
+    try:
+        validate_plan_limits(plan)
+    except WorkflowCompileError as exc:
+        findings.append(Finding("error", "workflow_limits", str(exc)))
 
     if len(tasks) > int(role_policy.get("review_policy", {}).get("require_critic_review_when_task_count_gt", 10_000)):
         if not review_policy.get("critic_review_required"):

@@ -101,6 +101,18 @@ cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_
 
 See `docs/RUST_RUNTIME.md` for the full flow. Python remains available for legacy benchmark and telemetry compatibility.
 
+Schema-version-2 plans may use the bounded Workflow IR documented in
+`docs/DYNAMIC_WORKFLOWS.md`. Every worker is instructed not to spawn or
+recursively delegate subagents. The coordinator enforces total-worker, depth,
+direct-child, and round limits before dispatch.
+
+Agent context synchronization is explicit and off by default:
+
+```powershell
+# SWARMS-CONTEXT-004: Previsualiza y aplica Skillshare/Rulesync antes del dry-run.
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_dynamic_example.json --sync-agent-context --context-sync-targets claude,codex,opencode,agy
+```
+
 ## Quick Start
 
 Requires Python 3.10+ and Git.

@@ -888,6 +888,8 @@ You are a Swarm Worker in an isolated Git Worktree.
 $contractContent
 
 ## CONSTRAINTS
+- Do not spawn, delegate to, or ask another agent to create subagents. Never create recursive agent trees.
+- If delegation appears necessary, report the blocker to the coordinator; do not spawn.
 - MODIFY files directly. DO NOT run git commands.
 - For benchmark tasks, only modify files under bench_apps/, bench_tests/, and docs/bench_notes/.
 - Do not modify .agent/, core/, scripts/, scratch/, tests/, docs/technical/, prompt.txt, run.ps1, or unrelated project files.

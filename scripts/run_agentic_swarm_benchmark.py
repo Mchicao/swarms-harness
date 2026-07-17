@@ -26,8 +26,12 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
-from scripts.utils.token_telemetry import iter_events, summarize_events
-from scripts.utils.token_telemetry import parse_codex_log, record_event
+from scripts.utils.token_telemetry import (  # noqa: E402, I001
+    iter_events,
+    parse_codex_log,
+    record_event,
+    summarize_events,
+)
 
 
 VARIANTS = {
@@ -85,6 +89,8 @@ class AgenticSwarmBenchmark:
 Goal: rewrite this benchmark task into a concise staged task backlog for parallel workers.
 
 Rules:
+- Do not create subagents or recursive agent trees; only describe top-level worker tasks for the coordinator.
+- Keep the worker count minimal and within the task budget.
 - Output ONLY markdown taskfile content.
 - Do not solve the task.
 - Do not include prose outside the taskfile.
@@ -210,8 +216,7 @@ Benchmark task:
             ["git", "commit", "-m", "Seed agentic benchmark scaffold"],
             cwd=wt_path,
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
         )
 
@@ -221,7 +226,9 @@ Benchmark task:
         shutil.rmtree(wt_path, ignore_errors=True)
         subprocess.run(["git", "worktree", "prune"], cwd=PROJECT_ROOT, capture_output=True)
         safe_id = task["instance_id"].replace("/", "_")
-        subprocess.run(["git", "branch", "-D", f"agentic-bench/{safe_id}-{variant}"], cwd=PROJECT_ROOT, capture_output=True)
+        subprocess.run(
+            ["git", "branch", "-D", f"agentic-bench/{safe_id}-{variant}"], cwd=PROJECT_ROOT, capture_output=True
+        )
 
     def run_variant(self, task: dict[str, Any], variant: str) -> dict[str, Any]:
         cfg = VARIANTS[variant]
@@ -260,8 +267,7 @@ Benchmark task:
                 cwd=wt_path,
                 env=env,
                 text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=self.runner_timeout_seconds,
             )
             runner_success = result.returncode == 0
@@ -299,8 +305,7 @@ Benchmark task:
             ["powershell", "-NoProfile", "-Command", cmd],
             cwd=wt_path,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=300,
         )
         missing = [p for p in task.get("success_artifacts", []) if not (wt_path / p).exists()]
@@ -324,8 +329,7 @@ Benchmark task:
             ["git", "diff", "--name-only", f"{base_ref}..HEAD"],
             cwd=wt_path,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=60,
         )
         if result.returncode != 0:

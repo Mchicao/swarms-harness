@@ -81,6 +81,33 @@ def test_swarm_cli_passes_resume_to_runtime(tmp_path):
     assert args.resume is True
 
 
+def test_swarm_cli_context_sync_is_opt_in_and_forwards_targets(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured = {}
+    args = swarm.build_parser().parse_args(
+        [
+            "dry-run",
+            "--workspace-root",
+            str(workspace),
+            "--sync-agent-context",
+            "--context-sync-targets",
+            "claudecode,codexcli",
+        ]
+    )
+    monkeypatch.setattr(
+        swarm,
+        "sync_agent_context",
+        lambda root, targets: captured.update(root=root, targets=targets) or {"success": True},
+    )
+
+    code, report = swarm.sync_context_or_stop(args)
+
+    assert code == 0
+    assert report == {"success": True}
+    assert captured == {"root": workspace, "targets": ["claudecode", "codexcli"]}
+
+
 def test_swarm_cli_run_default_plan(tmp_path):
     result = run_cli(
         "run",

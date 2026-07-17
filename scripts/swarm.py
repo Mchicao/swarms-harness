@@ -20,17 +20,21 @@ from typing import Any
 
 try:
     from .agent_preflight import discover_agents, format_text, route_findings
+    from .context_sync import DEFAULT_TARGETS, ContextSyncError, sync_agent_context
     from .doctor import main as doctor_main
     from .paths import PROJECT_ROOT
     from .plan_review import DEFAULT_ROLE_POLICY, load_json, review_plan
     from .smart_router import load_config
+    from .workflow_ir import compile_plan
     from .workflow_runtime import DEFAULT_RUNS_DIR, WORKER_SCRIPTS, WorkflowRuntime, parse_provider_caps
 except ImportError:  # pragma: no cover - direct script execution path.
     from agent_preflight import discover_agents, format_text, route_findings
+    from context_sync import DEFAULT_TARGETS, ContextSyncError, sync_agent_context
     from doctor import main as doctor_main
     from paths import PROJECT_ROOT
     from plan_review import DEFAULT_ROLE_POLICY, load_json, review_plan
     from smart_router import load_config
+    from workflow_ir import compile_plan
     from workflow_runtime import DEFAULT_RUNS_DIR, WORKER_SCRIPTS, WorkflowRuntime, parse_provider_caps
 
 DEFAULT_PLAN = PROJECT_ROOT / "docs" / "workflow_plan_example.json"
@@ -41,7 +45,20 @@ def print_json(data: Any) -> None:
 
 
 def plan_routes(plan: dict[str, Any]) -> set[str]:
+    plan = compile_plan(plan)
     return {str(task.get("route", "mock")) for stage in plan.get("stages", []) for task in stage.get("tasks", [])}
+
+
+def sync_context_or_stop(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
+    """SWARMS-CONTEXT-001: Run explicit noninteractive context synchronization."""
+    if not args.sync_agent_context:
+        return 0, None
+    targets = [target.strip() for target in args.context_sync_targets.split(",") if target.strip()]
+    try:
+        return 0, sync_agent_context(args.workspace_root, targets)
+    except ContextSyncError as exc:
+        print_json({"ok": False, "errors": 1, "findings": [{"code": "context_sync_failed", "message": str(exc)}]})
+        return 1, None
 
 
 def command_preflight(args: argparse.Namespace) -> int:
@@ -95,7 +112,7 @@ def review_or_stop(args: argparse.Namespace) -> int:
 
 def enabled_routes_or_stop(args: argparse.Namespace) -> int:
     """Refuse real execution unless every route is enabled and supported."""
-    plan = load_json(args.plan)
+    plan = compile_plan(load_json(args.plan))
     preflight = discover_agents(args.router_config)
     findings = route_findings(preflight, plan_routes(plan))
     if findings and not args.allow_unverified_agents:
@@ -123,7 +140,12 @@ def command_dry_run(args: argparse.Namespace) -> int:
     review_code = review_or_stop(args)
     if review_code != 0:
         return review_code
+    sync_code, sync_report = sync_context_or_stop(args)
+    if sync_code != 0:
+        return sync_code
     report = build_runtime(args).run(dry_run=True, force=args.force, resume=args.resume)
+    if sync_report:
+        report["context_sync"] = sync_report
     print_json(report)
     return 0 if report["status"] == "planned" else 1
 
@@ -136,7 +158,12 @@ def command_run(args: argparse.Namespace) -> int:
     review_code = review_or_stop(args)
     if review_code != 0:
         return review_code
+    sync_code, sync_report = sync_context_or_stop(args)
+    if sync_code != 0:
+        return sync_code
     report = build_runtime(args).run(dry_run=False, force=args.force, resume=args.resume)
+    if sync_report:
+        report["context_sync"] = sync_report
     print_json(report)
     return 0 if report["status"] == "completed" else 1
 
@@ -176,6 +203,16 @@ def add_runtime_args(parser: argparse.ArgumentParser) -> None:
         "--allow-unverified-agents",
         action="store_true",
         help="Explicitly bypass preflight for real routes after an external probe.",
+    )
+    parser.add_argument(
+        "--sync-agent-context",
+        action="store_true",
+        help="Synchronize skills, rules, AGENTS files, subagents, and MCP before dispatch",
+    )
+    parser.add_argument(
+        "--context-sync-targets",
+        default=",".join(DEFAULT_TARGETS),
+        help="Comma-separated Rulesync targets used with --sync-agent-context",
     )
 
 

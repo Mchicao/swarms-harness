@@ -27,6 +27,8 @@ Consumers may rely on these fields:
   "provider_subagents": [],
   "stage": "Implementation",
   "role": "programmer",
+  "depth": 1,
+  "allow_subagent_spawning": false,
   "needs": ["architecture"],
   "route": "glm52",
   "provider": "opencode",
@@ -51,6 +53,10 @@ no child-agent event channel, `opaque` when the provider confirms internal
 fan-out but hides identifiers, and `reported` only when machine-readable logs
 provide explicit child IDs. In the latter case, adapters may append those IDs
 to `provider_subagents`; the two child lists remain separate.
+
+`depth` is the validated declared hierarchy depth. Public workflows currently
+require `allow_subagent_spawning=false` and `spawn_budget=0`; child tasks are
+materialized only by the coordinator from the reviewed plan.
 
 The UI should treat a running task as stale only relative to
 `workflow.json.heartbeat_interval_seconds`, and label it as stale rather than
