@@ -1218,6 +1218,10 @@ mod tests {
 // ===========================================================================
 #[cfg(feature = "ui-egui")]
 pub mod ui_egui {
+    // accent()/muted() are deprecated shims pointing at ui_theme; existing call
+    // sites are migrated in Phase 3 of the UI restyle plan. Remove this allow
+    // when the shims are deleted.
+    #![allow(deprecated)]
     use super::*;
     use crate::{config, quota, resources, steering};
     use eframe::egui;
@@ -1230,29 +1234,18 @@ pub mod ui_egui {
     const QUOTA_POLL: Duration = Duration::from_secs(30);
     const MAX_EVENTS: usize = 500;
 
+    #[deprecated(note = "use crate::ui_theme::Theme::marraqueta().palette.accent")]
     fn accent() -> egui::Color32 {
-        egui::Color32::from_rgb(128, 108, 255)
+        crate::ui_theme::Theme::marraqueta().palette.accent
     }
 
+    #[deprecated(note = "use crate::ui_theme::Theme::marraqueta().palette.muted")]
     fn muted() -> egui::Color32 {
-        egui::Color32::from_rgb(132, 135, 145)
+        crate::ui_theme::Theme::marraqueta().palette.muted
     }
 
     fn apply_theme(ctx: &egui::Context) {
-        let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = egui::Color32::from_rgb(14, 15, 18);
-        style.visuals.window_fill = egui::Color32::from_rgb(17, 18, 22);
-        style.visuals.extreme_bg_color = egui::Color32::from_rgb(9, 10, 12);
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(22, 24, 29);
-        style.visuals.selection.bg_fill = egui::Color32::from_rgb(45, 42, 78);
-        style.visuals.selection.stroke.color = egui::Color32::from_rgb(176, 166, 255);
-        style.visuals.hyperlink_color = egui::Color32::from_rgb(176, 166, 255);
-        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(22, 24, 29);
-        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(31, 33, 40);
-        ctx.set_style(style);
+        crate::ui_theme::Theme::marraqueta().apply(ctx);
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
