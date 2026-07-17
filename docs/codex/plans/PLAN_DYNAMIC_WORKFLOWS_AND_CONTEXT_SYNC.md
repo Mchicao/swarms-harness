@@ -28,7 +28,7 @@ used.
 - [x] (2026-07-17 02:52Z) Implemented the bounded Workflow IR compiler and integrated the Python runtime.
 - [x] (2026-07-17 02:52Z) Mirrored hard recursion limits, prompt policy, and Python-backed IR expansion in the Rust coordinator.
 - [x] (2026-07-17 02:52Z) Added opt-in coordinated-context preview/apply flow and a credential-free canonical Rulesync source.
-- [ ] Commit, push, confirm GitHub CI, and update the existing draft PR.
+- [x] (2026-07-17 02:56Z) Committed and pushed as `10c80e2`; both GitHub CI jobs passed and draft PR #4 was updated.
 
 ## Surprises & Discoveries
 
@@ -68,7 +68,8 @@ an offline Python mock run. The version-1 example also completed. Ruff,
 formatting, and all 159 Python tests pass. Rulesync and Skillshare previews are
 clean. Rust formatting passes, while local compilation is externally blocked
 by the missing Windows linker; GitHub CI remains the required independent Rust
-verification before closing the plan.
+verification before closing the plan. Both GitHub CI jobs passed on commit
+`10c80e2`, providing the missing independent Rust/toolchain validation.
 
 ## Context and Orientation
 
