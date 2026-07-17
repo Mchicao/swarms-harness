@@ -38,7 +38,9 @@ después se ejecutará una conversación nueva para evitar contexto obsoleto.
   OpenCode y agy, sin selectores globales `--last` o `--continue`.
 - [x] (2026-07-17 01:18Z) Integrados reintento automático y recuperación tras
   reinicio en los coordinadores Python y Rust.
-- [ ] Validar suites, documentar el contrato y publicar un PR draft.
+- [x] (2026-07-17 01:24Z) Validadas 142 pruebas Python, Ruff, `py_compile`,
+  doctor, mock workflow y `cargo fmt`; publicado el PR draft #4. `cargo
+  check/test` queda delegado a CI por ausencia local del Windows SDK.
 
 ## Surprises & Discoveries
 
@@ -175,3 +177,5 @@ la política de expiración relevante.
   fija de cinco minutos y un solo reintento por caída.
 - 2026-07-17: implementación y pruebas dirigidas Python completadas; validación
   integral y publicación del PR pendientes.
+- 2026-07-17: validación local cerrada y PR draft #4 publicado; el bloqueo del
+  linker Rust quedó documentado para verificación en CI.
