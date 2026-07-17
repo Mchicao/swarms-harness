@@ -1238,10 +1238,6 @@ mod tests {
 // ===========================================================================
 #[cfg(feature = "ui-egui")]
 pub mod ui_egui {
-    // accent()/muted() are deprecated shims pointing at ui_theme; existing call
-    // sites are migrated in Phase 3 of the UI restyle plan. Remove this allow
-    // when the shims are deleted.
-    #![allow(deprecated)]
     use super::*;
     use crate::{config, quota, resources, steering};
     use eframe::egui;
@@ -1254,12 +1250,16 @@ pub mod ui_egui {
     const QUOTA_POLL: Duration = Duration::from_secs(30);
     const MAX_EVENTS: usize = 500;
 
-    #[deprecated(note = "use crate::ui_theme::Theme::marraqueta().palette.accent")]
+    /// Accent color from the active theme. Thin wrapper over
+    /// `ui_theme::Theme::marraqueta().palette.accent` kept as a local shortcut
+    /// for the many call sites in this module.
     fn accent() -> egui::Color32 {
         crate::ui_theme::Theme::marraqueta().palette.accent
     }
 
-    #[deprecated(note = "use crate::ui_theme::Theme::marraqueta().palette.muted")]
+    /// Muted text color from the active theme. Thin wrapper over
+    /// `ui_theme::Theme::marraqueta().palette.muted` kept as a local shortcut
+    /// for the many call sites in this module.
     fn muted() -> egui::Color32 {
         crate::ui_theme::Theme::marraqueta().palette.muted
     }
@@ -3088,7 +3088,9 @@ pub mod ui_egui {
             .join(" ")
     }
 
-    #[deprecated(note = "use crate::ui_theme::status_colors")]
+    /// Semantic status color for a task status string. Thin wrapper over
+    /// `ui_theme::status_colors(..., BadgeMode::DagNode, ...)` returning the
+    /// fill color, kept as a local shortcut for the task-tree call sites.
     fn status_color(status: &str, stale: bool) -> egui::Color32 {
         let p = crate::ui_theme::Theme::marraqueta().palette;
         let (fill, _, _) =
