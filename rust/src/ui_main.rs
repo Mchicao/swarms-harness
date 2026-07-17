@@ -507,6 +507,26 @@ pub fn relative_age(timestamp_ms: Option<u128>, now_ms: u128) -> String {
     }
 }
 
+/// Temporal bucket label for a run, purely presentational. Does NOT change the
+/// run's status. Respects "label it, don't change its status" (STATE_CONTRACT).
+pub fn temporal_bucket(timestamp_ms: Option<u128>, now_ms: u128) -> &'static str {
+    let Some(timestamp_ms) = timestamp_ms else {
+        return "Older";
+    };
+    let age_ms = now_ms.saturating_sub(timestamp_ms);
+    const HOUR: u128 = 3_600_000;
+    const DAY: u128 = 24 * HOUR;
+    if age_ms < HOUR {
+        "Active · now"
+    } else if age_ms < DAY {
+        "Earlier today"
+    } else if age_ms < 2 * DAY {
+        "Yesterday"
+    } else {
+        "Older"
+    }
+}
+
 pub fn group_runs(runs: &[RunIndex]) -> Vec<ProjectGroup> {
     let mut groups: BTreeMap<(String, String), Vec<RunIndex>> = BTreeMap::new();
     for run in runs {
@@ -1811,19 +1831,32 @@ pub mod ui_egui {
                 .resizable(true)
                 .default_width(285.0)
                 .show(ctx, |ui| {
-                    ui.heading("Projects");
+                    let theme = crate::ui_theme::Theme::marraqueta();
+                    let palette = theme.palette;
+                    let now = unix_ms();
+                    ui.add_space(theme.spacing.sm);
+                    ui.label(
+                        egui::RichText::new("Runs")
+                            .family(egui::FontFamily::Name("IBM Plex Sans".into()))
+                            .strong()
+                            .size(theme.type_scale.heading)
+                            .color(palette.text),
+                    );
                     ui.label(
                         egui::RichText::new(format!("{}", self.run_root.display()))
-                            .small()
-                            .color(muted()),
+                            .family(egui::FontFamily::Name("IBM Plex Mono".into()))
+                            .size(theme.type_scale.mono_small)
+                            .color(palette.muted),
                     );
+                    ui.add_space(theme.spacing.xs);
                     ui.separator();
                     let runs = self.runs.clone();
                     let groups = group_runs(&runs);
                     let mut to_activate: Option<String> = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if groups.is_empty() {
-                            ui.label(egui::RichText::new("No projects yet").color(muted()));
+                            ui.add_space(theme.spacing.md);
+                            ui.label(egui::RichText::new("No projects yet").color(palette.muted));
                         }
                         for group in &groups {
                             egui::CollapsingHeader::new(
@@ -1832,49 +1865,125 @@ pub mod ui_egui {
                                     group.project_name,
                                     group.runs.len()
                                 ))
-                                .strong(),
+                                .family(egui::FontFamily::Name("IBM Plex Sans".into()))
+                                .strong()
+                                .color(palette.text),
                             )
                             .id_salt(&group.project_id)
                             .default_open(true)
                             .show(ui, |ui| {
+                                // Bucket runs by temporal age (presentational only).
+                                let mut last_bucket: Option<&str> = None;
                                 for run in &group.runs {
+                                    let bucket = temporal_bucket(run.last_activity_unix_ms, now);
+                                    if Some(bucket) != last_bucket {
+                                        ui.add_space(theme.spacing.xs);
+                                        ui.label(
+                                            egui::RichText::new(bucket)
+                                                .family(egui::FontFamily::Name(
+                                                    "IBM Plex Sans".into(),
+                                                ))
+                                                .size(theme.type_scale.label)
+                                                .strong()
+                                                .color(palette.muted),
+                                        );
+                                        last_bucket = Some(bucket);
+                                    }
+
                                     let selected =
                                         self.active_run_id.as_deref() == Some(run.run_id.as_str());
                                     let dot = if run.has_report { "●" } else { "○" };
-                                    if ui
-                                        .selectable_label(
-                                            selected,
-                                            format!("{dot}  {}", run.run_id),
-                                        )
-                                        .clicked()
-                                    {
-                                        to_activate = Some(run.run_id.clone());
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(22.0);
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{}  ·  {} tasks",
-                                                run.runtime, run.task_count
-                                            ))
-                                            .small()
-                                            .color(muted()),
-                                        );
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
+                                    let dot_color = if run.has_report {
+                                        palette.pill_done
+                                    } else {
+                                        palette.pill_run
+                                    };
+
+                                    // Selection by solid dark fill + inverted cream text.
+                                    // No left-side stripe (anti-slop).
+                                    let frame_fill = if selected {
+                                        palette.text
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    };
+                                    let name_color = if selected {
+                                        palette.cream
+                                    } else {
+                                        palette.text
+                                    };
+                                    let meta_color = if selected {
+                                        palette.border_soft
+                                    } else {
+                                        palette.muted
+                                    };
+
+                                    egui::Frame::group(ui.style())
+                                        .fill(frame_fill)
+                                        .stroke(egui::Stroke::NONE)
+                                        .inner_margin(egui::Margin::symmetric(
+                                            theme.spacing.sm as i8,
+                                            theme.spacing.xs as i8,
+                                        ))
+                                        .corner_radius(theme.spacing.radius_card)
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
                                                 ui.label(
-                                                    egui::RichText::new(relative_age(
-                                                        run.last_activity_unix_ms,
-                                                        unix_ms(),
-                                                    ))
-                                                    .small()
-                                                    .color(muted()),
-                                                )
-                                                .on_hover_text("Last swarm activity");
-                                            },
-                                        );
-                                    });
+                                                    egui::RichText::new(dot)
+                                                        .color(dot_color)
+                                                        .size(theme.type_scale.mono),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(&run.run_id)
+                                                        .family(egui::FontFamily::Name(
+                                                            "IBM Plex Mono".into(),
+                                                        ))
+                                                        .size(theme.type_scale.mono)
+                                                        .strong()
+                                                        .color(name_color),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(format!(
+                                                                "{}",
+                                                                run.task_count
+                                                            ))
+                                                            .family(egui::FontFamily::Name(
+                                                                "IBM Plex Mono".into(),
+                                                            ))
+                                                            .size(theme.type_scale.mono_small)
+                                                            .strong()
+                                                            .color(if selected {
+                                                                palette.cream
+                                                            } else {
+                                                                palette.accent
+                                                            }),
+                                                        );
+                                                        ui.label(
+                                                            egui::RichText::new(relative_age(
+                                                                run.last_activity_unix_ms,
+                                                                now,
+                                                            ))
+                                                            .size(theme.type_scale.mono_small)
+                                                            .color(meta_color),
+                                                        )
+                                                        .on_hover_text("Last swarm activity");
+                                                    },
+                                                );
+                                                // Invisible click target over the row.
+                                                let resp = ui.interact(
+                                                    ui.min_rect(),
+                                                    ui.id().with(&run.run_id),
+                                                    egui::Sense::click(),
+                                                );
+                                                if resp.clicked() {
+                                                    to_activate = Some(run.run_id.clone());
+                                                }
+                                            });
+                                        });
                                 }
                             });
                         }
