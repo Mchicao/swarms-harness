@@ -2466,15 +2466,13 @@ pub mod ui_egui {
 
         fn render_quota_strip(&self, ui: &mut egui::Ui) {
             if let Some(snapshot) = &self.quota_snapshot {
+                let palette = crate::ui_theme::Theme::marraqueta().palette;
                 for entry in &snapshot.entries {
                     let remaining = quota_remaining(&entry.windows);
                     let color = quota_color(remaining);
                     let response = egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(20, 22, 27))
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgb(42, 45, 54),
-                        ))
+                        .fill(palette.bg_elevated)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(6, 3))
                         .show(ui, |ui| {
@@ -2483,7 +2481,7 @@ pub mod ui_egui {
                                 ui.label(
                                     egui::RichText::new(quota_short_label(&entry.key))
                                         .small()
-                                        .color(egui::Color32::from_rgb(205, 207, 214)),
+                                        .color(palette.text_dim),
                                 );
                                 ui.label(
                                     egui::RichText::new(format!("{remaining:.0}%"))
@@ -2568,7 +2566,10 @@ pub mod ui_egui {
                     self.filter.clear();
                 }
                 if let Some(err) = &self.error {
-                    ui.label(egui::RichText::new(err).color(egui::Color32::from_rgb(220, 80, 80)));
+                    ui.label(
+                        egui::RichText::new(err)
+                            .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
+                    );
                 }
             });
             ui.separator();
@@ -2584,7 +2585,7 @@ pub mod ui_egui {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(format!("error: {err}"))
-                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                            .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
                     );
                 });
                 return;
@@ -2747,7 +2748,10 @@ pub mod ui_egui {
                 });
             if let Some(e) = &node.error {
                 ui.separator();
-                ui.label(egui::RichText::new("error").color(egui::Color32::from_rgb(220, 80, 80)));
+                ui.label(
+                    egui::RichText::new("error")
+                        .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
+                );
                 ui.label(egui::RichText::new(e).monospace());
             }
 
@@ -3037,8 +3041,11 @@ pub mod ui_egui {
         });
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 2.5, egui::Color32::from_rgb(47, 50, 59));
+        ui.painter().rect_filled(
+            rect,
+            2.5,
+            crate::ui_theme::Theme::marraqueta().palette.bg_elevated,
+        );
         ui.painter().rect_filled(
             egui::Rect::from_min_size(
                 rect.min,
@@ -3060,12 +3067,13 @@ pub mod ui_egui {
     }
 
     fn quota_color(remaining: f64) -> egui::Color32 {
+        let p = crate::ui_theme::Theme::marraqueta().palette;
         if remaining < 15.0 {
-            egui::Color32::from_rgb(235, 91, 91)
+            p.pill_failed
         } else if remaining < 35.0 {
-            egui::Color32::from_rgb(225, 170, 78)
+            p.pill_blocked
         } else {
-            egui::Color32::from_rgb(85, 198, 118)
+            p.pill_done
         }
     }
 
