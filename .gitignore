@@ -53,3 +53,6 @@ nul
 .zcode/
 text_*.json
 uv.lock
+
+# Visual brainstorming companion (superpowers)
+.superpowers/
