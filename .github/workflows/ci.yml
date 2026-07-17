@@ -58,9 +58,9 @@ jobs:
       - name: Format
         run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - name: Tests
-        run: cargo test --manifest-path rust/Cargo.toml --locked
+        run: cargo test --manifest-path rust/Cargo.toml --locked --bin swarms-rs
       - name: Clippy
-        run: cargo clippy --manifest-path rust/Cargo.toml --locked -- -D warnings
+        run: cargo clippy --manifest-path rust/Cargo.toml --locked --bin swarms-rs -- -D warnings
       - name: Review dynamic workflow
         run: cargo run --manifest-path rust/Cargo.toml --locked --bin swarms-rs -- review --plan docs/workflow_plan_dynamic_example.json
       - name: Offline dynamic workflow

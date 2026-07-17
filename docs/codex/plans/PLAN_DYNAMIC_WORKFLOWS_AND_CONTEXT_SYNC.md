@@ -42,6 +42,10 @@ used.
   scopes Rulesync, while Skillshare uses its configured target set.
 - Observation: the local MSVC Rust toolchain cannot link because `link.exe` is
   absent. Formatting passes; compilation must be confirmed by GitHub CI.
+- Observation: enabling whole-crate Rust CI exposed unrelated pre-existing UI
+  test drift (`json!` import, private constant, and stale `RunMeta.read_only`).
+  The new job therefore targets the public `swarms-rs` coordinator binary;
+  UI test repair remains outside this ExecPlan.
 
 ## Decision Log
 
