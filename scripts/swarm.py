@@ -41,11 +41,7 @@ def print_json(data: Any) -> None:
 
 
 def plan_routes(plan: dict[str, Any]) -> set[str]:
-    return {
-        str(task.get("route", "mock"))
-        for stage in plan.get("stages", [])
-        for task in stage.get("tasks", [])
-    }
+    return {str(task.get("route", "mock")) for stage in plan.get("stages", []) for task in stage.get("tasks", [])}
 
 
 def command_preflight(args: argparse.Namespace) -> int:
@@ -167,8 +163,12 @@ def add_runtime_args(parser: argparse.ArgumentParser) -> None:
         help="Repository where full-tools workers read and write",
     )
     restart = parser.add_mutually_exclusive_group()
-    restart.add_argument("--force", action="store_true", help="Overwrite an existing run directory with the same run id")
-    restart.add_argument("--resume", action="store_true", help="Reuse completed task checkpoints from an existing run id")
+    restart.add_argument(
+        "--force", action="store_true", help="Overwrite an existing run directory with the same run id"
+    )
+    restart.add_argument(
+        "--resume", action="store_true", help="Reuse completed task checkpoints from an existing run id"
+    )
     parser.add_argument("--max-total-workers", type=int, default=1000)
     parser.add_argument("--global-max-concurrency", type=int, default=8)
     parser.add_argument("--provider-cap", action="append", default=[], help="Route cap as route=count, e.g. mock=3")

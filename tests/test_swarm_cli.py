@@ -128,7 +128,7 @@ def test_swarm_cli_blocks_disabled_real_route_before_dispatch(tmp_path):
     assert not (tmp_path / "runs").exists()
 
 
-def test_swarm_cli_blocks_unverified_real_route_before_dispatch(tmp_path, monkeypatch):
+def test_swarm_cli_blocks_unverified_real_route_before_dispatch(tmp_path, monkeypatch, capsys):
     plan = json.loads(open("docs/workflow_plan_example.json", encoding="utf-8").read())
     plan["stages"][0]["tasks"][0]["route"] = "glm52"
     plan_path = tmp_path / "unverified-route.json"
@@ -140,22 +140,25 @@ def test_swarm_cli_blocks_unverified_real_route_before_dispatch(tmp_path, monkey
     monkeypatch.setattr("scripts.agent_preflight.shutil.which", lambda command: command)
     monkeypatch.setattr("scripts.agent_preflight._auth_present", lambda _command: True)
 
-    result = run_cli(
-        "run",
-        "--plan",
-        str(plan_path),
-        "--router-config",
-        str(config_path),
-        "--run-root",
-        str(tmp_path / "runs"),
-        "--run-id",
-        "must-preflight",
-        "--provider-cap",
-        "glm52=1",
+    args = swarm.build_parser().parse_args(
+        [
+            "run",
+            "--plan",
+            str(plan_path),
+            "--router-config",
+            str(config_path),
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "must-preflight",
+            "--provider-cap",
+            "glm52=1",
+        ]
     )
+    returncode = args.func(args)
 
-    assert result.returncode == 1
-    payload = json.loads(result.stdout)
+    assert returncode == 1
+    payload = json.loads(capsys.readouterr().out)
     assert payload["findings"] == [{"code": "agent_unverified", "route": "glm52"}]
     assert not (tmp_path / "runs").exists()
 

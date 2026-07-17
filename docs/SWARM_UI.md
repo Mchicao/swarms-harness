@@ -1,150 +1,143 @@
-# SWARMS Run Observer UI
+# SWARMS Native Runtime UI
 
-Estado: spike read-only, feature-gated (`ui-egui`); enlace pendiente del
-toolchain Windows local.
-Fecha: 2026-07-16
+Estado: implementada y validada en Windows; binario Rust opcional `swarms-ui`.
+Fecha de verificación: 2026-07-16.
 
-Una única ventana nativa egui/eframe que observa un run de SWARMS leyendo el
-contrato descrito en `docs/STATE_CONTRACT.md` y `docs/SWARM_UI_CONTRACT.md`. La
-UI **nunca** escribe estado de run, **nunca** reclama tareas y **nunca** lanza
-workers: es un observador puro del directorio
-`.agent/swarm/runs/<run_id>/` (o el `--run-root` indicado).
+La UI es una ventana nativa Rust. Observa `.agent/swarm/runs/<run_id>/`, nunca
+reclama tareas ni ejecuta providers. Sólo escribe por acciones explícitas del
+usuario: steering, o inicialización/sincronización local de Skillshare para el
+proyecto. El runtime público sigue siendo `swarms-rs`; la dependencia gráfica
+sólo se compila con `ui-egui`.
 
-## Artefactos
-
-| Archivo | Rol |
-| --- | --- |
-| `rust/src/ui_main.rs` | Biblioteca `swarms_ui` (siempre compilada, solo `serde`) con el modelo read-only y `RunReader`; la ventana egui/eframe está inline bajo `ui_egui`. |
-| `rust/src/ui_bin.rs` | Entry point mínimo del binario feature-gated `swarms-ui`; reutiliza `swarms_ui::ui_egui::run()`. |
-| `rust/src/app.rs` | Archivo auxiliar presente en el checkout, pero no referenciado por un target de `rust/Cargo.toml` en el estado actual. |
-| `rust/Cargo.toml` | Define la feature `ui-egui` (dependencia opcional `eframe` 0.35, Glow) y el binario `swarms-ui` con `required-features`. |
-| `rust/tests/ui_state.rs` | Pruebas de integración del modelo (sin abrir ventana, sin eframe). |
-
-## Compilación
-
-Los siguientes son los comandos contractuales para el flujo sin feature. En el
-entorno auditado actualmente fallan durante el enlace del host por falta de
-`link.exe` (ver `docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md`); no se presentan
-como comandos verdes hasta ejecutarlos con `exit 0`:
+## Ejecutar
 
 ```powershell
-cargo build --manifest-path rust/Cargo.toml
-cargo test --manifest-path rust/Cargo.toml
+cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
 ```
 
-Con la feature se compilan la parte egui/eframe inline de `ui_main.rs` y el
-entry point `ui_bin.rs`; si el enlazado está disponible, también el binario
-`swarms-ui`:
+Opciones:
+
+- `--run-root <ruta>`: raíz de runs; por defecto `.agent/swarm/runs`.
+- `--run-id <id>`: abre un run concreto.
+- `--ready-file <ruta>`: escribe una señal JSON atómica cuando la ventana inicia.
+- `--bench-duration <segundos>`: cierra automáticamente una medición controlada.
+
+## Diseño de bajo consumo
+
+- `eframe 0.32` con renderer Glow; WGPU, WebView, persistencia e imágenes están
+  deshabilitados.
+- Sondeo de metadatos con biblioteca estándar: 1 segundo durante un run activo
+  y 5 segundos cuando está inactivo. No existe un loop fijo a 60 FPS.
+- Los JSON completos sólo se releen si cambia la firma de `workflow.json`,
+  `tasks/`, `claims/`, `results/`, `events.jsonl` o `report*.json`.
+- El índice de runs se actualiza cada 10 segundos, no en cada frame.
+- El árbol aplanado queda cacheado y usa `ScrollArea::show_rows`; sólo se
+  renderizan las filas visibles.
+- El buffer mantiene como máximo 500 eventos recientes.
+- Sólo se carga el log de la tarea seleccionada, limitado a sus últimos 256 KiB y con líneas virtualizadas.
+- Errores se truncan a 1000 caracteres y se sanea material parecido a tokens.
+
+Se usa polling en lugar de un file watcher para evitar otra dependencia y más
+hilos. Añadir un watcher sólo se justifica si una medición reproducible muestra
+que el sondeo de metadatos domina el consumo.
+
+## Estado observado
+
+La ventana usa una navegación compacta inspirada en herramientas de agentes
+como T3 Code: tema oscuro sobrio, barra contextual y jerarquía
+`Proyecto → run → etapa → tarea`. Los proyectos salen de `workflow.json`; runs
+históricos conservan fallback por workspace o `Legacy runs`. La agrupación es
+de sólo lectura y no mueve directorios.
+
+Cada run muestra su última actividad en formato compacto (`now`, `8m ago`,
+`3d ago`). Se toma el timestamp más reciente entre workflow, eventos, reporte y
+snapshots de tareas, por lo que una reanudación queda reflejada. Los runs
+históricos sin evidencia temporal muestran `unknown`.
+
+La ventana ofrece `Overview`, `Tasks`, `Activity` y `Resources`. `Overview` dibuja el DAG por
+etapas sin una dependencia gráfica adicional; `Tasks` muestra runs, etapas,
+tareas y subagentes; `Activity` presenta el stream reciente. También muestra estado, provider, modelo,
+intentos, dependencias, artefactos, errores y heartbeat. El runtime Rust escribe
+snapshots `pending` e `in_progress` antes de ejecutar, y refresca
+`heartbeat_unix_ms` sin crear un hilo adicional por worker.
+
+Una tarea activa se marca `stale` cuando supera un intervalo sin heartbeat.
+La etiqueta es visual y nunca altera el snapshot.
+
+## Cuotas de planes
+
+La barra lateral lee el mismo snapshot saneado que usa el scheduler y muestra
+cada plan y ventana (`5h`, `7d`, etc.), porcentaje restante y edad del snapshot.
+Cada plan ocupa una fila compacta con nombre humano, barra proporcional y el
+porcentaje más restrictivo como estado principal; no se fabrican resets ni
+ventanas que el monitor no haya publicado.
+No abre OAuth, no lee tokens y no invoca Python. La captura sigue siendo
+responsabilidad de `ai-usage-monitor`; un snapshot ausente o antiguo aparece
+como desconocido en vez de inventar disponibilidad.
+
+## Steer prompts
+
+Al seleccionar una tarea activa con adapter Codex, OpenCode o Kilo, el panel
+`Steer agent` permite encolar una nueva dirección de hasta 4000 caracteres. Los
+workers CLI son turnos no interactivos: el prompt no interrumpe tokens que ya se
+están generando. El runtime lo reclama al terminar el turno actual, reanuda la
+sesión reportada por el provider y lo aplica antes de verificar artefactos. El
+historial persiste bajo `steering/<task_id>/history.jsonl` con estado
+`applied`, `rejected` o `failed`; los prompts no aparecen en eventos globales.
+
+Los subagentes declarados en el plan son direccionables mediante su propia
+tarea. Los subagentes internos que un provider no identifica siguen siendo
+visibles como opacos y no se presentan falsamente como steerables.
+
+## Recursos compartidos de agentes
+
+`Resources` descubre instrucciones AGENTS, skills y nombres de servidores MCP
+sin mostrar comandos, headers, variables ni credenciales. Se puede alternar
+entre el alcance global y el proyecto del run seleccionado; los recursos del
+proyecto se resuelven desde `workspace_root`, no desde el repositorio SWARMS.
+
+Las skills compartidas usan `.skillshare/skills/` como fuente canónica. La
+acción `Sync project skills` ejecuta `skillshare sync -p --json` sólo para ese
+workspace y distribuye a los targets configurados. Los junctions generados se
+presentan como una sola skill con sus agentes consumidores. La sincronización
+global nunca se ejecuta implícitamente desde la UI.
+
+## Validación
 
 ```powershell
-cargo build --manifest-path rust/Cargo.toml --features ui-egui
-cargo test --manifest-path rust/Cargo.toml --features ui-egui
-cargo clippy --manifest-path rust/Cargo.toml --features ui-egui -- -D warnings
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path rust/Cargo.toml --all-features
+cargo build --release --manifest-path rust/Cargo.toml --all-features
+cargo tree --manifest-path rust/Cargo.toml --features ui-egui
 ```
 
-## Bloqueo de toolchain (Windows, `link.exe`)
+El modelo read-only, la retención de eventos, límites de log, señales de inicio,
+firmas de cambio y frecuencias de polling tienen pruebas automáticas. CI compila
+y prueba todas las features en Windows, Linux y macOS.
 
-El spike **no pudo enlazarse** en este entorno. El toolchain host activo es
-`stable-x86_64-pc-windows-msvc` (rustc 1.97.0), y están instalados los targets
-`x86_64-pc-windows-msvc` y `x86_64-pc-windows-gnullvm`, pero faltan el linker
-MSVC, las bibliotecas del SDK y Visual Studio/Build Tools. Los proc-macros y
-build scripts se enlazan para el host MSVC, por lo que añadir `--target
-x86_64-pc-windows-gnullvm` tampoco evita el error. Error exacto:
+Medición local reproducible del release en Windows, observando un run terminado
+y descartando 5 segundos de calentamiento:
 
-```text
-error: linker `link.exe` not found
-  = note: program not found
-note: the msvc targets depend on the msvc linker but `link.exe` was not found
-note: please ensure that Visual Studio 2017 or later, or Build Tools for
-      Visual Studio were installed with the Visual C++ option
-```
+- 10,22 s de muestra estable: 0,000 s de CPU acumulada según `Get-Process`;
+- working set mediano: 159,22 MiB; máximo: 159,41 MiB;
+- GPU: mediana 0,000%, máximo 0,051% en 125 muestras de GPU Engine;
+- `swarms-ui.exe`: 4,10 MiB; `swarms-rs.exe`: 2,34 MiB.
 
-Se intentó redirigir a `rust-lld` (`-C linker-flavor=lld-link -C linker=rust-lld`),
-pero el SDK MSVC tampoco está disponible:
+Estas cifras son una medición de este equipo, no un presupuesto universal. El
+driver gráfico domina la RAM de la ventana; CPU y GPU quedan prácticamente en
+reposo gracias al repaint bajo demanda.
 
-```text
-rust-lld: error: could not open 'kernel32.lib': no such file or directory
-rust-lld: error: could not open 'ntdll.lib': no such file or directory
-rust-lld: error: could not open 'userenv.lib': no such file or directory
-rust-lld: error: could not open 'ws2_32.lib': no such file or directory
-rust-lld: error: could not open 'dbghelp.lib': no such file or directory
-```
+La auditoría histórica del linker permanece en
+`docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md`; describe un bloqueo anterior y no
+representa el estado actual del equipo.
 
-`cargo fmt --manifest-path rust/Cargo.toml -- --check` pasa. `cargo build`,
-`cargo test` y `cargo clippy` fallan con `exit 101`, incluso en el intento
-gnullvm, porque el lado host sigue necesitando `link.exe`. La verificación de
-enlazado queda pendiente de un entorno con Build Tools para Visual Studio o
-de un toolchain gnullvm completo con import libs/CRT verificadas; el target
-instalado por sí solo no es suficiente (ver
-`docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md`).
+## Límites actuales
 
-## Ventana
-
-Una sola ventana, sin diálogos por agente:
-
-| Zona | Contenido |
-| --- | --- |
-| Inferior | Badge de estado (`empty`/`loading`/`error`/`ready`), run, status, stages, tasks, results, concurrencia global y por provider, edad del último heartbeat, proveedor real activo, `log_cap`, eventos bufferizados. |
-| Izquierda (si no se fijó `--run-id`) | Runs descubiertos bajo `--run-root`, activos primero, con task count y antigüedad. |
-| Centro | Filtro por subcadena (case-insensitive), árbol virtualizado `run → stage → task → subagent`. Filas con color por estado y marca `⚠ stale`. |
-| Derecha | Detalle de la fila seleccionada en la misma ventana: campos del snapshot, agente/claim, heartbeat, needs, artifacts, subagents, error y cola del `worker.log`. |
-
-Seleccionar una fila de tarea o subagente actualiza el panel derecho. **No** se
-abre ni enfoca ninguna ventana del SO adicional.
-
-## Estados
-
-- `empty`: el directorio del run no existe o no tiene checkpoints de tareas.
-- `loading`: hay run seleccionado pero el primer `read()` aún no produjo contrato.
-- `error`: `RunReader::open` rechazó el `run_id` (caracteres inseguros o escape
-  de `run_root`); el mensaje saneado se muestra y la UI no cae.
-- `stale`: por tarea, cuando su `heartbeat_unix_ms` es más antiguo que
-  `workflow.json.heartbeat_interval_seconds`. Es una etiqueta visual: **nunca**
-  muta el `status` del snapshot.
-
-## Repintado bajo demanda
-
-La UI **no** corre un loop fijo a 60 FPS. En cada frame se agenda el siguiente
-repintado con `Context::request_repaint_after`:
-
-- `500 ms` cuando el run está `running`;
-- `2000 ms` en caso contrario.
-
-La interacción del usuario (selección, filtro, scroll) dispara repintados
-inmediatos por defecto en egui. La detección de cambios en disco es por sondeo
-de metadatos (mtime de `tasks/`, tamaño y mtime de `events.jsonl`, presencia de
-`report*.json`); **no** se añade un file watcher para mantener la superficie de
-dependencias mínima y medible.
-
-## Virtualización y límites de memoria
-
-- El árbol central usa `ScrollArea::show_rows` con altura fija: sólo se renderizan
-  las filas visibles (cumple `docs/UI_RUNTIME_EVALUATION.md`, caso 1.000/10.000
-  filas).
-- El `worker.log` se carga **solo** al seleccionar una tarea, y solo los últimos
-  `MAX_LOG_BYTES` = 2 MiB (`read_worker_log_tail`). Cambiar de selección libera
-  el anterior.
-- `events.jsonl` se tail-ea por offset (solo líneas nuevas y completas); el
-  buffer residente se acota a `4 * MAX_EVENT_ROWS`.
-- Paths absolutos se relativizan al workspace/raíz; los foráneos colapsan a su
-  basename. Errores se truncan a 1000 chars y se depuran de `Bearer …`, `sk-…`
-  y patrones tipo `KEY=…` (`sanitize_error`, `sanitize_path` en `ui_main.rs`).
-
-## Fuera de alcance (no implementado)
-
-- Escribir estado, reclamar tareas, lanzar/detener workers o mutar planes.
-- Colapsar/expandir nodos del árbol (la virtualización ya sostiene listas grandes).
-- `file watcher` nativo, series temporales, export, multipaneles flotantes.
-- WGPU, persistence, imágenes o gráficos (Glow-only hasta que se justifique medir).
-- Iniciar ejecuciones desde la UI (`CREATE_NO_WINDOW`, redirección de stdout): eso
-  requiere una decisión explícita posterior según `docs/UI_RUNTIME_EVALUATION.md`.
-
-## Línea de comandos prevista (cuando se cablee `main`)
-
-```text
-swarms-ui [--run-root .agent/swarm/runs] [--run-id <id>]
-```
-
-Con `--run-id` se fija un único run y se omite el panel izquierdo. Sin él, la UI
-lista los runs descubiertos bajo `--run-root` (por defecto
-`.agent/swarm/runs`).
+- Iniciar, detener o reanudar workflows desde la UI.
+- Inyectar texto en una generación CLI que ya está produciendo tokens.
+- Steering de Hermes, Agy, OpenAI-compatible o agentes internos sin sesión
+  direccionable.
+- Series temporales, imágenes o ventanas flotantes.
+- WGPU o un frontend web.
+- Mantener logs completos en memoria.

@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/runkids/skillshare/main/schemas/project-config.schema.json
+targets:
+    - codex
+    - gemini
+    - antigravity
+    - opencode
+audit:
+    block_threshold: CRITICAL

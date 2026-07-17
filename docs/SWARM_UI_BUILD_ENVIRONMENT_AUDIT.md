@@ -1,4 +1,8 @@
-# Auditoría read-only del entorno de compilación — `rust/src/ui_bin.rs`
+# Auditoría histórica del entorno de compilación — `rust/src/ui_bin.rs`
+
+> Estado: superada. Este documento conserva evidencia de un bloqueo anterior.
+> El 2026-07-16 el binario UI, sus pruebas y el build release enlazaron
+> correctamente. El estado vigente está en `docs/SWARM_UI.md`.
 
 - **Rol SWARMS:** `critic` (auditoría de entorno, sin cambios de código).
 - **Alcance:** determinar por qué el binario `ui_bin.rs` (que reutiliza la lib `swarms_ui` y la UI feature-gated `ui-egui`) **no enlaza** en este equipo, con evidencia de comandos y `exit code` reales.

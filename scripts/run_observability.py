@@ -196,18 +196,14 @@ def _build_task_node(
         },
         "subagents": subagents,
         "provider_subagents": list(task.get("provider_subagents") or []),
-        "provider_subagent_visibility": task.get(
-            "provider_subagent_visibility", "not_reported"
-        ),
+        "provider_subagent_visibility": task.get("provider_subagent_visibility", "not_reported"),
         "timestamps": {
             "started_at": task.get("started_at"),
             "ended_at": task.get("ended_at"),
             "heartbeat_unix_ms": heartbeat_unix_ms,
         },
         "needs": list(task.get("needs") or []),
-        "artifacts": [
-            sanitize_path(artifact, roots) for artifact in (task.get("artifacts") or [])
-        ],
+        "artifacts": [sanitize_path(artifact, roots) for artifact in (task.get("artifacts") or [])],
         "error": sanitize_error(task.get("error")),
     }
 
@@ -282,22 +278,16 @@ class RunObservability:
             if agent_id:
                 agent_index[str(agent_id)] = task
 
-        task_nodes = [
-            _build_task_node(task, agent_index, claim_index, roots) for task in tasks_raw
-        ]
+        task_nodes = [_build_task_node(task, agent_index, claim_index, roots) for task in tasks_raw]
 
         stages = self._group_stages_by_name(task_nodes, tasks_raw)
         status_counts = _status_counts(task_nodes)
         heartbeats = [
-            node["timestamps"]["heartbeat_unix_ms"]
-            for node in task_nodes
-            if node["timestamps"]["heartbeat_unix_ms"]
+            node["timestamps"]["heartbeat_unix_ms"] for node in task_nodes if node["timestamps"]["heartbeat_unix_ms"]
         ]
 
         run_status = _derive_run_status(tasks_raw, report)
-        has_real_provider = any(
-            task.get("provider") not in (None, "mock") for task in tasks_raw
-        )
+        has_real_provider = any(task.get("provider") not in (None, "mock") for task in tasks_raw)
 
         run_meta = {
             "run_id": workflow.get("run_id", self.run_dir.name),
@@ -405,9 +395,7 @@ def iter_events(run_dir: Path) -> Iterator[dict[str, Any]]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Emit a read-only, versioned observability contract for a SWARMS run."
-    )
+    parser = argparse.ArgumentParser(description="Emit a read-only, versioned observability contract for a SWARMS run.")
     parser.add_argument("--run-id", help="Run id to inspect")
     parser.add_argument(
         "--run-root",

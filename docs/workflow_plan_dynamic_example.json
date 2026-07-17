@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "goal": "Audit two modules, merge the findings, and verify the result",
+  "project": { "id": "dynamic-example", "name": "Dynamic workflow example" },
+  "budget_policy": {
+    "max_total_workers": 12,
+    "global_max_concurrency": 3,
+    "provider_concurrency": { "mock": 3 },
+    "max_depth": 2,
+    "max_children_per_agent": 4,
+    "max_rounds": 3,
+    "spawn_budget": 0
+  },
+  "workflow": {
+    "steps": [
+      { "id": "discover", "type": "agent", "route": "mock", "task": "Run pytest discovery fixture." },
+      {
+        "id": "audit",
+        "type": "map",
+        "items": ["adapter.rs", "runtime.rs"],
+        "item_name": "module",
+        "route": "mock",
+        "task": "Run pytest audit fixture for {module}.",
+        "needs": ["discover"],
+        "parent": "discover"
+      },
+      { "id": "merge", "type": "reduce", "route": "mock", "task": "Run pytest merge fixture.", "from": ["audit"] },
+      {
+        "id": "verify",
+        "type": "verify",
+        "route": "mock",
+        "task": "Run pytest verification fixture.",
+        "needs": ["merge"],
+        "artifacts": ["rust/Cargo.toml"],
+        "verify": ["rustc --version"]
+      },
+      {
+        "id": "polish",
+        "type": "loop",
+        "max_rounds": 2,
+        "needs": ["verify"],
+        "step": { "type": "agent", "route": "mock", "task": "Run pytest polish fixture for bounded round {round}." }
+      }
+    ]
+  }
+}

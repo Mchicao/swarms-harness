@@ -46,9 +46,7 @@ def _auth_present(command: str | None) -> bool | None:
     """Return local auth evidence without making a model/API request."""
     if command == "opencode":
         try:
-            result = subprocess.run(
-                [command, "auth", "list"], capture_output=True, text=True, timeout=10, check=False
-            )
+            result = subprocess.run([command, "auth", "list"], capture_output=True, text=True, timeout=10, check=False)
         except (OSError, subprocess.TimeoutExpired):
             return False
         output = f"{result.stdout}\n{result.stderr}".lower()

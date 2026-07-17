@@ -43,4 +43,4 @@ def test_legacy_parallel_swarm_uses_canonical_codex_cli_order():
     source = Path("scripts/parallel_swarm.ps1").read_text(encoding="utf-8")
 
     assert "codex -a never exec" in source
-    assert "codex.exe`\" exec --full-auto" not in source
+    assert 'codex.exe`" exec --full-auto' not in source

@@ -65,7 +65,7 @@ task concurrently within a run.
 | Mechanism | What it does |
 |---|---|
 | `try_claim` | Atomically creates the lock (`O_CREAT \| O_EXCL`). Returns `false` if already owned. |
-| `heartbeat` | A background thread updates `heartbeat_at` in the lock file every `SWARMS_HEARTBEAT_SECONDS` (default 30 s) and refreshes `tasks/<task_id>.json.heartbeat_unix_ms`. |
+| `heartbeat` | Python compatibility workers use their existing background heartbeat; the Rust coordinator refreshes all active task snapshots from its receive loop without adding one thread per worker. Both use `SWARMS_HEARTBEAT_SECONDS` (default 30 s). |
 | `stale claim` | If `time.now - lock.mtime > SWARMS_CLAIM_STALE_SECONDS` (default 900 s), the claim is considered expired and a new `try_claim` reclaims it. |
 | `release` | Removes the lock when the worker finishes (success or failure). |
 
@@ -154,11 +154,11 @@ If any of these fail, use `--resume` to recover.
 |---|---|---|
 | Plan parsing & task DAG | Control plane | Control plane |
 | Claim locks (file-based) | Yes — inter-worker | No — in-process threads |
-| Heartbeat | Background thread per task | Poll loop per worker |
+| Heartbeat | Background thread per task | Central scheduler receive loop; no extra heartbeat thread per worker |
 | Checkpoint key | `checkpoint_key()` (FNV-1a) | `checkpoint_key()` (FNV-1a) |
 | Checkpoint reuse on resume | `load_completed_checkpoint` | `load_completed_checkpoint` |
 | Expired-claim recovery | `recover_expired` + `force_release` | N/A (no cross-process claims) |
-| Resume event | `workflow_resumed` + `task_checkpoint_hit` | `task_recovered` |
+| Resume event | `workflow_resumed` + `task_checkpoint_hit` | `workflow_resumed`; changed definitions are requeued |
 
 Rust is used **only** when its in-process thread model improves a coordination
 boundary that has been measured as a bottleneck. It does not introduce a new

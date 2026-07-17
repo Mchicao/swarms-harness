@@ -1,30 +1,29 @@
-//! SWARMS read-only run observer.
+//! SWARMS native runtime console.
 //!
 //! This file is the root of two compilation units of the `swarms-runtime`
 //! package:
 //!
-//! * the `swarms_ui` library (always compiled, serde + std only): a pure,
+//! * the `swarms_runtime::ui` module (always compiled, serde + std only): a pure,
 //!   testable, read-only model of the on-disk run contract described in
 //!   `docs/STATE_CONTRACT.md` and `docs/SWARM_UI_CONTRACT.md`;
 //! * the `swarms-ui` binary (compiled only with the `ui-egui` feature): a
 //!   native egui/eframe window that renders that contract.
 //!
-//! The observer NEVER writes run state, NEVER claims tasks and NEVER spawns
-//! workers. It only reads `workflow.json`, `tasks/*.json`, `claims/*.lock`,
-//! `events.jsonl`, `results/<task_id>/worker.log` and the terminal report.
+//! The UI never claims tasks or spawns workers. Writes happen only after an
+//! explicit user action: steering, or project-local Skillshare init/sync.
 //!
 //! See `docs/SWARM_UI.md` for usage and the exact Windows toolchain blocker.
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const CONTRACT_SCHEMA_VERSION: u64 = 1;
-const MAX_ERROR_CHARS: usize = 1000;
+pub const MAX_ERROR_CHARS: usize = 1000;
 /// SWARMS-UI: hard cap on resident worker.log bytes, per UI_RUNTIME_EVALUATION.
-pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+pub const MAX_LOG_BYTES: u64 = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Model
@@ -32,8 +31,9 @@ pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Derived run status. `Loading` and `Error` are UI transient states; the rest
 /// mirror `SWARM_UI_CONTRACT.md` run-status derivation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunStatus {
+    #[default]
     Empty,
     Loading,
     Running,
@@ -41,12 +41,6 @@ pub enum RunStatus {
     Failed,
     Partial,
     Error,
-}
-
-impl Default for RunStatus {
-    fn default() -> Self {
-        RunStatus::Empty
-    }
 }
 
 impl RunStatus {
@@ -75,6 +69,8 @@ pub struct RunContract {
 #[derive(Clone, Debug, Default)]
 pub struct RunMeta {
     pub run_id: String,
+    pub project_id: String,
+    pub project_name: String,
     pub runtime: String,
     pub state_schema_version: Option<u64>,
     pub created_unix_ms: Option<u128>,
@@ -173,16 +169,17 @@ pub struct EventRow {
 
 impl EventRow {
     fn from_value(v: &Value) -> Self {
+        let payload = v.get("payload").unwrap_or(&Value::Null);
         EventRow {
             time_unix_ms: v
                 .get("time_unix_ms")
                 .and_then(Value::as_u64)
                 .map(u128::from),
             event: get_str(v, "event").unwrap_or_default(),
-            task_id: get_str(v, "task_id"),
-            model: get_str(v, "model"),
-            provider: get_str(v, "provider"),
-            error: sanitize_error(v.get("error")),
+            task_id: get_str(v, "task_id").or_else(|| get_str(payload, "task_id")),
+            model: get_str(v, "model").or_else(|| get_str(payload, "model")),
+            provider: get_str(v, "provider").or_else(|| get_str(payload, "provider")),
+            error: sanitize_error(v.get("error").or_else(|| payload.get("error"))),
         }
     }
 }
@@ -191,10 +188,20 @@ impl EventRow {
 #[derive(Clone, Debug)]
 pub struct RunIndex {
     pub run_id: String,
+    pub project_id: String,
+    pub project_name: String,
     pub runtime: String,
     pub created_unix_ms: Option<u128>,
+    pub last_activity_unix_ms: Option<u128>,
     pub task_count: usize,
     pub has_report: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectGroup {
+    pub project_id: String,
+    pub project_name: String,
+    pub runs: Vec<RunIndex>,
 }
 
 // ---------------------------------------------------------------------------
@@ -283,8 +290,11 @@ impl RunReader {
             .iter()
             .any(|t| get_str(t, "provider").as_deref() != Some("mock"));
 
+        let (project_id, project_name) = project_meta(&workflow);
         let run = RunMeta {
             run_id: get_str(&workflow, "run_id").unwrap_or_else(|| self.run_dir_name()),
+            project_id,
+            project_name,
             runtime: get_str(&workflow, "runtime").unwrap_or_else(|| "unknown".to_string()),
             state_schema_version: get_u64(&workflow, "state_schema_version"),
             created_unix_ms: get_u128(&workflow, "created_unix_ms"),
@@ -349,16 +359,27 @@ impl RunReader {
     /// truncated/replaced file resets the offset.
     pub fn tail_events(&mut self, max: usize) -> Vec<EventRow> {
         let path = self.run_dir.join("events.jsonl");
-        let bytes = match fs::read(&path) {
-            Ok(b) => b,
+        use std::io::{Read, Seek, SeekFrom};
+        let len = match fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
             Err(_) => return Vec::new(),
         };
-        if (bytes.len() as u64) < self.events_offset {
+        if len < self.events_offset {
             self.events_offset = 0;
         }
-        let start = self.events_offset as usize;
-        let slice = &bytes[start..];
-        let mut out = Vec::new();
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(_) => return Vec::new(),
+        };
+        if file.seek(SeekFrom::Start(self.events_offset)).is_err() {
+            return Vec::new();
+        }
+        let mut bytes = Vec::with_capacity((len - self.events_offset).min(64 * 1024) as usize);
+        if file.read_to_end(&mut bytes).is_err() {
+            return Vec::new();
+        }
+        let slice = bytes.as_slice();
+        let mut out = VecDeque::with_capacity(max);
         let mut consumed = 0usize;
         let mut line_start = 0usize;
         for (i, &b) in slice.iter().enumerate() {
@@ -370,8 +391,11 @@ impl RunReader {
                     let trimmed = s.trim();
                     if !trimmed.is_empty() {
                         if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                            if out.len() < max {
-                                out.push(EventRow::from_value(&v));
+                            if max > 0 {
+                                if out.len() == max {
+                                    out.pop_front();
+                                }
+                                out.push_back(EventRow::from_value(&v));
                             }
                         }
                     }
@@ -379,8 +403,28 @@ impl RunReader {
             }
         }
         self.events_offset += consumed as u64;
-        out
+        out.into()
     }
+}
+
+fn project_meta(workflow: &Value) -> (String, String) {
+    if let Some(id) = get_str(workflow, "project_id").filter(|id| !id.trim().is_empty()) {
+        let name = get_str(workflow, "project_name")
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| id.clone());
+        return (id, name.chars().take(80).collect());
+    }
+    if let Some(workspace) = get_str(workflow, "workspace_root") {
+        let path = PathBuf::from(&workspace);
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Workspace")
+            .to_string();
+        return (format!("workspace:{}", workspace.to_lowercase()), name);
+    }
+    ("legacy".to_string(), "Legacy runs".to_string())
 }
 
 /// Discover every run under `run_root` (metadata only). Active runs first.
@@ -392,33 +436,96 @@ pub fn list_runs(run_root: &Path) -> Vec<RunIndex> {
     let mut runs: Vec<RunIndex> = rd
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| {
+        .map(|e| {
             let dir = e.path();
             let wf = read_json(&dir.join("workflow.json")).unwrap_or(Value::Null);
             let tasks_dir = dir.join("tasks");
-            let task_count = fs::read_dir(&tasks_dir)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
-                        .count()
-                })
-                .unwrap_or(0);
-            Some(RunIndex {
+            let mut task_count = 0;
+            let mut last_activity_unix_ms = [
+                dir.join("workflow.json"),
+                dir.join("events.jsonl"),
+                dir.join("report.json"),
+                dir.join("report-rs.json"),
+            ]
+            .iter()
+            .filter_map(|path| modified_unix_ms(path))
+            .max();
+            if let Ok(entries) = fs::read_dir(&tasks_dir) {
+                for entry in entries.filter_map(|entry| entry.ok()) {
+                    if entry.path().extension().and_then(|value| value.to_str()) == Some("json") {
+                        task_count += 1;
+                        last_activity_unix_ms =
+                            last_activity_unix_ms.max(modified_unix_ms(&entry.path()));
+                    }
+                }
+            }
+            let (project_id, project_name) = project_meta(&wf);
+            let created_unix_ms = get_u128(&wf, "created_unix_ms");
+            RunIndex {
                 run_id: get_str(&wf, "run_id")
                     .unwrap_or_else(|| e.file_name().to_string_lossy().into_owned()),
+                project_id,
+                project_name,
                 runtime: get_str(&wf, "runtime").unwrap_or_else(|| "unknown".to_string()),
-                created_unix_ms: get_u128(&wf, "created_unix_ms"),
+                created_unix_ms,
+                last_activity_unix_ms: last_activity_unix_ms.or(created_unix_ms),
                 task_count,
                 has_report: dir.join("report.json").exists() || dir.join("report-rs.json").exists(),
-            })
+            }
         })
         .collect();
     runs.sort_by(|a, b| {
-        b.has_report
-            .cmp(&a.has_report)
-            .then_with(|| b.created_unix_ms.cmp(&a.created_unix_ms))
+        a.has_report
+            .cmp(&b.has_report)
+            .then_with(|| b.last_activity_unix_ms.cmp(&a.last_activity_unix_ms))
     });
     runs
+}
+
+fn modified_unix_ms(path: &Path) -> Option<u128> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis())
+}
+
+pub fn relative_age(timestamp_ms: Option<u128>, now_ms: u128) -> String {
+    let Some(timestamp_ms) = timestamp_ms else {
+        return "unknown".to_string();
+    };
+    let seconds = now_ms.saturating_sub(timestamp_ms) / 1000;
+    match seconds {
+        0..=59 => "now".to_string(),
+        60..=3_599 => format!("{}m ago", seconds / 60),
+        3_600..=86_399 => format!("{}h ago", seconds / 3_600),
+        86_400..=604_799 => format!("{}d ago", seconds / 86_400),
+        604_800..=2_629_799 => format!("{}w ago", seconds / 604_800),
+        _ => format!("{}mo ago", seconds / 2_629_800),
+    }
+}
+
+pub fn group_runs(runs: &[RunIndex]) -> Vec<ProjectGroup> {
+    let mut groups: BTreeMap<(String, String), Vec<RunIndex>> = BTreeMap::new();
+    for run in runs {
+        groups
+            .entry((run.project_name.to_lowercase(), run.project_id.clone()))
+            .or_default()
+            .push(run.clone());
+    }
+    groups
+        .into_iter()
+        .map(|((_, project_id), runs)| ProjectGroup {
+            project_name: runs
+                .first()
+                .map(|run| run.project_name.clone())
+                .unwrap_or_else(|| "Project".to_string()),
+            project_id,
+            runs,
+        })
+        .collect()
 }
 
 /// Last `MAX_LOG_BYTES` of a task's `worker.log`, loaded only on demand.
@@ -755,7 +862,7 @@ fn group_stages(tasks_raw: &[Value], task_nodes: &[TaskNode]) -> Vec<StageNode> 
             None => continue,
         };
         let stage_name = get_str(raw, "stage").unwrap_or_else(|| "Unnamed".to_string());
-        let needs_new = stages.last().map_or(true, |s| s.name != stage_name);
+        let needs_new = stages.last().is_none_or(|s| s.name != stage_name);
         if needs_new {
             stages.push(StageNode {
                 name: stage_name.clone(),
@@ -836,10 +943,17 @@ fn sanitize_path_opt(value: Option<&str>, roots: &[PathBuf]) -> Option<String> {
             return Some(rel.to_string_lossy().replace('\\', "/"));
         }
     }
-    if !path.is_absolute() {
+    let cross_platform_absolute = path.is_absolute()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with("\\\\")
+        || trimmed.as_bytes().get(1) == Some(&b':');
+    if !cross_platform_absolute {
         return Some(trimmed.replace('\\', "/"));
     }
-    path.file_name().and_then(|n| n.to_str()).map(String::from)
+    trimmed
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .map(String::from)
 }
 
 /// Cap length and scrub secret-like substrings from an error string.
@@ -853,8 +967,8 @@ pub fn sanitize_error(value: Option<&Value>) -> Option<String> {
         return None;
     }
     let mut out = text.replace('\\', "/");
-    if out.len() > MAX_ERROR_CHARS {
-        out.truncate(MAX_ERROR_CHARS);
+    if out.chars().count() > MAX_ERROR_CHARS {
+        out = out.chars().take(MAX_ERROR_CHARS).collect();
         out.push_str("...[truncated]");
     }
     Some(redact(&out))
@@ -866,6 +980,53 @@ fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < n {
+        if (chars[i].is_ascii_alphabetic() || chars[i] == '_')
+            && (i == 0 || !(chars[i - 1].is_ascii_alphanumeric() || chars[i - 1] == '_'))
+        {
+            let mut end = i + 1;
+            while end < n && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+                end += 1;
+            }
+            let key: String = chars[i..end]
+                .iter()
+                .collect::<String>()
+                .to_ascii_lowercase();
+            let sensitive = key == "api_key"
+                || key.ends_with("_api_key")
+                || key.ends_with("_token")
+                || key.contains("secret")
+                || key.contains("password");
+            let mut sep = end;
+            while sep < n && chars[sep].is_ascii_whitespace() && chars[sep] != '\n' {
+                sep += 1;
+            }
+            if sensitive && sep < n && matches!(chars[sep], '=' | ':') {
+                out.extend(chars[i..=sep].iter());
+                out.push_str("***");
+                i = sep + 1;
+                while i < n && chars[i].is_ascii_whitespace() && chars[i] != '\n' {
+                    i += 1;
+                }
+                let quote = chars.get(i).copied().filter(|c| matches!(c, '\'' | '"'));
+                if quote.is_some() {
+                    i += 1;
+                }
+                while i < n {
+                    if quote.is_some_and(|q| chars[i] == q)
+                        || (quote.is_none()
+                            && (chars[i].is_ascii_whitespace()
+                                || matches!(chars[i], ',' | ';' | '}' | ']')))
+                    {
+                        if quote.is_some() {
+                            i += 1;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
         if matches_at(&chars, i, &['s', 'k', '-']) {
             out.push_str("sk-");
             i += 3;
@@ -917,6 +1078,7 @@ fn is_token_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn safe_run_id_rules() {
@@ -943,13 +1105,25 @@ mod tests {
         assert!(secret.contains("Bearer"));
         assert!(secret.contains("sk-"));
         assert!(secret.contains("***"));
+
+        let assignments = sanitize_error(Some(&Value::String(
+            "api_key=supersecret OPENAI_API_KEY='anothersecret' password: hidden".into(),
+        )))
+        .unwrap();
+        assert!(!assignments.contains("supersecret"));
+        assert!(!assignments.contains("anothersecret"));
+        assert!(!assignments.contains("hidden"));
+
+        let unicode = "🙂".repeat(MAX_ERROR_CHARS + 10);
+        let capped = sanitize_error(Some(&Value::String(unicode))).unwrap();
+        assert!(capped.ends_with("...[truncated]"));
     }
 
     #[test]
     fn path_sanitization_relativizes() {
         let root = PathBuf::from("/repo");
         assert_eq!(
-            sanitize_path("/repo/docs/x.md", &[root.clone()]).unwrap(),
+            sanitize_path("/repo/docs/x.md", std::slice::from_ref(&root)).unwrap(),
             "docs/x.md"
         );
         assert_eq!(
@@ -1020,6 +1194,22 @@ mod tests {
         task.status = "completed".into();
         assert!(!task.is_stale(now, 1));
     }
+
+    #[test]
+    fn event_tail_keeps_only_the_newest_rows() {
+        let root = std::env::temp_dir().join(format!("swarms-events-{}", unix_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let payload = (0..8)
+            .map(|id| format!("{{\"event\":\"tick\",\"payload\":{{\"task_id\":\"{id}\"}}}}\n"))
+            .collect::<String>();
+        fs::write(root.join("events.jsonl"), payload).unwrap();
+        let mut reader = RunReader::new(&root, Vec::new());
+        let events = reader.tail_events(3);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].task_id.as_deref(), Some("5"));
+        assert_eq!(events[2].task_id.as_deref(), Some("7"));
+        fs::remove_dir_all(root).ok();
+    }
 }
 
 // ===========================================================================
@@ -1028,14 +1218,153 @@ mod tests {
 // ===========================================================================
 #[cfg(feature = "ui-egui")]
 pub mod ui_egui {
-    use crate::*;
+    use super::*;
+    use crate::{config, quota, resources, steering};
     use eframe::egui;
     use std::time::Instant;
 
-    const ROW_HEIGHT: f32 = 20.0;
-    const POLL_ACTIVE: Duration = Duration::from_millis(500);
-    const POLL_IDLE: Duration = Duration::from_millis(2000);
+    const ROW_HEIGHT: f32 = 26.0;
+    const POLL_ACTIVE: Duration = Duration::from_secs(1);
+    const POLL_IDLE: Duration = Duration::from_secs(5);
+    const RUN_LIST_POLL: Duration = Duration::from_secs(10);
+    const QUOTA_POLL: Duration = Duration::from_secs(30);
     const MAX_EVENTS: usize = 500;
+
+    fn accent() -> egui::Color32 {
+        egui::Color32::from_rgb(128, 108, 255)
+    }
+
+    fn muted() -> egui::Color32 {
+        egui::Color32::from_rgb(132, 135, 145)
+    }
+
+    fn apply_theme(ctx: &egui::Context) {
+        let mut style = (*ctx.style()).clone();
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.visuals = egui::Visuals::dark();
+        style.visuals.panel_fill = egui::Color32::from_rgb(14, 15, 18);
+        style.visuals.window_fill = egui::Color32::from_rgb(17, 18, 22);
+        style.visuals.extreme_bg_color = egui::Color32::from_rgb(9, 10, 12);
+        style.visuals.faint_bg_color = egui::Color32::from_rgb(22, 24, 29);
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(45, 42, 78);
+        style.visuals.selection.stroke.color = egui::Color32::from_rgb(176, 166, 255);
+        style.visuals.hyperlink_color = egui::Color32::from_rgb(176, 166, 255);
+        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(22, 24, 29);
+        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(31, 33, 40);
+        ctx.set_style(style);
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RunSignature {
+        workflow: Option<(u64, SystemTime)>,
+        tasks: Option<SystemTime>,
+        claims: Option<SystemTime>,
+        results: Option<SystemTime>,
+        events: Option<(u64, SystemTime)>,
+        report: Option<(u64, SystemTime)>,
+    }
+
+    impl RunSignature {
+        fn read(run_dir: &Path) -> Self {
+            Self {
+                workflow: file_signature(&run_dir.join("workflow.json")),
+                tasks: modified(&run_dir.join("tasks")),
+                claims: modified(&run_dir.join("claims")),
+                results: modified(&run_dir.join("results")),
+                events: file_signature(&run_dir.join("events.jsonl")),
+                report: file_signature(&run_dir.join("report.json"))
+                    .or_else(|| file_signature(&run_dir.join("report-rs.json"))),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum CenterView {
+        #[default]
+        Overview,
+        Tasks,
+        Activity,
+        Resources,
+    }
+
+    fn modified(path: &Path) -> Option<SystemTime> {
+        fs::metadata(path).and_then(|meta| meta.modified()).ok()
+    }
+
+    fn resource_kind_label(kind: resources::ResourceKind) -> &'static str {
+        match kind {
+            resources::ResourceKind::Instructions => "AGENTS",
+            resources::ResourceKind::Skill => "SKILL",
+            resources::ResourceKind::Mcp => "MCP",
+        }
+    }
+
+    fn resource_scope_label(scope: resources::ResourceScope) -> &'static str {
+        match scope {
+            resources::ResourceScope::Project => "Project",
+            resources::ResourceScope::Global => "Global",
+        }
+    }
+
+    fn agent_label(agent: resources::AgentKind) -> &'static str {
+        match agent {
+            resources::AgentKind::Codex => "Codex",
+            resources::AgentKind::Claude => "Claude",
+            resources::AgentKind::Gemini => "Gemini",
+            resources::AgentKind::OpenCode => "OpenCode",
+            resources::AgentKind::Antigravity => "Antigravity",
+            resources::AgentKind::Hermes => "Hermes",
+            resources::AgentKind::Agy => "AGY",
+        }
+    }
+
+    fn file_signature(path: &Path) -> Option<(u64, SystemTime)> {
+        fs::metadata(path)
+            .and_then(|meta| Ok((meta.len(), meta.modified()?)))
+            .ok()
+    }
+
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+    #[serde(default)]
+    struct UiPrivacyConfig {
+        show_account_emails: bool,
+        account_emails: BTreeMap<String, String>,
+    }
+
+    impl Default for UiPrivacyConfig {
+        fn default() -> Self {
+            Self {
+                show_account_emails: true,
+                account_emails: BTreeMap::new(),
+            }
+        }
+    }
+
+    fn ui_config_path(run_root: &Path) -> Option<PathBuf> {
+        find_workspace_root(run_root).map(|root| root.join("config/swarm_ui.local.json"))
+    }
+
+    fn load_ui_config(run_root: &Path) -> UiPrivacyConfig {
+        ui_config_path(run_root)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    #[derive(serde::Deserialize)]
+    struct QuotaIdentities {
+        #[serde(default)]
+        accounts: BTreeMap<String, String>,
+    }
+
+    fn load_quota_identities(snapshot_path: &Path) -> Option<BTreeMap<String, String>> {
+        let path = snapshot_path.with_file_name("quota_identities.local.json");
+        let text = fs::read_to_string(path).ok()?;
+        serde_json::from_str::<QuotaIdentities>(&text)
+            .ok()
+            .map(|identities| identities.accounts)
+    }
 
     pub struct ObservabilityApp {
         run_root: PathBuf,
@@ -1047,12 +1376,34 @@ pub mod ui_egui {
         selected_task: Option<String>,
         log_for: Option<String>,
         log_text: Option<String>,
+        rows: Vec<FlatRow>,
+        rows_filter: String,
+        rows_dirty: bool,
+        signature: Option<RunSignature>,
         last_poll: Option<Instant>,
+        last_runs_poll: Option<Instant>,
         error: Option<String>,
         filter: String,
         ready_file: Option<PathBuf>,
         ready_written: bool,
         bench_until: Option<Instant>,
+        quota_snapshot: Option<quota::QuotaSnapshotView>,
+        quota_error: Option<String>,
+        last_quota_poll: Option<Instant>,
+        steer_prompt: String,
+        steer_feedback: Option<String>,
+        center_view: CenterView,
+        provider_icons: ProviderIcons,
+        ui_privacy: UiPrivacyConfig,
+        config_open: bool,
+        config_feedback: Option<String>,
+        resource_catalog: resources::ResourceCatalog,
+        resource_scope: resources::ResourceScope,
+        resource_kind: Option<resources::ResourceKind>,
+        resource_filter: String,
+        selected_resource: Option<String>,
+        resource_root: PathBuf,
+        resource_sync_feedback: Option<String>,
     }
 
     impl ObservabilityApp {
@@ -1062,6 +1413,9 @@ pub mod ui_egui {
             ready_file: Option<PathBuf>,
             bench_duration_secs: Option<u64>,
         ) -> Self {
+            let ui_privacy = load_ui_config(&run_root);
+            let project_root = find_workspace_root(&run_root).unwrap_or_else(|| run_root.clone());
+            let resource_catalog = resources::discover(&project_root);
             ObservabilityApp {
                 run_root,
                 runs: Vec::new(),
@@ -1072,13 +1426,49 @@ pub mod ui_egui {
                 selected_task: None,
                 log_for: None,
                 log_text: None,
+                rows: Vec::new(),
+                rows_filter: String::new(),
+                rows_dirty: true,
+                signature: None,
                 last_poll: None,
+                last_runs_poll: None,
                 error: None,
                 filter: String::new(),
                 ready_file,
                 ready_written: false,
                 bench_until: bench_duration_secs.map(|s| Instant::now() + Duration::from_secs(s)),
+                quota_snapshot: None,
+                quota_error: None,
+                last_quota_poll: None,
+                steer_prompt: String::new(),
+                steer_feedback: None,
+                center_view: CenterView::Overview,
+                provider_icons: ProviderIcons,
+                ui_privacy,
+                config_open: false,
+                config_feedback: None,
+                resource_catalog,
+                resource_scope: resources::ResourceScope::Project,
+                resource_kind: None,
+                resource_filter: String::new(),
+                selected_resource: None,
+                resource_root: project_root,
+                resource_sync_feedback: None,
             }
+        }
+
+        fn save_ui_config(&mut self) {
+            let Some(path) = ui_config_path(&self.run_root) else {
+                self.config_feedback = Some("No se encontró la raíz del proyecto".to_string());
+                return;
+            };
+            let result = serde_json::to_string_pretty(&self.ui_privacy)
+                .map_err(|error| error.to_string())
+                .and_then(|text| fs::write(&path, text).map_err(|error| error.to_string()));
+            self.config_feedback = Some(match result {
+                Ok(()) => format!("Guardado en {}", path.display()),
+                Err(error) => format!("No se pudo guardar: {error}"),
+            });
         }
 
         fn activate(&mut self, run_id: String) {
@@ -1092,14 +1482,29 @@ pub mod ui_egui {
             self.selected_task = None;
             self.log_for = None;
             self.log_text = None;
+            self.rows.clear();
+            self.rows_dirty = true;
             match RunReader::open(&self.run_root, &run_id, Vec::new()) {
                 Ok(mut reader) => {
                     if reader.exists() {
+                        let project_root = read_json(&reader.run_dir().join("workflow.json"))
+                            .and_then(|workflow| get_str(&workflow, "workspace_root"))
+                            .map(PathBuf::from)
+                            .filter(|path| path.is_dir());
                         self.error = None;
                         self.contract = Some(reader.read());
+                        self.events = reader.tail_events(MAX_EVENTS);
+                        if let Some(project_root) = project_root {
+                            if self.resource_root != project_root {
+                                self.resource_root = project_root;
+                                self.selected_resource = None;
+                                self.refresh_resources();
+                            }
+                        }
                     } else {
                         self.error = Some(format!("run not found: {run_id}"));
                     }
+                    self.signature = Some(RunSignature::read(reader.run_dir()));
                     self.reader = Some(reader);
                 }
                 Err(e) => {
@@ -1115,24 +1520,92 @@ pub mod ui_egui {
         }
 
         fn poll_if_due(&mut self, now_ms: u128) -> bool {
+            let poll_interval = self.poll_interval();
             let reader = match self.reader.as_mut() {
                 Some(r) if r.exists() => r,
                 _ => return false,
             };
-            let due = self.last_poll.map_or(true, |t| t.elapsed() >= POLL_IDLE);
+            let due = self.last_poll.is_none_or(|t| t.elapsed() >= poll_interval);
             if !due {
                 return false;
             }
-            self.contract = Some(reader.read());
-            let mut new_events = reader.tail_events(MAX_EVENTS);
-            self.events.append(&mut new_events);
-            if self.events.len() > MAX_EVENTS * 2 {
-                let drop = self.events.len() - MAX_EVENTS;
-                self.events.drain(0..drop);
+            let signature = RunSignature::read(reader.run_dir());
+            let changed = self.signature.as_ref() != Some(&signature);
+            if changed {
+                self.contract = Some(reader.read());
+                let mut new_events = reader.tail_events(MAX_EVENTS);
+                self.events.append(&mut new_events);
+                if self.events.len() > MAX_EVENTS {
+                    let drop = self.events.len() - MAX_EVENTS;
+                    self.events.drain(0..drop);
+                }
+                self.signature = Some(signature);
+                self.rows_dirty = true;
+                self.log_for = None;
             }
             self.last_poll = Some(Instant::now());
-            let _ = now_ms;
-            true
+            if !changed
+                && self.rows.iter().any(|row| {
+                    matches!(row.status.as_str(), "in_progress" | "queued") && !row.stale
+                })
+            {
+                let interval = self
+                    .contract
+                    .as_ref()
+                    .and_then(|contract| contract.run.heartbeat_interval_seconds)
+                    .unwrap_or(30);
+                self.rows_dirty = self.contract.as_ref().is_some_and(|contract| {
+                    heartbeat_age_seconds(contract.summary.last_heartbeat_unix_ms, now_ms)
+                        .is_some_and(|age| age > interval)
+                });
+            }
+            changed
+        }
+
+        fn refresh_runs_if_due(&mut self) {
+            if self
+                .last_runs_poll
+                .is_none_or(|last| last.elapsed() >= RUN_LIST_POLL)
+            {
+                self.runs = list_runs(&self.run_root);
+                self.last_runs_poll = Some(Instant::now());
+            }
+        }
+
+        fn refresh_quotas_if_due(&mut self) {
+            if self
+                .last_quota_poll
+                .is_some_and(|last| last.elapsed() < QUOTA_POLL)
+            {
+                return;
+            }
+            self.last_quota_poll = Some(Instant::now());
+            let Some(root) = find_workspace_root(&self.run_root) else {
+                self.quota_error = Some("workspace config not found".to_string());
+                return;
+            };
+            match config::load_router(&root) {
+                Ok(router) if router.quota_policy.enabled => {
+                    let configured = Path::new(&router.quota_policy.snapshot_path);
+                    let path = if configured.is_absolute() {
+                        configured.to_path_buf()
+                    } else {
+                        root.join(configured)
+                    };
+                    match quota::load_snapshot_view(&path) {
+                        Ok(snapshot) => {
+                            self.quota_snapshot = Some(snapshot);
+                            self.quota_error = None;
+                            if let Some(accounts) = load_quota_identities(&path) {
+                                self.ui_privacy.account_emails.extend(accounts);
+                            }
+                        }
+                        Err(error) => self.quota_error = Some(error),
+                    }
+                }
+                Ok(_) => self.quota_error = Some("quota tracking disabled".to_string()),
+                Err(error) => self.quota_error = Some(error),
+            }
         }
 
         fn poll_interval(&self) -> Duration {
@@ -1213,74 +1686,161 @@ pub mod ui_egui {
             // Refresh the run list cheaply on each poll.
             let now_ms = unix_ms();
             let _changed = self.poll_if_due(now_ms);
-            if self.runs.is_empty() {
-                self.runs = list_runs(&self.run_root);
-            }
+            self.refresh_runs_if_due();
+            self.refresh_quotas_if_due();
 
-            // Bottom: counters and reader state.
-            egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-                let contract = self.contract.as_ref();
-                let status = contract.map_or(RunStatus::Loading, |c| c.run.status);
-                ui.horizontal(|ui| {
-                    ui.label(format!("status: {}", status.label()));
-                    if let Some(c) = contract {
-                        ui.separator();
-                        ui.label(format!("stages: {}", c.summary.stage_count));
-                        ui.label(format!("tasks: {}", c.run.task_count));
-                        ui.label(format!("results: {}", c.summary.result_count));
-                        if let Some(gmc) = c.run.global_max_concurrency {
+            egui::TopBottomPanel::top("app_header")
+                .exact_height(46.0)
+                .show(ctx, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.label(egui::RichText::new("SWARMS").strong().size(18.0));
+                        ui.label(egui::RichText::new("RUNTIME").small().color(muted()));
+                        if let Some(contract) = &self.contract {
                             ui.separator();
-                            ui.label(format!("global_max_concurrency: {gmc}"));
+                            ui.label(
+                                egui::RichText::new(&contract.run.project_name)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(220, 220, 226)),
+                            );
+                            ui.label(egui::RichText::new("/").color(muted()));
+                            ui.label(egui::RichText::new(&contract.run.run_id).color(muted()));
+                            ui.label(
+                                egui::RichText::new(format!("● {}", contract.run.status.label()))
+                                    .small()
+                                    .color(status_color(contract.run.status.label(), false)),
+                            );
                         }
-                        if !c.run.provider_max_concurrency.is_empty() {
-                            let caps: Vec<String> = c
-                                .run
-                                .provider_max_concurrency
-                                .iter()
-                                .map(|(k, v)| format!("{k}={v}"))
-                                .collect();
-                            ui.label(format!("caps: {}", caps.join(", ")));
-                        }
-                        ui.separator();
-                        ui.label(format!("events: {}", self.events.len()));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label("read-only observer");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Config").clicked() {
+                                self.config_open = true;
+                            }
+                            ui.label(
+                                egui::RichText::new("local  •  native Rust")
+                                    .small()
+                                    .color(muted()),
+                            );
+                        });
                     });
                 });
-            });
 
-            // Left: discovered runs.
+            if self.config_open {
+                let mut open = self.config_open;
+                egui::Window::new("Configuración")
+                    .open(&mut open)
+                    .resizable(false)
+                    .default_width(420.0)
+                    .show(ctx, |ui| self.render_config(ui));
+                self.config_open = open;
+            }
+
+            // Compact bottom status line.
+            egui::TopBottomPanel::bottom("footer")
+                .exact_height(38.0)
+                .show(ctx, |ui| {
+                    let contract = self.contract.as_ref();
+                    let status = contract.map_or(RunStatus::Loading, |c| c.run.status);
+                    ui.horizontal_centered(|ui| {
+                        let status_color = status_color(status.label(), false);
+                        let (dot, _) =
+                            ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 3.0, status_color);
+                        ui.label(
+                            egui::RichText::new(format!("status: {}", status.label()))
+                                .small()
+                                .color(status_color),
+                        );
+                        ui.separator();
+                        self.render_quota_strip(ui);
+                        if let Some(c) = contract {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} stages · {} tasks · {} events",
+                                    c.summary.stage_count,
+                                    c.run.task_count,
+                                    self.events.len()
+                                ))
+                                .small()
+                                .color(muted()),
+                            );
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new("local").small().color(muted()));
+                        });
+                    });
+                });
+
+            // Left: project -> run navigation.
             egui::SidePanel::left("runs")
                 .resizable(true)
-                .default_width(240.0)
+                .default_width(285.0)
                 .show(ctx, |ui| {
-                    ui.heading("Runs");
+                    ui.heading("Projects");
                     ui.label(
                         egui::RichText::new(format!("{}", self.run_root.display()))
                             .small()
-                            .color(egui::Color32::GRAY),
+                            .color(muted()),
                     );
                     ui.separator();
                     let runs = self.runs.clone();
+                    let groups = group_runs(&runs);
                     let mut to_activate: Option<String> = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        if runs.is_empty() {
-                            ui.label(
-                                egui::RichText::new("no runs found").color(egui::Color32::GRAY),
-                            );
+                        if groups.is_empty() {
+                            ui.label(egui::RichText::new("No projects yet").color(muted()));
                         }
-                        for run in &runs {
-                            let selected =
-                                self.active_run_id.as_deref() == Some(run.run_id.as_str());
-                            let dot = if run.has_report { "●" } else { "○" };
-                            let text = format!(
-                                "{} {}  [{} · {} tasks]",
-                                dot, run.run_id, run.runtime, run.task_count
-                            );
-                            if ui.selectable_label(selected, text).clicked() {
-                                to_activate = Some(run.run_id.clone());
-                            }
+                        for group in &groups {
+                            egui::CollapsingHeader::new(
+                                egui::RichText::new(format!(
+                                    "{}  {}",
+                                    group.project_name,
+                                    group.runs.len()
+                                ))
+                                .strong(),
+                            )
+                            .id_salt(&group.project_id)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for run in &group.runs {
+                                    let selected =
+                                        self.active_run_id.as_deref() == Some(run.run_id.as_str());
+                                    let dot = if run.has_report { "●" } else { "○" };
+                                    if ui
+                                        .selectable_label(
+                                            selected,
+                                            format!("{dot}  {}", run.run_id),
+                                        )
+                                        .clicked()
+                                    {
+                                        to_activate = Some(run.run_id.clone());
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(22.0);
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}  ·  {} tasks",
+                                                run.runtime, run.task_count
+                                            ))
+                                            .small()
+                                            .color(muted()),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(relative_age(
+                                                        run.last_activity_unix_ms,
+                                                        unix_ms(),
+                                                    ))
+                                                    .small()
+                                                    .color(muted()),
+                                                )
+                                                .on_hover_text("Last swarm activity");
+                                            },
+                                        );
+                                    });
+                                }
+                            });
                         }
                     });
                     if let Some(id) = to_activate {
@@ -1299,7 +1859,7 @@ pub mod ui_egui {
 
             // Center: virtualized task tree.
             egui::CentralPanel::default().show(ctx, |ui| {
-                self.render_tree(ui, now_ms);
+                self.render_center(ui, now_ms);
             });
 
             // On-demand repaint: never run a fixed 60 FPS loop.
@@ -1308,11 +1868,505 @@ pub mod ui_egui {
     }
 
     impl ObservabilityApp {
+        fn render_center(&mut self, ui: &mut egui::Ui, now_ms: u128) {
+            ui.horizontal(|ui| {
+                for (view, label) in [
+                    (CenterView::Overview, "Overview"),
+                    (CenterView::Tasks, "Tasks"),
+                    (CenterView::Activity, "Activity"),
+                    (CenterView::Resources, "Resources"),
+                ] {
+                    if ui
+                        .selectable_label(self.center_view == view, label)
+                        .clicked()
+                    {
+                        self.center_view = view;
+                    }
+                }
+            });
+            ui.separator();
+            match self.center_view {
+                CenterView::Overview => self.render_overview(ui),
+                CenterView::Tasks => self.render_tree(ui, now_ms),
+                CenterView::Activity => self.render_activity(ui),
+                CenterView::Resources => self.render_resources(ui),
+            }
+        }
+
+        fn refresh_resources(&mut self) {
+            self.resource_catalog = resources::discover(&self.resource_root);
+        }
+
+        fn sync_project_skills(&mut self) {
+            if !self.resource_root.join(".skillshare/config.yaml").is_file() {
+                self.resource_sync_feedback = Some(
+                    "This project has no .skillshare/config.yaml; initialize project sharing first."
+                        .to_string(),
+                );
+                return;
+            }
+            let result = std::process::Command::new("skillshare")
+                .args(["sync", "-p", "--json"])
+                .current_dir(&self.resource_root)
+                .output();
+            self.resource_sync_feedback = Some(match result {
+                Ok(output) if output.status.success() => "Project skills synced".to_string(),
+                Ok(output) => format!(
+                    "Skill sync failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                ),
+                Err(error) => format!("Skillshare unavailable: {error}"),
+            });
+            self.refresh_resources();
+        }
+
+        fn initialize_project_skills(&mut self) {
+            let result = std::process::Command::new("skillshare")
+                .args([
+                    "init",
+                    "-p",
+                    "--targets",
+                    "codex,gemini,antigravity,opencode",
+                ])
+                .current_dir(&self.resource_root)
+                .output();
+            self.resource_sync_feedback = Some(match result {
+                Ok(output) if output.status.success() => {
+                    "Project sharing enabled for Codex, Gemini, Antigravity, and OpenCode"
+                        .to_string()
+                }
+                Ok(output) => format!(
+                    "Skillshare init failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                ),
+                Err(error) => format!("Skillshare unavailable: {error}"),
+            });
+            self.refresh_resources();
+        }
+
+        fn render_resources(&mut self, ui: &mut egui::Ui) {
+            let mut filters_changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Agent resources").strong().size(16.0));
+                for (scope, label) in [
+                    (resources::ResourceScope::Project, "Project"),
+                    (resources::ResourceScope::Global, "Global"),
+                ] {
+                    if ui
+                        .selectable_label(self.resource_scope == scope, label)
+                        .clicked()
+                    {
+                        self.resource_scope = scope;
+                        filters_changed = true;
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(self.resource_root.display().to_string())
+                            .small()
+                            .color(muted()),
+                    );
+                });
+            });
+            ui.add_space(3.0);
+            ui.horizontal_wrapped(|ui| {
+                for (kind, label) in [
+                    (None, "All"),
+                    (Some(resources::ResourceKind::Mcp), "MCP"),
+                    (Some(resources::ResourceKind::Skill), "Skills"),
+                    (Some(resources::ResourceKind::Instructions), "AGENTS"),
+                ] {
+                    if ui
+                        .selectable_label(self.resource_kind == kind, label)
+                        .clicked()
+                    {
+                        self.resource_kind = kind;
+                        filters_changed = true;
+                    }
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.resource_filter)
+                        .hint_text("Search resources…")
+                        .desired_width(180.0),
+                );
+                if ui.small_button("Refresh").clicked() {
+                    self.refresh_resources();
+                }
+                if self.resource_scope == resources::ResourceScope::Project {
+                    if self.resource_root.join(".skillshare/config.yaml").is_file() {
+                        if ui.button("Sync project skills").clicked() {
+                            self.sync_project_skills();
+                        }
+                    } else if ui.button("Enable project sharing").clicked() {
+                        self.initialize_project_skills();
+                    }
+                }
+            });
+            if filters_changed {
+                self.selected_resource = None;
+            }
+            if let Some(feedback) = &self.resource_sync_feedback {
+                ui.label(egui::RichText::new(feedback).small().color(muted()));
+            }
+            ui.separator();
+
+            let needle = self.resource_filter.trim().to_lowercase();
+            let visible: Vec<_> = self
+                .resource_catalog
+                .entries
+                .iter()
+                .filter(|entry| entry.scope == self.resource_scope)
+                .filter(|entry| self.resource_kind.is_none_or(|kind| entry.kind == kind))
+                .filter(|entry| {
+                    needle.is_empty()
+                        || entry.name.to_lowercase().contains(&needle)
+                        || entry
+                            .path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(&needle)
+                })
+                .cloned()
+                .collect();
+            let selected = self.selected_resource.clone();
+            ui.columns(2, |columns| {
+                columns[0].label(
+                    egui::RichText::new(format!("{} resources", visible.len()))
+                        .small()
+                        .color(muted()),
+                );
+                columns[0].separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(&mut columns[0], |ui| {
+                        if visible.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No resources in this scope").color(muted()),
+                            );
+                        }
+                        for entry in &visible {
+                            let active = selected.as_deref() == Some(entry.id.as_str());
+                            let consumers = if entry.shared_with.len() > 1 {
+                                format!("  ·  {} agents", entry.shared_with.len())
+                            } else {
+                                String::new()
+                            };
+                            let response = ui.selectable_label(
+                                active,
+                                egui::RichText::new(format!(
+                                    "{}   {}{}",
+                                    resource_kind_label(entry.kind),
+                                    entry.name,
+                                    consumers
+                                )),
+                            );
+                            response
+                                .clone()
+                                .on_hover_text(entry.path.display().to_string());
+                            if response.clicked() {
+                                self.selected_resource = Some(entry.id.clone());
+                            }
+                        }
+                    });
+                columns[1].vertical(|ui| {
+                    ui.label(egui::RichText::new("Resource inspector").strong());
+                    ui.separator();
+                    let entry = self
+                        .selected_resource
+                        .as_ref()
+                        .and_then(|id| visible.iter().find(|entry| &entry.id == id));
+                    if let Some(entry) = entry {
+                        ui.label(egui::RichText::new(&entry.name).strong().size(15.0));
+                        ui.add_space(6.0);
+                        egui::Grid::new("resource_detail")
+                            .num_columns(2)
+                            .spacing([12.0, 7.0])
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Type").color(muted()));
+                                ui.label(resource_kind_label(entry.kind));
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Scope").color(muted()));
+                                ui.label(resource_scope_label(entry.scope));
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Agent").color(muted()));
+                                ui.label(entry.agent.map(agent_label).unwrap_or("Shared"));
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Status").color(muted()));
+                                ui.label(format!("{:?}", entry.status));
+                                ui.end_row();
+                                ui.label(egui::RichText::new("Path").color(muted()));
+                                ui.add(egui::Label::new(entry.path.display().to_string()).wrap());
+                                ui.end_row();
+                            });
+                        if !entry.shared_with.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Used by").color(muted()));
+                            ui.label(
+                                entry
+                                    .shared_with
+                                    .iter()
+                                    .copied()
+                                    .map(agent_label)
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                            );
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(
+                                "Select a resource to inspect its scope and consumers.",
+                            )
+                            .color(muted()),
+                        );
+                    }
+                });
+            });
+        }
+
+        fn render_overview(&self, ui: &mut egui::Ui) {
+            let Some(contract) = &self.contract else {
+                empty_state(
+                    ui,
+                    "Select a swarm run",
+                    "Choose a run from a project to inspect it.",
+                );
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Swarm map").strong().size(16.0));
+                ui.label(
+                    egui::RichText::new("stages flow left to right")
+                        .small()
+                        .color(muted()),
+                );
+            });
+            let column_width = 190.0;
+            let node_height = 58.0;
+            let gap = 18.0;
+            let max_tasks = contract
+                .stages
+                .iter()
+                .map(|stage| stage.tasks.len())
+                .max()
+                .unwrap_or(1);
+            let size = egui::vec2(
+                contract.stages.len().max(1) as f32 * (column_width + gap),
+                54.0 + max_tasks as f32 * (node_height + gap),
+            );
+            egui::ScrollArea::both().show(ui, |ui| {
+                let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
+                let origin = response.rect.min;
+                let mut positions: HashMap<String, egui::Rect> = HashMap::new();
+                for (stage_index, stage) in contract.stages.iter().enumerate() {
+                    let x = origin.x + stage_index as f32 * (column_width + gap);
+                    painter.text(
+                        egui::pos2(x, origin.y + 8.0),
+                        egui::Align2::LEFT_TOP,
+                        &stage.name,
+                        egui::FontId::proportional(14.0),
+                        accent(),
+                    );
+                    for (task_index, task) in stage.tasks.iter().enumerate() {
+                        let y = origin.y + 38.0 + task_index as f32 * (node_height + gap);
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(x, y),
+                            egui::vec2(column_width, node_height),
+                        );
+                        positions.insert(task.task_id.clone(), rect);
+                        if let Some(source_id) = &task.source_id {
+                            positions.insert(source_id.clone(), rect);
+                        }
+                    }
+                }
+                for stage in &contract.stages {
+                    for task in &stage.tasks {
+                        let Some(target) = positions.get(&task.task_id) else {
+                            continue;
+                        };
+                        for dependency in &task.needs {
+                            if let Some(source) = positions.get(dependency) {
+                                painter.line_segment(
+                                    [source.right_center(), target.left_center()],
+                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(62, 64, 74)),
+                                );
+                            }
+                        }
+                    }
+                }
+                for stage in &contract.stages {
+                    for task in &stage.tasks {
+                        let Some(rect) = positions.get(&task.task_id) else {
+                            continue;
+                        };
+                        painter.rect_filled(*rect, 7.0, egui::Color32::from_rgb(23, 25, 31));
+                        painter.rect_stroke(
+                            *rect,
+                            7.0,
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(46, 48, 58)),
+                            egui::StrokeKind::Inside,
+                        );
+                        painter.circle_filled(
+                            egui::pos2(rect.left() + 13.0, rect.top() + 16.0),
+                            4.0,
+                            status_color(&task.status, false),
+                        );
+                        painter.text(
+                            egui::pos2(rect.left() + 24.0, rect.top() + 9.0),
+                            egui::Align2::LEFT_TOP,
+                            task.source_id.as_deref().unwrap_or(&task.task_id),
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::from_rgb(224, 225, 230),
+                        );
+                        painter.text(
+                            egui::pos2(rect.left() + 13.0, rect.top() + 34.0),
+                            egui::Align2::LEFT_TOP,
+                            format!(
+                                "{}  ·  {}",
+                                task.status,
+                                task.model.as_deref().unwrap_or("local")
+                            ),
+                            egui::FontId::proportional(11.0),
+                            muted(),
+                        );
+                    }
+                }
+            });
+        }
+
+        fn render_activity(&self, ui: &mut egui::Ui) {
+            ui.label(egui::RichText::new("Activity").strong().size(16.0));
+            if self.events.is_empty() {
+                empty_state(
+                    ui,
+                    "No activity yet",
+                    "Events appear here while the swarm runs.",
+                );
+                return;
+            }
+            egui::ScrollArea::vertical().show_rows(ui, 30.0, self.events.len(), |ui, range| {
+                for index in range {
+                    let event = &self.events[self.events.len() - 1 - index];
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("●").color(accent()));
+                        ui.label(egui::RichText::new(&event.event).strong());
+                        if let Some(task_id) = &event.task_id {
+                            ui.label(egui::RichText::new(task_id).small().color(muted()));
+                        }
+                        if let Some(provider) = &event.provider {
+                            ui.label(egui::RichText::new(provider).small().color(muted()));
+                        }
+                    });
+                }
+            });
+        }
+
+        fn render_quota_strip(&self, ui: &mut egui::Ui) {
+            if let Some(snapshot) = &self.quota_snapshot {
+                for entry in &snapshot.entries {
+                    let remaining = quota_remaining(&entry.windows);
+                    let color = quota_color(remaining);
+                    let response = egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(20, 22, 27))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(42, 45, 54),
+                        ))
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                quota_mark(ui, &entry.key, color, &self.provider_icons);
+                                ui.label(
+                                    egui::RichText::new(quota_short_label(&entry.key))
+                                        .small()
+                                        .color(egui::Color32::from_rgb(205, 207, 214)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("{remaining:.0}%"))
+                                        .small()
+                                        .strong()
+                                        .color(color),
+                                );
+                            });
+                        })
+                        .response;
+                    response.on_hover_ui(|ui| {
+                        ui.set_min_width(250.0);
+                        render_quota_popover(
+                            ui,
+                            snapshot.generated_at_epoch,
+                            entry,
+                            &self.provider_icons,
+                            &self.ui_privacy,
+                        );
+                    });
+                }
+            } else if let Some(error) = &self.quota_error {
+                ui.label(
+                    egui::RichText::new(format!("quotas unavailable · {error}"))
+                        .small()
+                        .color(muted()),
+                );
+            }
+        }
+
+        fn render_config(&mut self, ui: &mut egui::Ui) {
+            ui.label(egui::RichText::new("Privacidad de cuentas").strong());
+            ui.checkbox(
+                &mut self.ui_privacy.show_account_emails,
+                "Mostrar correos en el detalle de cuotas",
+            );
+            ui.label(
+                egui::RichText::new("Los correos se guardan sólo en config/swarm_ui.local.json.")
+                    .small()
+                    .color(muted()),
+            );
+            ui.separator();
+            for key in [
+                "codex:Codex",
+                "codex:Hermes",
+                "agy:claude_gpt",
+                "agy:gemini",
+                "zai:coding",
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(quota_short_label(key)).small());
+                    let email = self
+                        .ui_privacy
+                        .account_emails
+                        .entry(key.to_string())
+                        .or_default();
+                    ui.add(
+                        egui::TextEdit::singleline(email)
+                            .hint_text("correo no configurado")
+                            .desired_width(270.0),
+                    );
+                });
+            }
+            ui.add_space(6.0);
+            if ui.button("Guardar").clicked() {
+                self.save_ui_config();
+            }
+            if let Some(feedback) = &self.config_feedback {
+                ui.label(egui::RichText::new(feedback).small().color(muted()));
+            }
+        }
+
         fn render_tree(&mut self, ui: &mut egui::Ui, now_ms: u128) {
             ui.horizontal(|ui| {
-                ui.label("Tasks");
-                ui.text_edit_singleline(&mut self.filter);
-                if ui.button("clear").clicked() {
+                ui.label(egui::RichText::new("Execution").strong().size(16.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.filter)
+                        .hint_text("Filter tasks…")
+                        .desired_width(220.0),
+                );
+                if !self.filter.is_empty() && ui.small_button("Clear").clicked() {
                     self.filter.clear();
                 }
                 if let Some(err) = &self.error {
@@ -1347,15 +2401,19 @@ pub mod ui_egui {
                 return;
             }
 
-            let rows = flatten(contract, now_ms, &self.filter);
-            let total = rows.len();
+            if self.rows_dirty || self.rows_filter != self.filter {
+                self.rows = flatten(contract, now_ms, &self.filter);
+                self.rows_filter.clone_from(&self.filter);
+                self.rows_dirty = false;
+            }
+            let total = self.rows.len();
             let selected = self.selected_task.clone();
             let mut new_selection: Option<String> = None;
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show_rows(ui, ROW_HEIGHT, total, |ui, range| {
                     for idx in range {
-                        let row = &rows[idx];
+                        let row = &self.rows[idx];
                         let indent = row.depth as f32 * 16.0;
                         let response = match row.kind {
                             RowKind::Stage => {
@@ -1363,9 +2421,7 @@ pub mod ui_egui {
                                 ui.horizontal(|ui| {
                                     ui.add_space(indent);
                                     ui.label(
-                                        egui::RichText::new(&row.label)
-                                            .strong()
-                                            .color(egui::Color32::from_rgb(180, 200, 230)),
+                                        egui::RichText::new(&row.label).strong().color(accent()),
                                     );
                                     ui.label(
                                         egui::RichText::new(counts)
@@ -1379,8 +2435,8 @@ pub mod ui_egui {
                                 let is_sel = selected.as_deref() == row.task_id.as_deref();
                                 let color = status_color(&row.status, row.stale);
                                 let label = format!(
-                                    "{} {}",
-                                    &row.label,
+                                    "{}    {}",
+                                    row.label,
                                     row.model.as_deref().unwrap_or("")
                                 );
                                 let mut rich = egui::RichText::new(&label);
@@ -1398,9 +2454,9 @@ pub mod ui_egui {
                                                     .color(egui::Color32::from_rgb(190, 130, 220)),
                                             );
                                         }
-                                        ui.selectable_label(is_sel, rich);
+                                        ui.selectable_label(is_sel, rich)
                                     })
-                                    .response;
+                                    .inner;
                                 if resp.clicked() {
                                     new_selection = row.task_id.clone();
                                 }
@@ -1451,40 +2507,44 @@ pub mod ui_egui {
                 }
             };
 
-            let kv = |ui: &mut egui::Ui, k: &str, v: &str| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(k).color(egui::Color32::GRAY));
-                    ui.label(v);
+            ui.label(
+                egui::RichText::new(format!("● {}", node.status))
+                    .small()
+                    .color(status_color(&node.status, node.is_stale(now_ms, interval))),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new("task_metadata")
+                .num_columns(2)
+                .spacing([12.0, 7.0])
+                .show(ui, |ui| {
+                    let mut row = |key: &str, value: &str| {
+                        ui.label(egui::RichText::new(key).small().color(muted()));
+                        ui.label(value);
+                        ui.end_row();
+                    };
+                    row("task", &node.task_id);
+                    if let Some(source) = &node.source_id {
+                        row("source", source);
+                    }
+                    row("role", &node.role);
+                    row("provider", node.provider.as_deref().unwrap_or("—"));
+                    row("model", node.model.as_deref().unwrap_or("—"));
+                    if let Some(wrapper) = &node.wrapper {
+                        row("wrapper", wrapper);
+                    }
+                    row("attempts", &node.attempts.to_string());
+                    if let Some(heartbeat) = node.heartbeat_unix_ms {
+                        let age = heartbeat_age_seconds(Some(heartbeat), now_ms).unwrap_or(0);
+                        row("heartbeat", &format!("{age}s ago"));
+                    }
+                    row("agent", &node.agent.agent_id);
+                    if let Some(owner) = &node.agent.owner {
+                        row("owner", owner);
+                    }
+                    if !node.needs.is_empty() {
+                        row("needs", &node.needs.join(", "));
+                    }
                 });
-            };
-            kv(ui, "task_id", &node.task_id);
-            if let Some(s) = &node.source_id {
-                kv(ui, "source_id", s);
-            }
-            kv(ui, "role", &node.role);
-            kv(ui, "status", &node.status);
-            kv(ui, "provider", node.provider.as_deref().unwrap_or("—"));
-            kv(ui, "model", node.model.as_deref().unwrap_or("—"));
-            if let Some(w) = &node.wrapper {
-                kv(ui, "wrapper", w);
-            }
-            kv(ui, "attempts", &node.attempts.to_string());
-            if let Some(hb) = node.heartbeat_unix_ms {
-                let age = heartbeat_age_seconds(Some(hb), now_ms).unwrap_or(0);
-                kv(ui, "heartbeat", &format!("{}s ago", age));
-                if node.is_stale(now_ms, interval) {
-                    ui.label(
-                        egui::RichText::new("STALE").color(egui::Color32::from_rgb(190, 130, 220)),
-                    );
-                }
-            }
-            kv(ui, "agent_id", &node.agent.agent_id);
-            if let Some(o) = &node.agent.owner {
-                kv(ui, "owner", o);
-            }
-            if !node.needs.is_empty() {
-                kv(ui, "needs", &node.needs.join(", "));
-            }
             if let Some(e) = &node.error {
                 ui.separator();
                 ui.label(egui::RichText::new("error").color(egui::Color32::from_rgb(220, 80, 80)));
@@ -1503,6 +2563,82 @@ pub mod ui_egui {
                     ));
                 }
             }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Steer agent").strong());
+            let steerable =
+                node.status == "in_progress" && node.wrapper.as_deref().is_some_and(steer_capable);
+            if steerable {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.steer_prompt)
+                        .hint_text("Add direction for the agent's next turn…")
+                        .desired_rows(3),
+                );
+                ui.horizontal(|ui| {
+                    let send = ui.add_enabled(
+                        !self.steer_prompt.trim().is_empty(),
+                        egui::Button::new("Send steer").fill(accent()),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}/{}",
+                            self.steer_prompt.chars().count(),
+                            steering::MAX_STEER_PROMPT_CHARS
+                        ))
+                        .small()
+                        .color(muted()),
+                    );
+                    if send.clicked() {
+                        let run_dir = self
+                            .active_run_id
+                            .as_ref()
+                            .map(|run_id| self.run_root.join(run_id));
+                        self.steer_feedback = run_dir.map_or_else(
+                            || Some("no active run".to_string()),
+                            |run_dir| match steering::enqueue(
+                                &run_dir,
+                                &node.task_id,
+                                &self.steer_prompt,
+                                "swarms-ui",
+                            ) {
+                                Ok(_) => {
+                                    self.steer_prompt.clear();
+                                    Some("queued for the next agent turn".to_string())
+                                }
+                                Err(error) => Some(error),
+                            },
+                        );
+                    }
+                });
+            } else {
+                ui.label(
+                    egui::RichText::new(
+                        "Available while a Codex, OpenCode or Kilo task is running.",
+                    )
+                    .small()
+                    .color(muted()),
+                );
+            }
+            if let Some(feedback) = &self.steer_feedback {
+                ui.label(egui::RichText::new(feedback).small().color(muted()));
+            }
+            if let Some(reader) = &self.reader {
+                for applied in steering::history(reader.run_dir(), &node.task_id)
+                    .iter()
+                    .rev()
+                    .take(3)
+                {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  {}",
+                            applied.status,
+                            applied.message.prompt.chars().take(72).collect::<String>()
+                        ))
+                        .small()
+                        .color(muted()),
+                    );
+                }
+            }
             if !node.artifacts.is_empty() {
                 ui.separator();
                 ui.label("artifacts:");
@@ -1511,26 +2647,235 @@ pub mod ui_egui {
                 }
             }
 
-            // Worker log tail (loaded only for the selected task, 2 MiB cap).
+            // Worker log tail (loaded only for the selected task, 256 KiB cap).
             ui.separator();
-            ui.label(format!("worker.log (cap 2 MiB):"));
+            ui.label("worker.log (cap 256 KiB):");
             self.ensure_log();
             match &self.log_text {
                 Some(log) => {
+                    let line_count = log.lines().count();
+                    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
                     egui::ScrollArea::vertical()
-                        .id_source("worker_log")
+                        .id_salt("worker_log")
                         .max_height(220.0)
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new(log).monospace().small());
+                        .show_rows(ui, row_height, line_count, |ui, range| {
+                            for line in log.lines().skip(range.start).take(range.len()) {
+                                ui.label(egui::RichText::new(line).monospace().small());
+                            }
                         });
                 }
-                None => ui.label(egui::RichText::new("no worker.log").color(egui::Color32::GRAY)),
+                None => {
+                    ui.label(egui::RichText::new("no worker.log").color(egui::Color32::GRAY));
+                }
             }
         }
     }
 
     fn ctx_request(ctx: &egui::Context) {
         ctx.request_repaint();
+    }
+
+    fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
+        ui.add_space(48.0);
+        ui.vertical_centered(|ui| {
+            ui.label(egui::RichText::new(title).strong().size(16.0));
+            ui.label(egui::RichText::new(detail).color(muted()));
+        });
+    }
+
+    fn steer_capable(wrapper: &str) -> bool {
+        matches!(wrapper, "codex" | "opencode" | "kilo" | "mock")
+    }
+
+    fn quota_label(key: &str) -> &str {
+        match key {
+            "agy:claude_gpt" => "AGY · Claude + GPT",
+            "agy:gemini" => "AGY · Gemini",
+            "codex:Codex" => "Codex · Codex",
+            "codex:Hermes" => "Codex · Account 2",
+            "zai:coding" => "Z.AI Coding Plan",
+            _ => key,
+        }
+    }
+
+    fn quota_short_label(key: &str) -> &str {
+        match key {
+            "agy:claude_gpt" => "Claude",
+            "agy:gemini" => "Gemini",
+            "codex:Codex" => "Codex",
+            "codex:Hermes" => "Codex 2",
+            "zai:coding" => "Coding",
+            _ => key,
+        }
+    }
+
+    fn quota_account_label(key: &str) -> &str {
+        match key {
+            "codex:Codex" => "Codex · Cuenta principal",
+            "codex:Hermes" => "Codex · Cuenta 2",
+            "agy:claude_gpt" => "AGY · Claude + GPT",
+            "agy:gemini" => "AGY · Gemini",
+            "zai:coding" => "Z.AI · Coding",
+            _ => key,
+        }
+    }
+
+    fn quota_remaining(windows: &BTreeMap<String, f64>) -> f64 {
+        windows
+            .values()
+            .copied()
+            .filter(|value| value.is_finite())
+            .min_by(f64::total_cmp)
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0)
+    }
+
+    #[derive(Default)]
+    struct ProviderIcons;
+
+    impl ProviderIcons {
+        fn source(key: &str) -> Option<egui::ImageSource<'static>> {
+            if key == "zai:coding" {
+                return Some(egui::ImageSource::Bytes {
+                    uri: "bytes://provider-icons/zcode.png".into(),
+                    bytes: egui::load::Bytes::Static(include_bytes!(
+                        "../assets/provider-icons/zcode.png"
+                    )),
+                });
+            }
+            let (uri, bytes): (&str, &'static [u8]) = match key {
+                "agy:claude_gpt" => (
+                    "bytes://provider-icons/anthropic.svg",
+                    include_bytes!("../assets/provider-icons/anthropic.svg"),
+                ),
+                "agy:gemini" => (
+                    "bytes://provider-icons/gemini.svg",
+                    include_bytes!("../assets/provider-icons/gemini.svg"),
+                ),
+                "codex:Codex" | "codex:Hermes" => (
+                    "bytes://provider-icons/openai.svg",
+                    include_bytes!("../assets/provider-icons/openai.svg"),
+                ),
+                _ => return None,
+            };
+            Some(egui::ImageSource::Bytes {
+                uri: uri.into(),
+                bytes: egui::load::Bytes::Static(bytes),
+            })
+        }
+    }
+
+    fn quota_mark(ui: &mut egui::Ui, key: &str, color: egui::Color32, _icons: &ProviderIcons) {
+        if let Some(source) = ProviderIcons::source(key) {
+            ui.add(
+                egui::Image::new(source)
+                    .fit_to_exact_size(egui::vec2(18.0, 18.0))
+                    .tint(egui::Color32::WHITE),
+            );
+            return;
+        }
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        let painter = ui.painter();
+        let center = rect.center();
+        painter.circle_filled(center, 4.0, color);
+    }
+
+    fn render_quota_popover(
+        ui: &mut egui::Ui,
+        generated_at_epoch: u64,
+        entry: &quota::QuotaViewEntry,
+        icons: &ProviderIcons,
+        privacy: &UiPrivacyConfig,
+    ) {
+        let remaining = quota_remaining(&entry.windows);
+        let color = quota_color(remaining);
+        let age = unix_ms().saturating_sub(u128::from(generated_at_epoch) * 1000) / 1000;
+        ui.horizontal(|ui| {
+            quota_mark(ui, &entry.key, color, icons);
+            ui.label(
+                egui::RichText::new(quota_label(&entry.key))
+                    .strong()
+                    .size(13.0),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("updated {age}s ago"))
+                        .small()
+                        .color(muted()),
+                );
+            });
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Cuenta").small().color(muted()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(quota_account_label(&entry.key)).small());
+            });
+        });
+        if privacy.show_account_emails {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Correo").small().color(muted()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let email = privacy
+                        .account_emails
+                        .get(&entry.key)
+                        .map(String::as_str)
+                        .unwrap_or("no disponible");
+                    ui.label(egui::RichText::new(email).small());
+                });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Available").small().color(muted()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{remaining:.0}%"))
+                        .strong()
+                        .color(color),
+                );
+            });
+        });
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 2.5, egui::Color32::from_rgb(47, 50, 59));
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(rect.width() * remaining as f32 / 100.0, rect.height()),
+            ),
+            2.5,
+            color,
+        );
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (window, value) in &entry.windows {
+                ui.label(
+                    egui::RichText::new(format!("{window} {value:.0}%"))
+                        .small()
+                        .color(quota_color(*value)),
+                );
+            }
+        });
+    }
+
+    fn quota_color(remaining: f64) -> egui::Color32 {
+        if remaining < 15.0 {
+            egui::Color32::from_rgb(235, 91, 91)
+        } else if remaining < 35.0 {
+            egui::Color32::from_rgb(225, 170, 78)
+        } else {
+            egui::Color32::from_rgb(85, 198, 118)
+        }
+    }
+
+    fn find_workspace_root(run_root: &Path) -> Option<PathBuf> {
+        run_root.ancestors().find_map(|ancestor| {
+            ancestor
+                .join("config/swarm_router.json")
+                .is_file()
+                .then(|| ancestor.to_path_buf())
+        })
     }
 
     fn format_counts(counts: &HashMap<String, usize>) -> String {
@@ -1561,7 +2906,8 @@ pub mod ui_egui {
     /// --bench-duration. All optional.
     pub fn parse_args() -> (PathBuf, Option<String>, Option<PathBuf>, Option<u64>) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut run_root = cwd.join(".agent/swarm/runs");
+        let executable = std::env::current_exe().ok();
+        let mut run_root = default_run_root(&cwd, executable.as_deref());
         let mut run_id: Option<String> = None;
         let mut ready_file: Option<PathBuf> = None;
         let mut bench: Option<u64> = None;
@@ -1578,32 +2924,194 @@ pub mod ui_egui {
         (run_root, run_id, ready_file, bench)
     }
 
+    fn default_run_root(cwd: &Path, executable: Option<&Path>) -> PathBuf {
+        for start in std::iter::once(cwd).chain(executable.and_then(Path::parent)) {
+            for ancestor in start.ancestors() {
+                let candidate = ancestor.join(".agent/swarm/runs");
+                if candidate.is_dir() {
+                    return candidate;
+                }
+            }
+        }
+        cwd.join(".agent/swarm/runs")
+    }
+
     pub fn run() -> eframe::Result {
         let (run_root, run_id, ready_file, bench) = parse_args();
-        let app = ObservabilityApp::new(run_root.clone(), run_id.clone(), ready_file, bench);
-        // Pre-select an active run if requested or if there is exactly one.
-        let initial = app.active_run_id.clone().or_else(|| {
-            let runs = list_runs(&run_root);
-            if runs.len() == 1 {
-                Some(runs[0].run_id.clone())
-            } else {
-                None
-            }
-        });
-        let app = ObservabilityApp::new(run_root, initial, None, bench);
+        let runs = list_runs(&run_root);
+        let initial = run_id.or_else(|| (runs.len() == 1).then(|| runs[0].run_id.clone()));
+        let mut app = ObservabilityApp::new(run_root, None, ready_file, bench);
+        app.runs = runs;
+        app.last_runs_poll = Some(Instant::now());
+        if let Some(run_id) = initial {
+            app.activate(run_id);
+        }
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1200.0, 800.0])
-                .with_title("SWARMS observer (read-only)"),
+                .with_title("SWARMS"),
             ..Default::default()
         };
         eframe::run_native(
-            "SWARMS observer",
+            "SWARMS",
             options,
             Box::new(move |cc| {
-                let _ = cc;
+                egui_extras::install_image_loaders(&cc.egui_ctx);
+                apply_theme(&cc.egui_ctx);
                 Ok(Box::new(app))
             }),
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn poll_interval_is_low_frequency() {
+            let mut app = ObservabilityApp::new(PathBuf::new(), None, None, None);
+            assert_eq!(app.poll_interval(), POLL_IDLE);
+            let mut contract = RunContract::default();
+            contract.run.status = RunStatus::Running;
+            app.contract = Some(contract);
+            assert_eq!(app.poll_interval(), POLL_ACTIVE);
+        }
+
+        #[test]
+        fn quota_presentation_uses_human_names_and_risk_thresholds() {
+            assert_eq!(quota_label("agy:claude_gpt"), "AGY · Claude + GPT");
+            assert_eq!(quota_label("zai:coding"), "Z.AI Coding Plan");
+            assert_eq!(quota_label("custom:plan"), "custom:plan");
+            assert_eq!(quota_short_label("codex:Codex"), "Codex");
+            assert_eq!(quota_short_label("codex:Hermes"), "Codex 2");
+            assert_eq!(
+                quota_account_label("codex:Codex"),
+                "Codex · Cuenta principal"
+            );
+            assert_eq!(quota_account_label("codex:Hermes"), "Codex · Cuenta 2");
+            assert_eq!(
+                quota_remaining(&BTreeMap::from([
+                    ("5h".to_string(), 47.0),
+                    ("7d".to_string(), 100.0),
+                ])),
+                47.0
+            );
+            assert_ne!(quota_color(13.0), quota_color(53.0));
+        }
+
+        #[test]
+        fn quota_identities_are_loaded_from_the_private_sibling_file() {
+            let root = std::env::temp_dir().join(format!("swarms-identities-{}", unix_ms()));
+            fs::create_dir_all(&root).unwrap();
+            let snapshot = root.join("quota_snapshot.json");
+            fs::write(
+                root.join("quota_identities.local.json"),
+                r#"{"version":1,"accounts":{"codex:Codex":"one@example.com"}}"#,
+            )
+            .unwrap();
+
+            let accounts = load_quota_identities(&snapshot).unwrap();
+
+            assert_eq!(accounts.get("codex:Codex").unwrap(), "one@example.com");
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn ready_file_is_written_once_without_starting_workers() {
+            let root = std::env::temp_dir().join(format!("swarms-ready-{}", unix_ms()));
+            let ready = root.join("ready.json");
+            let mut app = ObservabilityApp::new(
+                root.clone(),
+                Some("run-1".to_string()),
+                Some(ready.clone()),
+                None,
+            );
+            app.write_ready();
+            let payload = fs::read_to_string(&ready).unwrap();
+            assert!(payload.contains(r#""ready":true"#));
+            assert!(payload.contains("run-1"));
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn run_signature_changes_only_with_observed_state() {
+            let root = std::env::temp_dir().join(format!("swarms-signature-{}", unix_ms()));
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("workflow.json"), "{}").unwrap();
+            let first = RunSignature::read(&root);
+            assert_eq!(first, RunSignature::read(&root));
+            fs::write(root.join("workflow.json"), r#"{"run_id":"changed"}"#).unwrap();
+            assert_ne!(first, RunSignature::read(&root));
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn activating_completed_run_loads_existing_events() {
+            let root = std::env::temp_dir().join(format!("swarms-events-{}", unix_ms()));
+            let run_dir = root.join("done");
+            fs::create_dir_all(&run_dir).unwrap();
+            fs::write(
+                run_dir.join("workflow.json"),
+                r#"{"run_id":"done","runtime":"rust"}"#,
+            )
+            .unwrap();
+            fs::write(
+                run_dir.join("events.jsonl"),
+                "{\"event\":\"workflow_finished\",\"payload\":{}}\n",
+            )
+            .unwrap();
+            let mut reader = RunReader::open(&root, "done", Vec::new()).unwrap();
+            assert_eq!(reader.tail_events(MAX_EVENTS).len(), 1);
+            let mut app = ObservabilityApp::new(root.clone(), None, None, None);
+            app.activate("done".to_string());
+            assert_eq!(app.events.len(), 1, "activation error: {:?}", app.error);
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn activating_run_switches_resources_to_its_workspace() {
+            let root = std::env::temp_dir().join(format!("swarms-resource-root-{}", unix_ms()));
+            let runs = root.join("runs");
+            let project = root.join("other-project");
+            let run_dir = runs.join("project-run");
+            fs::create_dir_all(&run_dir).unwrap();
+            fs::create_dir_all(&project).unwrap();
+            fs::write(project.join("AGENTS.md"), "project instructions").unwrap();
+            fs::write(
+                run_dir.join("workflow.json"),
+                serde_json::to_string(&serde_json::json!({
+                    "run_id": "project-run",
+                    "runtime": "rust",
+                    "workspace_root": project,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+            let mut app = ObservabilityApp::new(runs, None, None, None);
+            app.activate("project-run".to_string());
+
+            assert_eq!(app.resource_root, project);
+            assert!(app
+                .resource_catalog
+                .entries
+                .iter()
+                .any(|entry| entry.name == "AGENTS.md"));
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn default_run_root_finds_repo_from_release_executable() {
+            let root = std::env::temp_dir().join(format!("swarms-root-{}", unix_ms()));
+            let runs = root.join(".agent/swarm/runs");
+            let executable = root.join("rust/target/release/swarms-ui.exe");
+            fs::create_dir_all(&runs).unwrap();
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            assert_eq!(
+                default_run_root(Path::new("C:/unrelated"), Some(&executable)),
+                runs
+            );
+            fs::remove_dir_all(root).ok();
+        }
     }
 }

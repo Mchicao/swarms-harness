@@ -1,4 +1,4 @@
-//! Integration tests for the read-only `swarms_ui` model (no window, no egui).
+//! Integration tests for the read-only `swarms_runtime::ui` model (no window, no egui).
 //!
 //! These exercise `RunReader`, `flatten`, status derivation, the event tail
 //! offset, log capping and sanitization against on-disk fixtures. They never
@@ -10,12 +10,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use swarms_ui::{
-    flatten, list_runs, read_worker_log_tail, safe_run_id, sanitize_error, sanitize_path, unix_ms,
-    RowKind, RunReader, RunStatus, MAX_ERROR_CHARS, MAX_LOG_BYTES,
+use swarms_runtime::ui::{
+    flatten, group_runs, list_runs, read_worker_log_tail, relative_age, safe_run_id,
+    sanitize_error, sanitize_path, unix_ms, RowKind, RunReader, RunStatus, MAX_ERROR_CHARS,
+    MAX_LOG_BYTES,
 };
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn relative_age_is_compact_and_handles_missing_timestamps() {
+    let now = 10_000_000u128;
+    assert_eq!(relative_age(Some(now - 30_000), now), "now");
+    assert_eq!(relative_age(Some(now - 5 * 60_000), now), "5m ago");
+    assert_eq!(relative_age(Some(now - 2 * 3_600_000), now), "2h ago");
+    assert_eq!(relative_age(None, now), "unknown");
+}
 
 fn tmp_dir(label: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
@@ -43,7 +53,7 @@ fn empty_run_reports_empty_status() {
     let contract = reader.read();
     assert_eq!(contract.run.status, RunStatus::Empty);
     assert!(contract.stages.is_empty());
-    assert!(contract.run.read_only);
+    assert!(contract.read_only);
     fs::remove_dir_all(root).ok();
 }
 
@@ -305,7 +315,7 @@ fn foreign_absolute_artifact_collapses_to_basename() {
 }
 
 #[test]
-fn worker_log_tail_is_capped_to_two_mib() {
+fn worker_log_tail_is_capped_to_configured_limit() {
     let root = tmp_dir("log");
     let run_dir = root.join("l");
     let task_id = "0000-t";
@@ -382,6 +392,53 @@ fn list_runs_orders_active_first_then_by_recency() {
     assert!(!runs[0].has_report);
     assert_eq!(runs[1].run_id, "finished");
     assert!(runs[1].has_report);
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn runs_are_grouped_by_project_with_legacy_fallback() {
+    let root = tmp_dir("projects");
+    for (run_id, workflow) in [
+        (
+            "alpha-1",
+            json!({"run_id":"alpha-1","project_id":"alpha","project_name":"Alpha"}),
+        ),
+        (
+            "alpha-2",
+            json!({"run_id":"alpha-2","project_id":"alpha","project_name":"Alpha"}),
+        ),
+        (
+            "workspace-old",
+            json!({"run_id":"workspace-old","workspace_root":"C:/work/Beta"}),
+        ),
+        ("legacy", json!({"run_id":"legacy"})),
+    ] {
+        let run_dir = root.join(run_id);
+        fs::create_dir_all(run_dir.join("tasks")).unwrap();
+        write_json(&run_dir.join("workflow.json"), &workflow);
+    }
+    let runs = list_runs(&root);
+    let groups = group_runs(&runs);
+    assert_eq!(groups.len(), 3);
+    assert_eq!(
+        groups
+            .iter()
+            .find(|group| group.project_id == "alpha")
+            .unwrap()
+            .runs
+            .len(),
+        2
+    );
+    assert_eq!(
+        groups
+            .iter()
+            .find(|group| group.project_name == "Beta")
+            .unwrap()
+            .runs[0]
+            .run_id,
+        "workspace-old"
+    );
+    assert!(groups.iter().any(|group| group.project_id == "legacy"));
     fs::remove_dir_all(root).ok();
 }
 

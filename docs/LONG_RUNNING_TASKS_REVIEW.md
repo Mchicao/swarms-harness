@@ -26,9 +26,6 @@ pasó **16 tests** y Ruff dirigido pasó.
 
 ## Brechas explícitas
 
-- Rust no puede enlazar en este PC porque falta `link.exe` y el SDK MSVC;
-  `cargo fmt --manifest-path rust/Cargo.toml -- --check` sí pasa después del
-  spike UI.
-- El spike UI queda implementado a nivel de fuente, pero `cargo test`/Clippy
-  con sus dependencias no pueden completarse sin el linker/SDK.
+- El bloqueo histórico de `link.exe` quedó superado: runtime y UI enlazan en
+  Windows, y el build release, las pruebas y Clippy con `ui-egui` se ejecutan.
 - No se afirma fidelidad visual, multi-tenancy productivo ni ejecución DAX.

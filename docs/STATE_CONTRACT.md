@@ -1,15 +1,24 @@
-# Read-only run state contract v1
+# Run state and control contract v1
 
-The local UI may observe a SWARMS run, but it must never write coordinator
-state, claim tasks, launch workers, or mutate plans. Python and Rust publish the
-same read-only files under `.agent/swarm/runs/<run_id>/`:
+The local UI observes a SWARMS run and may append explicit user steer prompts;
+it never writes coordinator snapshots, claims tasks, launches workers or mutates
+plans. Python and Rust publish the same observed files under `.agent/swarm/runs/<run_id>/`:
 
-- `workflow.json`: run identity, runtime, workspace, limits and heartbeat interval.
+- `workflow.json`: run identity, project, runtime, workspace, limits and heartbeat interval.
 - `tasks/*.json`: current task/agent snapshot, written atomically.
 - `events.jsonl`: append-only lifecycle stream.
 - `claims/*.lock`: Python compatibility claim ownership; diagnostic only.
 - `results/<task_id>/`: prompt, worker log, status and completion checkpoint.
 - `report.json` or `report-rs.json`: terminal summary.
+- `steering/<task_id>/inbox.jsonl`: user prompts claimed by the Rust runtime.
+- `steering/<task_id>/history.jsonl`: applied/rejected/failed steering audit.
+
+Every new Rust run writes `project_id` and `project_name` in `workflow.json`.
+Plans may declare them with `"project": {"id": "stable-id", "name": "Display name"}`.
+When omitted, the runtime derives a stable workspace project. Historical runs
+without either field remain readable and appear under `Legacy runs`. Projects
+are metadata only: run paths stay `.agent/swarm/runs/<run_id>` and resume never
+moves an existing run between projects.
 
 ## Task snapshot
 
@@ -61,6 +70,7 @@ changing its status. Unknown fields must be ignored for forward compatibility.
 Each line in `events.jsonl` is independent JSON with `event`,
 `time_unix_ms`, and optional `task_id`. The current lifecycle events are
 `workflow_initialized`, `workflow_resumed`, `task_started`, `task_heartbeat`,
+`tasks_heartbeat`,
 `task_finished`, and `workflow_finished`. Python may include additional fields
 such as the ISO timestamp, model, provider, error or return code.
 
@@ -68,6 +78,15 @@ Readers should tail complete newline-terminated records and retry a snapshot
 read if an atomic replacement races with the filesystem watcher. Opening task
 details or child-agent panels belongs entirely to the UI process; it must not
 signal or foreground worker processes.
+
+## Steering mailbox
+
+Each inbox line is UTF-8 JSON with `id`, `created_at_epoch_ms`, `prompt` and
+`source`. Task IDs use safe path-component rules and prompts contain 1–4000
+characters. The runtime atomically renames the inbox before reading it. A
+delivered instruction becomes a subsequent provider turn, never stdin
+injection into the current CLI process. Unsupported or missing sessions are
+recorded as `rejected` without falsifying delivery.
 
 The intended observer is a separate, feature-gated native Rust binary so the
 coordinator remains lightweight when no UI is requested. This contract does

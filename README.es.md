@@ -101,6 +101,12 @@ cargo run --release --manifest-path rust/Cargo.toml -- doctor
 cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
+Observador nativo opcional y de bajo consumo:
+
+```powershell
+cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
+```
+
 El flujo completo está en `docs/RUST_RUNTIME.md`. Python sigue disponible para compatibilidad de benchmarks y telemetría heredados.
 
 ## Inicio Rapido

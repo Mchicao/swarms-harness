@@ -1,6 +1,6 @@
 # Evaluación del runtime para la UI de administración
 
-Estado: spike read-only implementado; enlace pendiente del toolchain Windows
+Estado: UI read-only implementada y enlazada en Windows
 Fecha de verificación: 2026-07-16
 
 ## Decisión
@@ -27,12 +27,9 @@ Razones para empezar por egui/eframe:
   para evitar repintados innecesarios, y `ScrollArea::show_rows` permite
   virtualizar listados grandes. El modo inmediato sigue siendo un riesgo de CPU
   si se solicita repintado continuo; el diseño prohíbe hacerlo.
-- El repositorio tiene instalados Rust 1.97.0 y los targets
-  `x86_64-pc-windows-msvc`/`x86_64-pc-windows-gnullvm`, pero la auditoría del
-  2026-07-16 no pudo reproducir el enlace: faltan `link.exe`, el Windows SDK y
-  Visual Studio Build Tools. `rust-lld` tampoco basta porque el host MSVC y
-  las import libs/CRT requeridas no están disponibles. El soporte de eframe
-  con gnullvm sigue sin estar verificado.
+- El bloqueo histórico del linker quedó superado: el build release con la
+  feature `ui-egui`, Clippy y las pruebas enlazan en Windows. La evidencia del
+  incidente anterior se conserva en `docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md`.
 
 ## Alcance funcional del primer corte
 
@@ -42,7 +39,7 @@ Una sola ventana, sin diálogos o ventanas por agente:
 |---|---|---|
 | Izquierda | Enjambres detectados, activos primero, estado y antigüedad | Sólo metadatos de `workflow.json` y reportes |
 | Centro | Árbol virtualizado de tareas y subagentes, filtros y búsqueda | Índice compacto; filas visibles únicamente |
-| Derecha | Tarea seleccionada, proveedor/modelo, heartbeat, error y log | Sólo el log seleccionado, lectura incremental y tope de 2 MiB |
+| Derecha | Tarea seleccionada, proveedor/modelo, heartbeat, error y log | Sólo el log seleccionado, lectura incremental, líneas virtualizadas y tope de 256 KiB |
 | Inferior | Contadores, límites de concurrencia y estado del lector | Series temporales fuera del primer corte |
 
 "Ir a ver" un subagente significa seleccionar su fila y actualizar el panel
@@ -74,8 +71,8 @@ DAG de `needs`.
 
 Cadencia propuesta:
 
-- ventana enfocada y run activo: comprobar tamaño/fecha cada 500 ms;
-- ventana sin foco o sin cambios: cada 2 s;
+- run activo: comprobar metadatos cada 1 s;
+- run inactivo: comprobar metadatos cada 5 s;
 - cambio detectado: leer sólo el delta y pedir un repaint;
 - interacción del usuario: repaint inmediato;
 - nunca ejecutar un loop fijo a 60 FPS.
@@ -265,7 +262,7 @@ El harness definitivo debe automatizar muestreo a 250 ms y escribir CSV en
 |---|---|
 | Repaint loop eleva CPU | Caso B y E con causa de repaint instrumentada |
 | Árbol grande eleva RAM | 1.000 y 10.000 filas con virtualización |
-| Logs crecen sin límite | Abrir 10 MiB y comprobar tope residente de 2 MiB |
+| Logs crecen sin límite | Abrir 10 MiB y comprobar tope residente de 256 KiB |
 | Lectura parcial de JSONL | Inyectar última línea truncada y completarla después |
 | Snapshot cambia durante lectura | Reemplazo atómico concurrente sin caída de UI |
 | Worker roba foco | Ejecución desde UI futura sin consola/ventana adicional |
@@ -275,9 +272,9 @@ El harness definitivo debe automatizar muestreo a 250 ms y escribir CSV en
 ## Fuentes oficiales
 
 - [egui/eframe README, plataformas, dependencias y licencia](https://github.com/emilk/egui)
-- [Features de eframe 0.35.0](https://docs.rs/crate/eframe/0.35.0/features)
-- [Repaint bajo demanda en egui](https://docs.rs/egui/0.35.0/egui/struct.Context.html#method.request_repaint_after)
-- [Virtualización con ScrollArea::show_rows](https://docs.rs/egui/0.35.0/egui/containers/scroll_area/struct.ScrollArea.html#method.show_rows)
+- [Features de eframe 0.32](https://docs.rs/crate/eframe/0.32.3/features)
+- [Repaint bajo demanda en egui](https://docs.rs/egui/0.32.3/egui/struct.Context.html#method.request_repaint_after)
+- [Virtualización con ScrollArea::show_rows](https://docs.rs/egui/0.32.3/egui/containers/scroll_area/struct.ScrollArea.html#method.show_rows)
 - [Backends y renderers de Slint](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backends_and_renderers/)
 - [Licencias oficiales de Slint](https://slint.dev/terms-and-conditions)
 - [Plataformas desktop de Slint](https://docs.slint.dev/latest/docs/slint/guide/platforms/desktop/)
