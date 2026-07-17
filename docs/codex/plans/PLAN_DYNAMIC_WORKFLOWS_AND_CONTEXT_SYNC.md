@@ -28,7 +28,7 @@ used.
 - [x] (2026-07-17 02:52Z) Implemented the bounded Workflow IR compiler and integrated the Python runtime.
 - [x] (2026-07-17 02:52Z) Mirrored hard recursion limits, prompt policy, and Python-backed IR expansion in the Rust coordinator.
 - [x] (2026-07-17 02:52Z) Added opt-in coordinated-context preview/apply flow and a credential-free canonical Rulesync source.
-- [ ] Add an explicit Rust CI job, confirm it passes, and leave draft PR #4 updated at the verified head.
+- [x] (2026-07-17 03:02Z) Added an explicit Rust coordinator CI job; format, tests, Clippy, IR review, and the seven-task mock workflow passed on PR #4.
 
 ## Surprises & Discoveries
 
@@ -74,7 +74,8 @@ clean. Rust formatting passes, while local compilation is externally blocked
 by the missing Windows linker; GitHub CI remains the required independent Rust
 verification before closing the plan. The existing GitHub jobs passed on
 `10c80e2`, but inspection showed they covered Python only. An explicit Rust
-format/test/clippy/mock job is therefore required before closure.
+coordinator job was added and passed format, unit tests, Clippy, schema-v2
+review, and the offline seven-task mock workflow on commit `4c0946c`.
 
 ## Context and Orientation
 
