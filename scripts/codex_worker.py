@@ -58,18 +58,20 @@ def run_codex(
     ]
     if resume_session:
         cmd.extend(["resume", resume_session])
-    cmd.extend([
-        "--model",
-        model,
-        "-s",
-        sandbox,
-        "-c",
-        f"model_reasoning_effort={reasoning_effort}",
-        "-o",
-        str(out_file),
-        "--json",
-        prompt,
-    ])
+    cmd.extend(
+        [
+            "--model",
+            model,
+            "-s",
+            sandbox,
+            "-c",
+            f"model_reasoning_effort={reasoning_effort}",
+            "-o",
+            str(out_file),
+            "--json",
+            prompt,
+        ]
+    )
     try:
         result = subprocess.run(
             cmd,
@@ -90,7 +92,11 @@ def run_codex(
                 session_id = event["thread_id"]
         if session_id:
             write_provider_status(
-                status_path, provider="codex", model=model, provider_session_id=session_id, success=result.returncode == 0
+                status_path,
+                provider="codex",
+                model=model,
+                provider_session_id=session_id,
+                success=result.returncode == 0,
             )
         # Codex escribe el resultado en out_file; adjuntarlo a stdout para el runtime
         if out_file.exists():
@@ -115,7 +121,11 @@ def main() -> int:
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
     rc, out, err = run_codex(
-        prompt, args.model, args.tools_policy, args.timeout, args.resume_session,
+        prompt,
+        args.model,
+        args.tools_policy,
+        args.timeout,
+        args.resume_session,
         Path(args.status) if args.status else None,
     )
     if err and rc != 0:

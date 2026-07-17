@@ -177,10 +177,7 @@ def test_partial_run_reports_running_status_and_claims(partial_run: WorkflowRunt
     assert counts["in_progress"] == 1
 
     in_progress = next(
-        task
-        for stage in contract["stages"]
-        for task in stage["tasks"]
-        if task["status"] == "in_progress"
+        task for stage in contract["stages"] for task in stage["tasks"] if task["status"] == "in_progress"
     )
     # The live claim owner and heartbeat surface on the owning agent.
     assert in_progress["agent"]["owner"] == "owner-x"

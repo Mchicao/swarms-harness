@@ -159,8 +159,11 @@ def opencode_complete(
             if isinstance(event_session, str) and event_session:
                 session_id = event_session
                 write_provider_status(
-                    status_path, provider="opencode", model=model,
-                    provider_session_id=session_id, success=False,
+                    status_path,
+                    provider="opencode",
+                    model=model,
+                    provider_session_id=session_id,
+                    success=False,
                 )
             if event.get("type") == "error":
                 # SWARMS-002: Algunas fallas API terminan con exit code 0.

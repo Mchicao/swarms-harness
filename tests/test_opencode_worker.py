@@ -185,9 +185,7 @@ def test_opencode_resume_uses_exact_session_and_persists_event_id(monkeypatch, t
 
     monkeypatch.setattr(opencode_worker.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(opencode_worker, "_terminate_process_tree", lambda _proc: None)
-    assert opencode_worker.opencode_complete(
-        "Continue", resume_session="session-123", status_path=status
-    ) == "OK"
+    assert opencode_worker.opencode_complete("Continue", resume_session="session-123", status_path=status) == "OK"
     assert captured["command"][captured["command"].index("--session") + 1] == "session-123"
     assert json.loads(status.read_text())["provider_session_id"] == "session-123"
 

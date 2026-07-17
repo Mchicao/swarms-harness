@@ -53,10 +53,14 @@ def gemini_complete(
     If tools_policy is 'none', runs the agy call in a temporary clean directory
     to prevent it from loading workspace-level AGENTS.md rules.
     """
+
     def record_session(session_id: str) -> None:
         write_provider_status(
-            status_path, provider="gemini", model=model,
-            provider_session_id=session_id, success=False,
+            status_path,
+            provider="gemini",
+            model=model,
+            provider_session_id=session_id,
+            success=False,
         )
 
     kwargs = {
@@ -117,8 +121,11 @@ def main() -> int:
         if args.status:
             if args.resume_session:
                 write_provider_status(
-                    args.status, provider="gemini", model=args.model,
-                    provider_session_id=args.resume_session, success=True,
+                    args.status,
+                    provider="gemini",
+                    model=args.model,
+                    provider_session_id=args.resume_session,
+                    success=True,
                 )
             else:
                 write_provider_status(args.status, success=True, provider="gemini", model=args.model)
