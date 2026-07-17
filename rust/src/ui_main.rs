@@ -2950,6 +2950,7 @@ pub mod ui_egui {
             options,
             Box::new(move |cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
+                crate::ui_theme::Theme::install_fonts(&cc.egui_ctx);
                 apply_theme(&cc.egui_ctx);
                 Ok(Box::new(app))
             }),
