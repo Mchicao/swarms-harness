@@ -98,7 +98,22 @@ struct TaskResult {
     status: String,
     duration_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
+    provider_session_id: Option<String>,
+    resume_count: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+fn fresh_provider_session(path: &Path, now_ms: u128) -> Option<String> {
+    let data: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let session = data.get("provider_session_id")?.as_str()?.to_string();
+    let updated = data.get("provider_session_updated_unix_ms")?.as_u64()? as u128;
+    let window_ms = env::var("SWARMS_SESSION_RESUME_WINDOW_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u128>().ok())
+        .unwrap_or(300)
+        * 1000;
+    (now_ms >= updated && now_ms - updated <= window_ms && !session.is_empty()).then_some(session)
 }
 
 struct Args {
@@ -703,6 +718,7 @@ fn append_event(run_dir: &Path, event: &str, task_id: Option<&str>) -> Result<()
 
 fn run_worker(root: &Path, workspace_root: &Path, run_dir: &Path, task: Task) -> TaskResult {
     let started = SystemTime::now();
+    let mut final_resume_count = 0_u8;
     let attempts = task_attempts(run_dir, &task) + 1;
     let checkpoint_key = checkpoint_key(&task);
     let work_dir = run_dir.join("results").join(&task.id);
@@ -787,35 +803,64 @@ fn run_worker(root: &Path, workspace_root: &Path, run_dir: &Path, task: Task) ->
         if task.provider.wrapper == "hermes" && task.provider.model.starts_with("tencent/hy3") {
             command.arg("--provider").arg("nous");
         }
+        let resume_session = fresh_provider_session(&status, unix_ms());
+        let mut resume_count = u8::from(resume_session.is_some());
+        final_resume_count = resume_count;
+        if let Some(session_id) = &resume_session {
+            if matches!(
+                task.provider.wrapper.as_str(),
+                "codex" | "opencode" | "gemini"
+            ) {
+                command.arg("--resume-session").arg(session_id);
+            } else {
+                resume_count = 0;
+                final_resume_count = 0;
+            }
+        }
         let log = fs::File::create(work_dir.join("worker.log")).map_err(|e| e.to_string())?;
         let stderr = log.try_clone().map_err(|e| e.to_string())?;
-        let mut child = command
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        command.stdout(Stdio::from(log)).stderr(Stdio::from(stderr));
         let heartbeat_seconds = positive_env_u64("SWARMS_HEARTBEAT_SECONDS", 30);
         let timeout_seconds = positive_env_u64("SWARMS_WORKER_TIMEOUT", 600);
-        let clock = Instant::now();
-        let mut last_heartbeat = Instant::now();
-        let exit_status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                break status;
+        loop {
+            let mut child = command.spawn().map_err(|e| e.to_string())?;
+            let clock = Instant::now();
+            let mut last_heartbeat = Instant::now();
+            let exit_status = loop {
+                if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                    break status;
+                }
+                if clock.elapsed() >= Duration::from_secs(timeout_seconds) {
+                    child.kill().map_err(|e| e.to_string())?;
+                    let _ = child.wait();
+                    return Err(format!("worker timed out after {timeout_seconds}s"));
+                }
+                if last_heartbeat.elapsed() >= Duration::from_secs(heartbeat_seconds) {
+                    write_task_state(run_dir, &task, "in_progress", attempts, None)?;
+                    append_event(run_dir, "task_heartbeat", Some(&task.id))?;
+                    last_heartbeat = Instant::now();
+                }
+                thread::sleep(Duration::from_millis(100));
+            };
+            if exit_status.success() {
+                break;
             }
-            if clock.elapsed() >= Duration::from_secs(timeout_seconds) {
-                child.kill().map_err(|e| e.to_string())?;
-                let _ = child.wait();
-                return Err(format!("worker timed out after {timeout_seconds}s"));
+            if resume_count > 0 {
+                return Err(format!("worker exited {:?}", exit_status.code()));
             }
-            if last_heartbeat.elapsed() >= Duration::from_secs(heartbeat_seconds) {
-                write_task_state(run_dir, &task, "in_progress", attempts, None)?;
-                append_event(run_dir, "task_heartbeat", Some(&task.id))?;
-                last_heartbeat = Instant::now();
+            let Some(session_id) = fresh_provider_session(&status, unix_ms()) else {
+                return Err(format!("worker exited {:?}", exit_status.code()));
+            };
+            if !matches!(
+                task.provider.wrapper.as_str(),
+                "codex" | "opencode" | "gemini"
+            ) {
+                return Err(format!("worker exited {:?}", exit_status.code()));
             }
-            thread::sleep(Duration::from_millis(100));
-        };
-        if !exit_status.success() {
-            return Err(format!("worker exited {:?}", exit_status.code()));
+            command.arg("--resume-session").arg(&session_id);
+            resume_count = 1;
+            final_resume_count = 1;
+            append_event(run_dir, "provider_session_resume_started", Some(&task.id))?;
         }
         Ok(())
     })();
@@ -835,6 +880,8 @@ fn run_worker(root: &Path, workspace_root: &Path, run_dir: &Path, task: Task) ->
         checkpoint_key,
         status: status.to_string(),
         duration_ms,
+        provider_session_id: fresh_provider_session(&work_dir.join("status.json"), unix_ms()),
+        resume_count: final_resume_count,
         error,
     };
     let _ = write_json(
@@ -889,6 +936,24 @@ mod tests {
     fn run_ids_are_portable() {
         assert!(safe_run_id("windows-linux_macos.1"));
         assert!(!safe_run_id("../escape"));
+    }
+
+    #[test]
+    fn provider_sessions_expire_after_five_minutes() {
+        let root = env::temp_dir().join(format!("swarms-session-{}", unix_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let status = root.join("status.json");
+        fs::write(
+            &status,
+            r#"{"provider_session_id":"exact","provider_session_updated_unix_ms":700000}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            fresh_provider_session(&status, 1_000_000).as_deref(),
+            Some("exact")
+        );
+        assert!(fresh_provider_session(&status, 1_000_001).is_none());
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn slug_is_safe() {

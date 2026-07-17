@@ -2,6 +2,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -988,3 +989,56 @@ def test_checkpoint_hit_does_not_consume_a_provider_concurrency_slot(tmp_path, m
 
     # The checkpoint path returns before the claim, so no route slot is held.
     assert runtime.route_active.get("mock", 0) == 0
+
+
+def test_provider_session_is_resumable_only_for_five_minutes(tmp_path):
+    status = tmp_path / "status.json"
+    now = 1_000_000
+    write_json_atomic(status, {
+        "provider_session_id": "session-123",
+        "provider_session_updated_unix_ms": now - 300_000,
+    })
+    assert workflow_runtime.load_fresh_provider_session(status, now_ms=now) == "session-123"
+    write_json_atomic(status, {
+        "provider_session_id": "session-123",
+        "provider_session_updated_unix_ms": now - 300_001,
+    })
+    assert workflow_runtime.load_fresh_provider_session(status, now_ms=now) is None
+
+
+def test_worker_command_resumes_only_supported_wrapper_with_exact_id(tmp_path):
+    runtime = WorkflowRuntime(run_id="resume-command", run_root=tmp_path)
+    task = WorkflowTask(
+        task_id="task", source_id="task", index=0, stage="Build", role="programmer",
+        text="work", route="codex", provider="codex", model="gpt", wrapper="codex",
+    )
+    command = runtime.worker_command(task, tmp_path / "prompt", tmp_path / "status", "session-123")
+    assert command[command.index("--resume-session") + 1] == "session-123"
+    assert "--last" not in command
+
+
+def test_failed_worker_is_resumed_exactly_once(tmp_path, monkeypatch):
+    runtime = WorkflowRuntime(run_id="retry-once", run_root=tmp_path)
+    task = WorkflowTask(
+        task_id="task", source_id="task", index=0, stage="Build", role="programmer",
+        text="work", route="codex", provider="codex", model="gpt", wrapper="codex",
+    )
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if len(calls) == 1:
+            write_json_atomic(runtime.results_dir / "task" / "status.json", {
+                "provider_session_id": "session-123",
+                "provider_session_updated_unix_ms": int(time.time() * 1000),
+            })
+            return SimpleNamespace(returncode=2)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(workflow_runtime.subprocess, "run", fake_run)
+    result = runtime.run_task(task, [task])
+
+    assert result["success"] is True
+    assert result["resume_count"] == 1
+    assert len(calls) == 2
+    assert calls[1][calls[1].index("--resume-session") + 1] == "session-123"

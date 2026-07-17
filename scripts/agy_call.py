@@ -35,6 +35,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 # agy stores conversations here regardless of --model.
@@ -254,6 +255,8 @@ def agy_complete(
     skip_permissions: bool = False,
     sandbox: bool = True,
     cwd: str | Path | None = None,
+    conversation_id: str | None = None,
+    session_callback: Callable[[str], None] | None = None,
 ) -> str:
     """Run agy in print mode and return the assistant's answer.
 
@@ -282,9 +285,19 @@ def agy_complete(
         cmd.append("--sandbox")
     if model:
         cmd += ["--model", model]
+    if conversation_id:
+        cmd += ["--conversation", conversation_id]
     cmd += ["--print", prompt]
 
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    if conversation_id and session_callback:
+        session_callback(conversation_id)
+    updated = [
+        path for path in _list_conv_dbs()
+        if path.name not in before or path.stat().st_mtime > before.get(path.name, 0)
+    ]
+    if updated and session_callback:
+        session_callback(max(updated, key=lambda path: path.stat().st_mtime).stem)
     # stdout is usually empty in headless mode; keep it as a first attempt.
     direct = (proc.stdout or "").strip()
     if direct:
@@ -301,6 +314,8 @@ def agy_complete(
         new_or_updated = [p for p in after if p.name not in before or p.stat().st_mtime > before.get(p.name, 0)]
         if new_or_updated:
             latest = max(new_or_updated, key=lambda p: p.stat().st_mtime)
+            if session_callback:
+                session_callback(latest.stem)
             answer = _extract_answer(latest)
             if answer:
                 break

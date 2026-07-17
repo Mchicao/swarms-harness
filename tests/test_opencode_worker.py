@@ -172,3 +172,35 @@ def test_opencode_cleanup_attempts_group_cleanup_after_root_exits(monkeypatch):
 
     assert cleanup_commands == [["taskkill", "/PID", str(process.pid), "/T", "/F"]]
     assert process.wait_timeout == 2
+
+
+def test_opencode_resume_uses_exact_session_and_persists_event_id(monkeypatch, tmp_path):
+    captured = {}
+    status = tmp_path / "status.json"
+    payload = json.dumps({"type": "text", "sessionID": "session-123", "part": {"text": "OK"}})
+
+    def fake_popen(command, **_kwargs):
+        captured["command"] = command
+        return _FakeOpenCodeProcess((payload, ""))
+
+    monkeypatch.setattr(opencode_worker.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(opencode_worker, "_terminate_process_tree", lambda _proc: None)
+    assert opencode_worker.opencode_complete(
+        "Continue", resume_session="session-123", status_path=status
+    ) == "OK"
+    assert captured["command"][captured["command"].index("--session") + 1] == "session-123"
+    assert json.loads(status.read_text())["provider_session_id"] == "session-123"
+
+
+def test_opencode_persists_session_before_reporting_failed_process(monkeypatch, tmp_path):
+    status = tmp_path / "status.json"
+    payload = json.dumps({"type": "step_start", "sessionID": "session-failed"})
+    process = _FakeOpenCodeProcess((payload, "boom"))
+    process.returncode = 2
+    monkeypatch.setattr(opencode_worker.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(opencode_worker, "_terminate_process_tree", lambda _proc: None)
+
+    with pytest.raises(RuntimeError, match="exited 2"):
+        opencode_worker.opencode_complete("Continue", status_path=status)
+
+    assert json.loads(status.read_text())["provider_session_id"] == "session-failed"

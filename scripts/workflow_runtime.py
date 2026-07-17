@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from scripts.provider_session import load_fresh_provider_session
+
 try:
     from .paths import PROJECT_ROOT, WORKSPACE_ROOT
     from .smart_router import load_config
@@ -626,7 +628,9 @@ class WorkflowRuntime:
         )
         return prompt
 
-    def worker_command(self, task: WorkflowTask, prompt: Path, status_path: Path) -> list[str]:
+    def worker_command(
+        self, task: WorkflowTask, prompt: Path, status_path: Path, resume_session: str | None = None
+    ) -> list[str]:
         script_name = WORKER_SCRIPTS.get(task.wrapper)
         if not script_name:
             raise ValueError(f"Unsupported worker wrapper: {task.wrapper!r}")
@@ -647,6 +651,8 @@ class WorkflowRuntime:
             command.extend(["--cwd", str(self.workspace_root)])
         if task.wrapper == "opencode" and task.variant:
             command.extend(["--variant", task.variant])
+        if resume_session and task.wrapper in {"codex", "opencode", "gemini"}:
+            command.extend(["--resume-session", resume_session])
         if task.wrapper == "openai_compat":
             key_env = OPENAI_COMPAT_KEY_ENV.get(task.provider, "OPENAI_COMPAT_API_KEY")
             base_url_env = f"{task.provider.upper()}_BASE_URL"
@@ -704,19 +710,38 @@ class WorkflowRuntime:
             heartbeat_thread.start()
             try:
                 try:
-                    command = self.worker_command(task, prompt, status_path)
-                    with output_log.open("w", encoding="utf-8") as log:
-                        proc = subprocess.run(
-                            command,
-                            cwd=PROJECT_ROOT,
-                            text=True,
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            timeout=DEFAULT_WORKER_TIMEOUT,
-                            encoding="utf-8",
-                            errors="replace",
+                    resume_session = load_fresh_provider_session(status_path)
+                    initial_resume = bool(resume_session)
+                    resume_count = 0
+                    while True:
+                        command = (
+                            self.worker_command(task, prompt, status_path, resume_session)
+                            if resume_session
+                            else self.worker_command(task, prompt, status_path)
                         )
-                    returncode = proc.returncode
+                        with output_log.open("a" if resume_count else "w", encoding="utf-8") as log:
+                            proc = subprocess.run(
+                                command,
+                                cwd=PROJECT_ROOT,
+                                text=True,
+                                stdout=log,
+                                stderr=subprocess.STDOUT,
+                                timeout=DEFAULT_WORKER_TIMEOUT,
+                                encoding="utf-8",
+                                errors="replace",
+                            )
+                        returncode = proc.returncode
+                        if returncode == 0 or resume_count or resume_session:
+                            break
+                        resume_session = load_fresh_provider_session(status_path)
+                        if not resume_session:
+                            break
+                        resume_count = 1
+                        self.event(
+                            "provider_session_resume_started",
+                            task_id=task.task_id,
+                            provider_session_id=resume_session,
+                        )
                 except (OSError, ValueError) as exc:
                     returncode = 127
                     output_log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
@@ -745,6 +770,9 @@ class WorkflowRuntime:
                 "checkpoint_key": checkpoint_key(task),
                 "attempts": task.attempts,
                 "ended_at": task.ended_at,
+                "provider_session_id": load_fresh_provider_session(status_path),
+                "session_resumed": locals().get("initial_resume", False) or bool(locals().get("resume_count", 0)),
+                "resume_count": int(locals().get("initial_resume", False)) + locals().get("resume_count", 0),
             }
             write_json_atomic(work_dir / "result.json", result)
             self.event("task_finished", **result)

@@ -32,8 +32,10 @@ from pathlib import Path
 
 try:
     from .paths import WORKSPACE_ROOT
+    from .provider_session import write_provider_status
 except ImportError:  # pragma: no cover - direct script execution path.
     from paths import WORKSPACE_ROOT
+    from provider_session import write_provider_status
 
 DEFAULT_MODEL = os.environ.get("OPENCODE_MODEL", "zai-coding-plan/glm-5.2")
 DEFAULT_TIMEOUT = int(os.environ.get("OPENCODE_TIMEOUT", "600"))
@@ -87,6 +89,8 @@ def opencode_complete(
     timeout: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
     tools_policy: str = "none",
+    resume_session: str | None = None,
+    status_path: Path | None = None,
 ) -> str:
     """Call GLM-5.2 via OpenCode one-shot and return the assistant text.
 
@@ -108,6 +112,8 @@ def opencode_complete(
     ]
     if variant:
         cmd.extend(["--variant", variant])
+    if resume_session:
+        cmd.extend(["--session", resume_session])
     cmd.extend(
         [
             message,
@@ -139,18 +145,23 @@ def opencode_complete(
     proc = subprocess.Popen(cmd, **popen_kwargs)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-        if proc.returncode != 0:
-            raise RuntimeError(f"OpenCode exited {proc.returncode}. stderr={stderr[:500]!r}")
-
         output = (stdout or "").strip()
         if not output:
             raise RuntimeError(f"OpenCode produced no stdout. returncode={proc.returncode} stderr={stderr[:300]!r}")
         text_events: list[str] = []
+        session_id = resume_session
         for line in output.splitlines():
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            event_session = event.get("sessionID") or event.get("session_id")
+            if isinstance(event_session, str) and event_session:
+                session_id = event_session
+                write_provider_status(
+                    status_path, provider="opencode", model=model,
+                    provider_session_id=session_id, success=False,
+                )
             if event.get("type") == "error":
                 # SWARMS-002: Algunas fallas API terminan con exit code 0.
                 error = event.get("error", {})
@@ -160,6 +171,12 @@ def opencode_complete(
                 text = event.get("part", {}).get("text")
                 if isinstance(text, str):
                     text_events.append(text)
+        if proc.returncode != 0:
+            raise RuntimeError(f"OpenCode exited {proc.returncode}. stderr={stderr[:500]!r}")
+        if session_id:
+            write_provider_status(
+                status_path, provider="opencode", model=model, provider_session_id=session_id, success=True
+            )
         return "".join(text_events) if text_events else output
     finally:
         _terminate_process_tree(proc)
@@ -174,6 +191,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--cwd", type=Path, default=None, help="Workspace used for full-tools execution")
     parser.add_argument("--tools-policy", default="none", choices=["none", "full"], help="Tools policy: none or full")
+    parser.add_argument("--resume-session", default=None, help="Exact OpenCode session ID to resume")
     args = parser.parse_args()
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
@@ -186,20 +204,19 @@ def main() -> int:
             timeout=args.timeout,
             cwd=args.cwd,
             tools_policy=args.tools_policy,
+            resume_session=args.resume_session,
+            status_path=args.status,
         )
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(output)
         if args.status:
-            args.status.write_text(
-                json.dumps({"success": True, "provider": "opencode", "model": args.model}),
-                encoding="utf-8",
-            )
+            write_provider_status(args.status, success=True, provider="opencode", model=args.model)
         return 0
     except Exception as e:
         print(f"[opencode_worker] ERROR: {e}", file=sys.stderr)
         if args.status:
-            args.status.write_text(json.dumps({"success": False, "error": str(e)}), encoding="utf-8")
+            write_provider_status(args.status, success=False, error=str(e))
         return 2
 
 

@@ -81,7 +81,10 @@ brief is approved.
 its Rust checkpoint matches the current task definition; unfinished, failed or
 changed tasks are requeued. Python preserves completed task snapshots and
 requeues every non-completed snapshot. `--force` and `--resume` are mutually
-exclusive. Automatic retries remain out of scope.
+exclusive. Codex, OpenCode, and agy workers persist an exact session ID in
+their task-local `status.json`. Python and Rust may continue it once while its
+timestamp is at most 300 seconds old; they never select a global "last"
+session. Corrupt, future-dated, or expired session state is ignored.
 
 ```powershell
 # SWARMS-RESUME-001: Reanuda checkpoints sin borrar el run existente.

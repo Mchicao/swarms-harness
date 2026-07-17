@@ -14,11 +14,14 @@ creado por el runtime). Codex escribe su salida a stdout y a un archivo -o.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from .provider_session import write_provider_status
 
 DEFAULT_TIMEOUT = int(os.environ.get("CODEX_WORKER_TIMEOUT", "600"))
 
@@ -32,7 +35,14 @@ def find_codex_binary() -> str:
     raise FileNotFoundError("No se encontro el binario 'codex' en PATH")
 
 
-def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple[int, str, str]:
+def run_codex(
+    prompt: str,
+    model: str,
+    tools_policy: str,
+    timeout: int,
+    resume_session: str | None = None,
+    status_path: Path | None = None,
+) -> tuple[int, str, str]:
     """Ejecuta codex exec y retorna (returncode, stdout, stderr)."""
     binary = find_codex_binary()
     sandbox = "workspace-write" if tools_policy != "none" else "read-only"
@@ -45,6 +55,10 @@ def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple
         "-a",
         "never",
         "exec",
+    ]
+    if resume_session:
+        cmd.extend(["resume", resume_session])
+    cmd.extend([
         "--model",
         model,
         "-s",
@@ -55,7 +69,7 @@ def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple
         str(out_file),
         "--json",
         prompt,
-    ]
+    ])
     try:
         result = subprocess.run(
             cmd,
@@ -66,6 +80,18 @@ def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple
             encoding="utf-8",
             errors="replace",
         )
+        session_id = resume_session
+        for line in (result.stdout or "").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+                session_id = event["thread_id"]
+        if session_id:
+            write_provider_status(
+                status_path, provider="codex", model=model, provider_session_id=session_id, success=result.returncode == 0
+            )
         # Codex escribe el resultado en out_file; adjuntarlo a stdout para el runtime
         if out_file.exists():
             artifact = out_file.read_text(encoding="utf-8", errors="replace")
@@ -79,14 +105,19 @@ def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="SWARMS codex worker")
-    parser.add_argument("--prompt", required=True, help="Task prompt for codex")
+    parser.add_argument("--prompt", type=Path, required=True, help="Path to the task prompt")
     parser.add_argument("--status", default=None, help="Optional status JSON path (compat)")
     parser.add_argument("--model", default="gpt-5.5-codex", help="Model label (informational)")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="Max seconds")
     parser.add_argument("--tools-policy", default="full", choices=["none", "full"])
+    parser.add_argument("--resume-session", default=None, help="Exact Codex thread ID to resume")
     args = parser.parse_args()
 
-    rc, out, err = run_codex(args.prompt, args.model, args.tools_policy, args.timeout)
+    prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
+    rc, out, err = run_codex(
+        prompt, args.model, args.tools_policy, args.timeout, args.resume_session,
+        Path(args.status) if args.status else None,
+    )
     if err and rc != 0:
         sys.stderr.write(err + "\n")
     return rc
