@@ -2283,12 +2283,27 @@ pub mod ui_egui {
                 );
                 return;
             };
+            let theme = crate::ui_theme::Theme::marraqueta();
+            let palette = theme.palette;
+            fn mono() -> egui::FontFamily {
+                egui::FontFamily::Name("IBM Plex Mono".into())
+            }
+            fn sans() -> egui::FontFamily {
+                egui::FontFamily::Name("IBM Plex Sans".into())
+            }
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Swarm map").strong().size(16.0));
+                ui.label(
+                    egui::RichText::new("Swarm map")
+                        .family(sans())
+                        .strong()
+                        .size(theme.type_scale.heading)
+                        .color(palette.text),
+                );
                 ui.label(
                     egui::RichText::new("stages flow left to right")
-                        .small()
-                        .color(muted()),
+                        .family(sans())
+                        .size(theme.type_scale.caption)
+                        .color(palette.muted),
                 );
             });
             let column_width = 190.0;
@@ -2308,14 +2323,15 @@ pub mod ui_egui {
                 let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
                 let origin = response.rect.min;
                 let mut positions: HashMap<String, egui::Rect> = HashMap::new();
+                // Stage labels: bare name, no numbered markers (anti-slop).
                 for (stage_index, stage) in contract.stages.iter().enumerate() {
                     let x = origin.x + stage_index as f32 * (column_width + gap);
                     painter.text(
                         egui::pos2(x, origin.y + 8.0),
                         egui::Align2::LEFT_TOP,
                         &stage.name,
-                        egui::FontId::proportional(14.0),
-                        accent(),
+                        egui::FontId::new(theme.type_scale.heading, sans()),
+                        palette.text_dim,
                     );
                     for (task_index, task) in stage.tasks.iter().enumerate() {
                         let y = origin.y + 38.0 + task_index as f32 * (node_height + gap);
@@ -2329,6 +2345,8 @@ pub mod ui_egui {
                         }
                     }
                 }
+                // Connectors: muted line + small arrowhead (DAG is directed).
+                // No gradient, no shadow.
                 for stage in &contract.stages {
                     for task in &stage.tasks {
                         let Some(target) = positions.get(&task.task_id) else {
@@ -2336,48 +2354,78 @@ pub mod ui_egui {
                         };
                         for dependency in &task.needs {
                             if let Some(source) = positions.get(dependency) {
+                                let start = source.right_center();
+                                let end = target.left_center();
+                                let stroke_color = palette.border;
                                 painter.line_segment(
-                                    [source.right_center(), target.left_center()],
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(62, 64, 74)),
+                                    [start, end],
+                                    egui::Stroke::new(1.0_f32, stroke_color),
                                 );
+                                // Arrowhead: small filled triangle at the target end.
+                                let ah = 5.0;
+                                let tip = egui::pos2(end.x, end.y);
+                                let base_top = egui::pos2(end.x - ah, end.y - ah * 0.6);
+                                let base_bot = egui::pos2(end.x - ah, end.y + ah * 0.6);
+                                painter.add(egui::Shape::convex_polygon(
+                                    vec![tip, base_top, base_bot],
+                                    stroke_color,
+                                    egui::Stroke::NONE,
+                                ));
                             }
                         }
                     }
                 }
+                // Nodes: fill + label communicate state, not stripes or glow.
                 for stage in &contract.stages {
                     for task in &stage.tasks {
                         let Some(rect) = positions.get(&task.task_id) else {
                             continue;
                         };
-                        painter.rect_filled(*rect, 7.0, egui::Color32::from_rgb(23, 25, 31));
+                        let stale = false; // overview nodes don't carry staleness
+                        let (fill, text_color, border_color) = crate::ui_theme::status_colors(
+                            &task.status,
+                            stale,
+                            crate::ui_theme::BadgeMode::DagNode,
+                            &palette,
+                        );
+                        painter.rect_filled(*rect, theme.spacing.radius_card, fill);
                         painter.rect_stroke(
                             *rect,
-                            7.0,
-                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(46, 48, 58)),
+                            theme.spacing.radius_card,
+                            egui::Stroke::new(1.0_f32, border_color),
                             egui::StrokeKind::Inside,
                         );
-                        painter.circle_filled(
-                            egui::pos2(rect.left() + 13.0, rect.top() + 16.0),
-                            4.0,
-                            status_color(&task.status, false),
-                        );
+
+                        // Running node: ▸ glyph + bold + larger title.
+                        let is_running = task.status == "in_progress";
+                        let label_text = task.source_id.as_deref().unwrap_or(&task.task_id);
+                        let title = if is_running {
+                            format!("▸ {}", label_text)
+                        } else {
+                            label_text.to_string()
+                        };
+                        let title_size = if is_running {
+                            theme.type_scale.mono + 1.0
+                        } else {
+                            theme.type_scale.mono
+                        };
                         painter.text(
-                            egui::pos2(rect.left() + 24.0, rect.top() + 9.0),
+                            egui::pos2(rect.left() + 11.0, rect.top() + 9.0),
                             egui::Align2::LEFT_TOP,
-                            task.source_id.as_deref().unwrap_or(&task.task_id),
-                            egui::FontId::proportional(13.0),
-                            egui::Color32::from_rgb(224, 225, 230),
+                            title,
+                            egui::FontId::new(title_size, mono()),
+                            text_color,
                         );
                         painter.text(
-                            egui::pos2(rect.left() + 13.0, rect.top() + 34.0),
+                            egui::pos2(rect.left() + 11.0, rect.top() + 34.0),
                             egui::Align2::LEFT_TOP,
                             format!(
                                 "{}  ·  {}",
                                 task.status,
                                 task.model.as_deref().unwrap_or("local")
                             ),
-                            egui::FontId::proportional(11.0),
-                            muted(),
+                            egui::FontId::new(theme.type_scale.mono_small, mono()),
+                            text_color,
                         );
                     }
                 }
