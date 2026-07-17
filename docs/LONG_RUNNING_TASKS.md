@@ -29,6 +29,11 @@ cargo run --release --manifest-path rust/Cargo.toml -- `
 `--force` and `--resume` are mutually exclusive. `--force` wipes the run
 directory and starts over; `--resume` preserves completed work.
 
+Interrupted Codex, OpenCode, and agy workers also preserve their exact provider
+session ID in `status.json`. Both coordinators continue it at most once while
+the last session update is no more than five minutes old. This local safety
+window is independent of the provider's prompt-cache retention.
+
 ## Idempotent checkpoints
 
 Every task has a **checkpoint key**: a stable FNV-1a hash of its full

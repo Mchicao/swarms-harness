@@ -2,7 +2,13 @@
 
 SWARMS supports an UltraCode-style runtime without copying Claude Code's cost profile.
 
-The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, summaries, telemetry, and final reporting. Interrupted runs can be resumed from completed task checkpoints; automatic retries are not implemented.
+The runtime keeps orchestration state on disk and lets the harness execute the plan deterministically. The model can propose or edit a workflow, but the runtime owns dependency resolution, task claiming, concurrency limits, summaries, telemetry, and final reporting. Interrupted runs resume from completed task checkpoints and supported provider sessions may be resumed once within five minutes.
+
+Schema version 2 adds a small declarative Workflow IR. `agent`, literal `map`,
+`reduce`, verifier-agent `verify`, boolean `condition`, and fixed-round `loop`
+steps compile into stable version-1 tasks before dispatch. The compiler does
+not execute generated JavaScript or accept result-derived task injection. That
+keeps checkpoints deterministic and closes the recursive-spawn failure mode.
 
 ## GPT-5.6 Ultra-Style Runtime
 
@@ -33,11 +39,17 @@ The stable read-only contract for a local observer UI, including nested
 
 ## Scale Model
 
-The target is many logical workers with bounded live concurrency:
+The safe default is 12 logical workers with bounded live concurrency. A user
+may explicitly raise the flat worker ceiling, while depth, direct children,
+rounds, provider concurrency, and total workers remain hard plan limits:
 
 ```json
 {
   "max_total_workers": 1000,
+  "max_depth": 2,
+  "max_children_per_agent": 4,
+  "max_rounds": 4,
+  "spawn_budget": 0,
   "global_max_concurrency": 8,
   "provider_concurrency": {
     "mock": 64,
@@ -71,6 +83,36 @@ Plan without running workers:
 ```powershell
 python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
 ```
+
+Review and expand the bounded Workflow IR through the public Rust coordinator:
+
+```powershell
+# SWARMS-DYNAMIC-001: Compila el IR declarativo antes del dispatch Rust.
+cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_dynamic_example.json
+```
+
+Every public Python and Rust worker prompt carries a policy before task and
+dependency content that forbids spawning, delegation, and recursive agent
+trees. `spawn_budget` must remain zero and
+`allow_subagent_spawning=true` is rejected because provider-internal fan-out
+cannot yet be counted reliably.
+
+## Coordinated agent context
+
+`--sync-agent-context` is opt-in. It previews and then synchronizes configured
+Skillshare skills, followed by project-scoped Rulesync generation for rules,
+AGENTS files, subagents, skills, and MCP:
+
+```powershell
+# SWARMS-CONTEXT-003: Sincroniza contexto sólo cuando se solicita explícitamente.
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_dynamic_example.json --sync-agent-context --context-sync-targets claude,codex,opencode,agy
+```
+
+The canonical source is `.rulesync/`. MCP credentials must use environment
+references such as `${GITHUB_TOKEN}`; literal secrets and credential-bearing
+URLs are rejected. Rulesync output is limited to the selected workspace.
+Skillshare uses its configured target set because its CLI does not provide a
+per-target filter.
 
 Run the deterministic mock workflow:
 

@@ -50,3 +50,17 @@ def test_gemini_retries_one_transient_recursion_error(monkeypatch):
 
     assert gemini_worker.gemini_complete("Review", tools_policy="none") == "RECOVERED"
     assert calls == 2
+
+
+def test_gemini_forwards_exact_resume_session(monkeypatch):
+    captured = {}
+
+    def fake_complete(_prompt, **kwargs):
+        captured.update(kwargs)
+        return "RESUMED"
+
+    monkeypatch.setattr(gemini_worker, "agy_complete", fake_complete)
+    assert (
+        gemini_worker.gemini_complete("Continue", tools_policy="full", resume_session="conversation-123") == "RESUMED"
+    )
+    assert captured["conversation_id"] == "conversation-123"

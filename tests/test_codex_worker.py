@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,4 +44,27 @@ def test_legacy_parallel_swarm_uses_canonical_codex_cli_order():
     source = Path("scripts/parallel_swarm.ps1").read_text(encoding="utf-8")
 
     assert "codex -a never exec" in source
-    assert "codex.exe`\" exec --full-auto" not in source
+    assert 'codex.exe`" exec --full-auto' not in source
+
+
+def test_codex_resume_uses_exact_thread_id_and_persists_it(monkeypatch, tmp_path):
+    captured = {}
+    status = tmp_path / "status.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(codex_worker, "find_codex_binary", lambda: "codex")
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(codex_worker.subprocess, "run", fake_run)
+    codex_worker.run_codex("Continue", "gpt-5.6-luna", "none", 30, "thread-123", status)
+
+    command = captured["command"]
+    assert command[command.index("resume") + 1] == "thread-123"
+    assert "--last" not in command
+    assert json.loads(status.read_text())["provider_session_id"] == "thread-123"

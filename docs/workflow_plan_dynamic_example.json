@@ -1,0 +1,69 @@
+{
+  "schema_version": 2,
+  "goal": "Implement and verify a bounded reshard utility workflow.",
+  "review_policy": {
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 12,
+    "max_depth": 2,
+    "max_children_per_agent": 4,
+    "max_rounds": 3,
+    "spawn_budget": 0,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "mock": 3
+    }
+  },
+  "workflow": {
+    "steps": [
+      {
+        "id": "discover",
+        "type": "agent",
+        "role": "planner",
+        "route": "mock",
+        "task": "Create docs/bench_notes/reshard_plan.md without delegating work.",
+        "artifacts": ["docs/bench_notes/reshard_plan.md"]
+      },
+      {
+        "id": "audit",
+        "type": "map",
+        "items": ["compress.py", "decompress.py"],
+        "item_name": "file",
+        "role": "programmer",
+        "route": "mock",
+        "task": "Implement bench_apps/reshard/{file} from the plan.",
+        "artifacts": ["bench_apps/reshard/{file}"],
+        "needs": ["discover"],
+        "parent": "discover"
+      },
+      {
+        "id": "merge",
+        "type": "reduce",
+        "from": ["audit"],
+        "role": "general",
+        "route": "mock",
+        "task": "Run pytest conceptually after both implementation tasks finish."
+      },
+      {
+        "id": "verify",
+        "type": "verify",
+        "route": "mock",
+        "task": "Run pytest and check that both mapped items were handled.",
+        "needs": ["merge"]
+      },
+      {
+        "id": "polish",
+        "type": "loop",
+        "max_rounds": 2,
+        "needs": ["verify"],
+        "step": {
+          "type": "agent",
+          "role": "general",
+          "route": "mock",
+          "task": "Run pytest review in bounded round {round}."
+        }
+      }
+    ]
+  }
+}
