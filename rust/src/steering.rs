@@ -147,12 +147,16 @@ fn now_epoch_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "swarms-steering-{}-{}",
+            "swarms-steering-{}-{}-{}",
             std::process::id(),
-            now_epoch_ms()
+            now_epoch_ms(),
+            TEMP_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
     }
 

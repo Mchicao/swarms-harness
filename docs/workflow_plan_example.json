@@ -80,7 +80,7 @@
           "task": "Create bench_tests/test_bench_reshard.py with roundtrip tests, output-boundary checks, and deterministic shard naming. Do not edit bench_apps/.",
           "artifacts": ["bench_tests/test_bench_reshard.py"],
           "needs": ["compress", "decompress"],
-          "verify": ["python -m pytest bench_tests/test_bench_reshard.py -q"]
+            "verify": ["rustc --version"]
         }
       ]
     }

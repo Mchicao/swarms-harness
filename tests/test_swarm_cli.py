@@ -142,17 +142,17 @@ def test_swarm_cli_blocks_unverified_real_route_before_dispatch(tmp_path, monkey
 
     args = swarm.build_parser().parse_args(
         [
-        "run",
-        "--plan",
-        str(plan_path),
-        "--router-config",
-        str(config_path),
-        "--run-root",
-        str(tmp_path / "runs"),
-        "--run-id",
-        "must-preflight",
-        "--provider-cap",
-        "glm52=1",
+            "run",
+            "--plan",
+            str(plan_path),
+            "--router-config",
+            str(config_path),
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--run-id",
+            "must-preflight",
+            "--provider-cap",
+            "glm52=1",
         ]
     )
     returncode = args.func(args)
