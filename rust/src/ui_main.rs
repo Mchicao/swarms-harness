@@ -1793,17 +1793,17 @@ pub mod ui_egui {
             egui::TopBottomPanel::bottom("footer")
                 .exact_height(38.0)
                 .show(ctx, |ui| {
+                    let theme = crate::ui_theme::Theme::marraqueta();
+                    let palette = theme.palette;
                     let contract = self.contract.as_ref();
                     let status = contract.map_or(RunStatus::Loading, |c| c.run.status);
                     ui.horizontal_centered(|ui| {
-                        let status_color = status_color(status.label(), false);
-                        let (dot, _) =
-                            ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 3.0, status_color);
-                        ui.label(
-                            egui::RichText::new(format!("status: {}", status.label()))
-                                .small()
-                                .color(status_color),
+                        crate::ui_theme::status_badge(
+                            ui,
+                            status.label(),
+                            false,
+                            crate::ui_theme::BadgeMode::Pill,
+                            &theme,
                         );
                         ui.separator();
                         self.render_quota_strip(ui);
@@ -1816,12 +1816,17 @@ pub mod ui_egui {
                                     c.run.task_count,
                                     self.events.len()
                                 ))
-                                .small()
-                                .color(muted()),
+                                .family(egui::FontFamily::Name("IBM Plex Mono".into()))
+                                .size(theme.type_scale.mono_small)
+                                .color(palette.muted),
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new("local").small().color(muted()));
+                            ui.label(
+                                egui::RichText::new("local")
+                                    .size(theme.type_scale.caption)
+                                    .color(palette.muted),
+                            );
                         });
                     });
                 });
@@ -2642,9 +2647,11 @@ pub mod ui_egui {
                                         ui.label(egui::RichText::new("●").color(color));
                                         if row.stale {
                                             ui.label(
-                                                egui::RichText::new("stale")
-                                                    .small()
-                                                    .color(egui::Color32::from_rgb(190, 130, 220)),
+                                                egui::RichText::new("stale").small().color(
+                                                    crate::ui_theme::Theme::marraqueta()
+                                                        .palette
+                                                        .pill_stale,
+                                                ),
                                             );
                                         }
                                         ui.selectable_label(is_sel, rich)
@@ -3081,18 +3088,12 @@ pub mod ui_egui {
             .join(" ")
     }
 
+    #[deprecated(note = "use crate::ui_theme::status_colors")]
     fn status_color(status: &str, stale: bool) -> egui::Color32 {
-        if stale {
-            return egui::Color32::from_rgb(190, 130, 220);
-        }
-        match status {
-            "completed" => egui::Color32::from_rgb(90, 190, 110),
-            "in_progress" => egui::Color32::from_rgb(90, 160, 230),
-            "failed" => egui::Color32::from_rgb(220, 80, 80),
-            "queued" => egui::Color32::from_rgb(150, 150, 150),
-            "blocked" => egui::Color32::from_rgb(230, 170, 70),
-            _ => egui::Color32::from_rgb(150, 150, 150),
-        }
+        let p = crate::ui_theme::Theme::marraqueta().palette;
+        let (fill, _, _) =
+            crate::ui_theme::status_colors(status, stale, crate::ui_theme::BadgeMode::DagNode, &p);
+        fill
     }
 
     /// Parse the minimal CLI: --run-root, --run-id, --ready-file,
