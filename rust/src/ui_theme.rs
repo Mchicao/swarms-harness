@@ -5,7 +5,7 @@
 
 #![cfg(feature = "ui-egui")]
 
-use eframe::egui::{self, Color32, FontFamily, Stroke};
+use eframe::egui::{self, Color32, FontFamily, Stroke, Ui};
 
 /// The one palette SWARMS ships.
 #[derive(Clone, Copy, Debug)]
@@ -204,6 +204,71 @@ impl Theme {
     }
 }
 
+/// Resolve (fill, text_color, border_color) for a task status string and a
+/// `stale` flag, in either DAG-node or pill presentation. The `status` string
+/// follows the existing contract values: "completed", "in_progress", "queued",
+/// "failed", "blocked", plus anything else falls back to the muted/queued look.
+///
+/// `stale` always wins (returns the stale palette) per STATE_CONTRACT: stale is
+/// a label, not a status change.
+pub fn status_colors(
+    status: &str,
+    stale: bool,
+    mode: BadgeMode,
+    palette: &Palette,
+) -> (Color32, Color32, Color32) {
+    let p = *palette;
+    if stale {
+        return match mode {
+            BadgeMode::DagNode => (p.node_stale, p.cream, p.node_stale_border),
+            BadgeMode::Pill => (p.pill_stale, p.cream, p.pill_stale),
+        };
+    }
+    match (status, mode) {
+        ("completed", BadgeMode::DagNode) => (
+            p.node_done,
+            Color32::from_rgb(0x3D, 0x4E, 0x18),
+            p.node_done_border,
+        ),
+        ("completed", BadgeMode::Pill) => (p.pill_done, p.cream, p.pill_done),
+        ("in_progress", BadgeMode::DagNode) => (p.node_run, p.accent, p.node_run_border),
+        ("in_progress", BadgeMode::Pill) => (p.pill_run, p.cream, p.pill_run),
+        ("queued", BadgeMode::DagNode) => (p.node_queued, p.muted, p.node_queued_border),
+        ("queued", BadgeMode::Pill) => (p.pill_queued, p.bg, p.pill_queued),
+        ("failed", BadgeMode::DagNode) => (
+            p.node_failed,
+            Color32::from_rgb(0x7A, 0x24, 0x10),
+            p.node_failed_border,
+        ),
+        ("failed", BadgeMode::Pill) => (p.pill_failed, p.cream, p.pill_failed),
+        ("blocked", BadgeMode::DagNode) => (
+            p.node_blocked,
+            Color32::from_rgb(0x7A, 0x4E, 0x15),
+            p.node_blocked_border,
+        ),
+        ("blocked", BadgeMode::Pill) => (p.pill_blocked, p.cream, p.pill_blocked),
+        _ => match mode {
+            BadgeMode::DagNode => (p.node_queued, p.muted, p.node_queued_border),
+            BadgeMode::Pill => (p.pill_queued, p.bg, p.pill_queued),
+        },
+    }
+}
+
+/// Render a status badge inline. The badge is drawn with egui::Frame; no
+/// shadows, no stripes, no glow. Anti-slop compliant.
+pub fn status_badge(ui: &mut Ui, status: &str, stale: bool, mode: BadgeMode, theme: &Theme) {
+    let (fill, text, _border) = status_colors(status, stale, mode, &theme.palette);
+    let label = if stale { "stale" } else { status };
+    egui::Frame::group(ui.style())
+        .fill(fill)
+        .corner_radius(theme.spacing.radius_pill)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .stroke(Stroke::NONE)
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).size(9.0).strong().color(text));
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,10 +291,37 @@ mod tests {
 
     #[test]
     fn apply_is_a_pure_function_of_theme_and_context() {
-        // We can't easily build an egui::Context in a unit test without a window,
-        // but we can at least confirm Theme::marraqueta() is callable and the
-        // apply/install_fonts methods exist with the documented signatures. The
-        // real smoke test is the manual visual check in Task 1.2.
         let _theme = Theme::marraqueta();
+    }
+
+    #[test]
+    fn stale_overrides_status_in_status_colors() {
+        let p = Theme::marraqueta().palette;
+        let (fill_running, _, _) = status_colors("in_progress", false, BadgeMode::Pill, &p);
+        let (fill_stale, _, _) = status_colors("in_progress", true, BadgeMode::Pill, &p);
+        assert_eq!(fill_stale, p.pill_stale);
+        assert_ne!(fill_stale, fill_running);
+    }
+
+    #[test]
+    fn pill_run_uses_accent_fill() {
+        let p = Theme::marraqueta().palette;
+        let (fill, text, _) = status_colors("in_progress", false, BadgeMode::Pill, &p);
+        assert_eq!(fill, p.pill_run);
+        assert_eq!(text, p.cream);
+    }
+
+    #[test]
+    fn dagnode_queued_uses_light_fill() {
+        let p = Theme::marraqueta().palette;
+        let (fill, _, _) = status_colors("queued", false, BadgeMode::DagNode, &p);
+        assert_eq!(fill, p.node_queued);
+    }
+
+    #[test]
+    fn unknown_status_falls_back_to_queued() {
+        let p = Theme::marraqueta().palette;
+        let (fill, _, _) = status_colors("??", false, BadgeMode::Pill, &p);
+        assert_eq!(fill, p.pill_queued);
     }
 }
