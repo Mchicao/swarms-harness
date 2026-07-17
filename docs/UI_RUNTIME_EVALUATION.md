@@ -269,6 +269,38 @@ El harness definitivo debe automatizar muestreo a 250 ms y escribir CSV en
 | Toolchain no enlaza GUI | Build limpia con `windows-gnullvm` y `rust-lld` aislados |
 | Dependencias afectan CLI | `cargo tree` y tamaño del binario CLI iguales sin feature |
 
+## Excepción justificada: fuentes tipográficas IBM Plex
+
+El restyle de UI (2026-07-17, "Marraqueta Miga Cálida") introduce dos archivos
+TTF compilados dentro del binario `swarms-ui`:
+
+- `rust/assets/fonts/IBMPlexSans-Regular.ttf` (~200 KB)
+- `rust/assets/fonts/IBMPlexMono-Regular.ttf` (~173 KB)
+
+Ambos se cargan vía `include_bytes!` en `rust/src/ui_theme.rs::Theme::install_fonts`,
+invocada una sola vez al arranque en `ui_egui::run()`. La carga ocurre antes
+del primer frame; no hay I/O de archivos en runtime, ni activación de los
+features `persistence`, `wgpu` o `image` de egui.
+
+**Impacto:**
+
+| Métrica | Valor |
+|---|---|
+| Tamaño añadido al binario release | ~373 KB |
+| Overhead de CPU en runtime | 0 (carga puntual al arranque) |
+| Repaint continuo introducido | No |
+| Nuevas dependencias de crate | Ninguna |
+
+**Justificación frente a la regla "no activar features hasta necesidad funcional":**
+la legibilidad tipográfica es la necesidad funcional. IBM Plex Sans + Mono
+reemplazan la fuente propietaria por defecto de egui y dan a la UI una
+identidad deliberada (no es Inter, que es el sobreuso marcado como slop en
+https://impeccable.style/slop/). Ambas fuentes son SIL OFL 1.1; el texto de
+licencia vive en `rust/assets/fonts/LICENSE`.
+
+Esta excepción **no** habilita imágenes, WGPU, persistencia, ni ningún otro
+feature restringido. Sólo tipografía compilada estáticamente.
+
 ## Fuentes oficiales
 
 - [egui/eframe README, plataformas, dependencias y licencia](https://github.com/emilk/egui)
