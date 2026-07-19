@@ -76,7 +76,7 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 - `rust/src/config.rs`: router/plan loading, overlay merge.
 - `rust/src/model.rs`: domain types (Plan, Task, Provider, ThinkingLevel, SessionConfig).
 - `rust/src/review.rs`: static plan validation (DAG, routes, thinking, session, artifacts).
-- `rust/src/runtime.rs`: scheduler (DAG waves, retries, timeout, resume, verify, artifacts).
+- `rust/src/runtime.rs`: scheduler (DAG waves, retries, progreso observable, resume, verify, artifacts).
 - `rust/src/adapter.rs`: native adapters (mock, CLI builders, OpenAI-compat HTTP, session/usage parsing).
 - `rust/src/session.rs`: session affinity store.
 - `rust/src/telemetry.rs`: usage normalisation, task state, report generation.

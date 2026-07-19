@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -583,7 +582,6 @@ pub fn execute_openai_compat(
     task: &Task,
     prompt: &str,
     thinking: ThinkingLevel,
-    timeout: Duration,
 ) -> Result<OpenAiCompatOutput> {
     let provider_name = &task.provider.provider;
     let key_env = task
@@ -622,7 +620,6 @@ pub fn execute_openai_compat(
 
     let response = ureq::post(&url)
         .set("Authorization", &format!("Bearer {key}"))
-        .timeout(timeout)
         .send_json(body)
         .map_err(|e| format!("HTTP request to {url} failed: {e}"))?;
 

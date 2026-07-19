@@ -61,8 +61,14 @@ intentos, dependencias, artefactos, errores y heartbeat. El runtime Rust escribe
 snapshots `pending` e `in_progress` antes de ejecutar, y refresca
 `heartbeat_unix_ms` sin crear un hilo adicional por worker.
 
-Una tarea activa se marca `stale` cuando supera un intervalo sin heartbeat.
-La etiqueta es visual y nunca altera el snapshot.
+Una tarea activa se marca `stale` cuando supera un intervalo sin crecimiento o
+modificación de `worker.log`; el heartbeat del coordinador es sólo fallback
+para runs antiguos. La etiqueta es visual y nunca altera el snapshot ni mata
+al worker.
+
+En Windows, cada provider real abre una consola visible de sólo lectura que
+sigue su `worker.log`, mientras el worker y el coordinador continúan en segundo
+plano. Para ocultarlas temporalmente: `$env:SWARMS_WORKER_CONSOLES = "hidden"`.
 
 ## Cuotas de planes
 
