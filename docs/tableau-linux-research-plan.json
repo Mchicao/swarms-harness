@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "goal": "Produce two bounded research documents without changing application code: a verified Tableau TWBX/PBIR/TMDL knowledge draft for C:/Proyectos/TableauToPBIP_V2 and a Linux node installation guide for the SWARMS parallel objective.",
+  "planner": {
+    "route": "glm52",
+    "model": "GLM-5.2"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": true,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 2,
+    "global_max_concurrency": 2,
+    "provider_concurrency": {
+      "glm52": 1,
+      "gemini_flash": 1,
+      "mock": 0,
+      "codex": 0
+    }
+  },
+  "thinking": "medium",
+  "default_timeout_seconds": 900,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Parallel research",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "tableau-knowledge-draft",
+          "role": "docs",
+          "route": "gemini_flash",
+          "tools_policy": "full",
+          "task": "DO: Work in C:/Proyectos/TableauToPBIP_V2. Read AGENTS.md, Docs/PBIR_TMDL_VALIDATION_PLAYBOOK.md, Docs/audit_tableau_guide.md, core/tableau_parser.py, core/tom_engine.py, core/visual_creator.py, core/validation/validate_pbip_output.py, and inspect Demos/Sample Superstore Dashboard.twbx plus Demos/sample_-_superstore.xls. Create exactly one draft file: Docs/research/TWBX_PBIR_TMDL_AGENT_RESEARCH.md. Explain verified procedures for reading a TWBX/TWB, identifying the real workbook datasource and embedded files, reading XLS/XLSX metadata, reading PBIR definition.pbir/page.json/visual.json, reading TMDL model/table files, and connecting visual queryRef bindings to columns/measures. Include exact commands and observed caveats from this repository. Add an evidence table with source path, command, observed result, and confidence. Include a small self-improvement protocol: when a future agent finds an error, preserve the fixture/output, classify the failure, add a minimal regression test or correction note, and update the guide with date and evidence. DO NOT modify Python code, tests, Demos, .agent/skills, SWARMS, package configuration, or existing files. DO NOT invent Power BI Desktop validation; clearly label what was not verified. VERIFY: run git diff --check; validate the new Markdown exists and is non-empty; report the absolute path, byte size, and exact commands used. Return a concise evidence summary.",
+          "artifacts": ["Docs/research/TWBX_PBIR_TMDL_AGENT_RESEARCH.md"],
+          "needs": [],
+          "verify": ["git diff --check", "test -s Docs/research/TWBX_PBIR_TMDL_AGENT_RESEARCH.md"]
+        },
+        {
+          "id": "linux-node-guide",
+          "role": "backend",
+          "route": "glm52",
+          "tools_policy": "full",
+          "task": "DO: Research and write exactly one file: C:/Proyectos/SWARMS/docs/research/linux-node-installation-guide.md. Read the SWARMS repository README.md, rust/README.md, CI workflow files, config/router documentation, and any existing Linux/VPN/node notes. Produce an actionable guide for installing and validating a Linux worker node for SWARMS: prerequisites, Rust/Python/uv setup, repository checkout, local router/provider configuration without secrets, systemd or supervised execution, health checks, offline mock validation, network/VPN assumptions, logs, rollback, and security boundaries. Distinguish verified repository facts from recommendations or items requiring user confirmation. Include exact commands only when supported by repository docs or local --help output. DO NOT touch C:/Proyectos/TableauToPBIP_V2, application code, secrets, provider accounts, global system configuration, or existing files. DO NOT claim a remote node was provisioned. VERIFY: run the repository's offline doctor/help checks if safe, run git diff --check in C:/Proyectos/SWARMS, validate the new Markdown exists and is non-empty, and report the absolute path, byte size, commands, and any blockers. Return a concise evidence summary.",
+          "artifacts": ["docs/research/linux-node-installation-guide.md"],
+          "needs": [],
+          "verify": ["git diff --check", "test -s docs/research/linux-node-installation-guide.md"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "managed": {
+    "multi-provider-agent-orchestration": "symlink",
+    "swarms": "symlink"
+  },
+  "updated_at": "2026-07-19T00:49:23.9677301-04:00"
+}

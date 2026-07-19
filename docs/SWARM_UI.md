@@ -1,114 +1,93 @@
 # SWARMS Native Runtime UI
 
-Estado: implementada y validada en Windows; binario Rust opcional `swarms-ui`.
-Fecha de verificación: 2026-07-16.
+Status: native Rust UI for Windows, Linux, and macOS. The optional `swarms-ui`
+binary is built with the `ui-egui` feature.
 
-La UI es una ventana nativa Rust. Observa `.agent/swarm/runs/<run_id>/`, nunca
-reclama tareas ni ejecuta providers. Sólo escribe por acciones explícitas del
-usuario: steering, o inicialización/sincronización local de Skillshare para el
-proyecto. El runtime público sigue siendo `swarms-rs`; la dependencia gráfica
-sólo se compila con `ui-egui`.
+The UI is an observer. It reads `.agent/swarm/runs/<run-id>/` and never claims
+tasks, starts providers, or changes a workflow. Its only writes are explicit
+user actions: an agent steering message and one of the feature-specific
+Rulesync actions in the **Sync** view.
 
-## Ejecutar
+## Run
 
 ```powershell
 cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
 ```
 
-Opciones:
+Options:
 
-- `--run-root <ruta>`: raíz de runs; por defecto `.agent/swarm/runs`.
-- `--run-id <id>`: abre un run concreto.
-- `--ready-file <ruta>`: escribe una señal JSON atómica cuando la ventana inicia.
-- `--bench-duration <segundos>`: cierra automáticamente una medición controlada.
+- `--run-root <path>`: run root; defaults to `.agent/swarm/runs`.
+- `--run-id <id>`: select a concrete run.
+- `--ready-file <path>`: atomically writes a JSON ready signal after the window opens.
+- `--bench-duration <seconds>`: exits after a controlled measurement interval.
 
-## Diseño de bajo consumo
+## Navigation and visual language
 
-- `eframe 0.32` con renderer Glow; WGPU, WebView, persistencia e imágenes están
-  deshabilitados.
-- Sondeo de metadatos con biblioteca estándar: 1 segundo durante un run activo
-  y 5 segundos cuando está inactivo. No existe un loop fijo a 60 FPS.
-- Los JSON completos sólo se releen si cambia la firma de `workflow.json`,
-  `tasks/`, `claims/`, `results/`, `events.jsonl` o `report*.json`.
-- El índice de runs se actualiza cada 10 segundos, no en cada frame.
-- El árbol aplanado queda cacheado y usa `ScrollArea::show_rows`; sólo se
-  renderizan las filas visibles.
-- El buffer mantiene como máximo 500 eventos recientes.
-- Sólo se carga el log de la tarea seleccionada, limitado a sus últimos 256 KiB y con líneas virtualizadas.
-- Errores se truncan a 1000 caracteres y se sanea material parecido a tokens.
+The centered **Code**, **Swarms**, and **Sync** controls are distinct navigation
+buttons. The native window and the product header use the Marraqueta toast mark
+and a restrained toasted-bread palette (`#EBDFC2`, `#9C6620`, `#A8351A`,
+`#5E7A24`). Herd uses the matching custom theme when its service is restarted.
 
-Se usa polling en lugar de un file watcher para evitar otra dependencia y más
-hilos. Añadir un watcher sólo se justifica si una medición reproducible muestra
-que el sondeo de metadatos domina el consumo.
+- **Code** is a direct Herd terminal workspace reader. It refreshes the visible
+  workspaces and the selected pane output every two seconds while open. `Open in
+  Herd` is explicit and only focuses the selected workspace; it never starts,
+  stops, or steers an agent.
+- **Swarms** presents the project → run → stage → task hierarchy, a compact DAG,
+  activity stream, quotas, task details, verification evidence, and a read-only
+  worker log. Active tasks have a real-progress stale indication; stale is an
+  observation only and never terminates a worker.
+- **Sync** displays the global Rulesync rules used to generate agent
+  configuration, not a duplicate Skillshare inventory. It has independent
+  **Sync Skills**, **Sync MCP**, and **Sync AGENTS.md** actions. The source root
+  is `SWARMS_RULESYNC_ROOT`, or the SWARMS workspace by default. Its source is
+  `.rulesync/skills`, `.rulesync/mcp.json` or `.rulesync/mcp.jsonc`, and
+  `.rulesync/rules`. No source tree is invented or initialized by the UI:
+  actions remain disabled until a real Rulesync source is present.
 
-## Estado observado
+  The repository owns the default source under `.rulesync/`. Its global
+  generation configuration is `rulesync.jsonc`, with `delete: false`; syncing
+  only writes Rulesync-managed artifacts and never deletes an unrelated global
+  skill or agent configuration. The view therefore shows the source artifacts
+  that are actually applied by Rulesync, rather than the separately managed
+  Skillshare catalog.
 
-La ventana usa una navegación compacta inspirada en herramientas de agentes
-como T3 Code: tema oscuro sobrio, barra contextual y jerarquía
-`Proyecto → run → etapa → tarea`. Los proyectos salen de `workflow.json`; runs
-históricos conservan fallback por workspace o `Legacy runs`. La agrupación es
-de sólo lectura y no mueve directorios.
+## Herd worker terminals
 
-Cada run muestra su última actividad en formato compacto (`now`, `8m ago`,
-`3d ago`). Se toma el timestamp más reciente entre workflow, eventos, reporte y
-snapshots de tareas, por lo que una reanudación queda reflejada. Los runs
-históricos sin evidencia temporal muestran `unknown`.
+Set `SWARMS_TERMINAL_BACKEND=herdr` to attach a real worker's read-only log view
+to Herd. The coordinator remains the owner of the worker process. Herd panes
+are closed when their worker finishes, so completed tasks do not leave empty
+PowerShell consoles. `SWARMS_WORKER_CONSOLES=hidden` suppresses the legacy
+Windows console viewer.
 
-La ventana ofrece `Overview`, `Tasks`, `Activity` y `Resources`. `Overview` dibuja el DAG por
-etapas sin una dependencia gráfica adicional; `Tasks` muestra runs, etapas,
-tareas y subagentes; `Activity` presenta el stream reciente. También muestra estado, provider, modelo,
-intentos, dependencias, artefactos, errores y heartbeat. El runtime Rust escribe
-snapshots `pending` e `in_progress` antes de ejecutar, y refresca
-`heartbeat_unix_ms` sin crear un hilo adicional por worker.
+The task details view records the Herd session, workspace, and pane. A visible
+workspace contains the current prompt and readable OpenCode JSONL events rather
+than raw unreadable protocol text. The Code view remains useful even when no
+SWARMS run is selected.
 
-Una tarea activa se marca `stale` cuando supera un intervalo sin crecimiento o
-modificación de `worker.log`; el heartbeat del coordinador es sólo fallback
-para runs antiguos. La etiqueta es visual y nunca altera el snapshot ni mata
-al worker.
+## Runtime observations
 
-En Windows, cada provider real abre una consola visible de sólo lectura que
-sigue su `worker.log`, mientras el worker y el coordinador continúan en segundo
-plano. Para ocultarlas temporalmente: `$env:SWARMS_WORKER_CONSOLES = "hidden"`.
+- Eframe uses the Glow renderer; WGPU, WebView, persistence, and raster assets
+  are not included.
+- Metadata polling is one second during an active run and five seconds while
+  idle. The Herd Code view refreshes independently every two seconds.
+- JSON is re-read only when the signature of workflow, tasks, claims, results,
+  events, or reports changes.
+- The run index refreshes every ten seconds, task rows are virtualized, the
+  event buffer retains at most 500 entries, and a selected log is capped at its
+  newest 256 KiB.
+- Errors are truncated and token-like strings are sanitized before display.
+- The UI reports observed quota snapshots only. It never opens OAuth, reads
+  tokens, or invents availability.
 
-## Cuotas de planes
+## Steering
 
-La barra lateral lee el mismo snapshot saneado que usa el scheduler y muestra
-cada plan y ventana (`5h`, `7d`, etc.), porcentaje restante y edad del snapshot.
-Cada plan ocupa una fila compacta con nombre humano, barra proporcional y el
-porcentaje más restrictivo como estado principal; no se fabrican resets ni
-ventanas que el monitor no haya publicado.
-No abre OAuth, no lee tokens y no invoca Python. La captura sigue siendo
-responsabilidad de `ai-usage-monitor`; un snapshot ausente o antiguo aparece
-como desconocido en vez de inventar disponibilidad.
+For active Codex, OpenCode, Kilo, or mock tasks, **Steer agent** queues up to
+4,000 characters. CLI workers are turn-based: the request is consumed after
+the current turn, resumed through the provider session when available, then
+applied before artifact verification. History is persisted under
+`steering/<task-id>/history.jsonl` as `applied`, `rejected`, or `failed`.
 
-## Steer prompts
-
-Al seleccionar una tarea activa con adapter Codex, OpenCode o Kilo, el panel
-`Steer agent` permite encolar una nueva dirección de hasta 4000 caracteres. Los
-workers CLI son turnos no interactivos: el prompt no interrumpe tokens que ya se
-están generando. El runtime lo reclama al terminar el turno actual, reanuda la
-sesión reportada por el provider y lo aplica antes de verificar artefactos. El
-historial persiste bajo `steering/<task_id>/history.jsonl` con estado
-`applied`, `rejected` o `failed`; los prompts no aparecen en eventos globales.
-
-Los subagentes declarados en el plan son direccionables mediante su propia
-tarea. Los subagentes internos que un provider no identifica siguen siendo
-visibles como opacos y no se presentan falsamente como steerables.
-
-## Recursos compartidos de agentes
-
-`Resources` descubre instrucciones AGENTS, skills y nombres de servidores MCP
-sin mostrar comandos, headers, variables ni credenciales. Se puede alternar
-entre el alcance global y el proyecto del run seleccionado; los recursos del
-proyecto se resuelven desde `workspace_root`, no desde el repositorio SWARMS.
-
-Las skills compartidas usan `.skillshare/skills/` como fuente canónica. La
-acción `Sync project skills` ejecuta `skillshare sync -p --json` sólo para ese
-workspace y distribuye a los targets configurados. Los junctions generados se
-presentan como una sola skill con sus agentes consumidores. La sincronización
-global nunca se ejecuta implícitamente desde la UI.
-
-## Validación
+## Validate
 
 ```powershell
 cargo fmt --manifest-path rust/Cargo.toml -- --check
@@ -118,32 +97,15 @@ cargo build --release --manifest-path rust/Cargo.toml --all-features
 cargo tree --manifest-path rust/Cargo.toml --features ui-egui
 ```
 
-El modelo read-only, la retención de eventos, límites de log, señales de inicio,
-firmas de cambio y frecuencias de polling tienen pruebas automáticas. CI compila
-y prueba todas las features en Windows, Linux y macOS.
+The runtime includes automatic tests for read-only observation, limits,
+steering persistence, shared-resource discovery, Herd workspace parsing, retry
+telemetry, and the visible worker-console formatter. CI validates all features
+on Windows, Linux, and macOS.
 
-Medición local reproducible del release en Windows, observando un run terminado
-y descartando 5 segundos de calentamiento:
+## Deliberate limits
 
-- 10,22 s de muestra estable: 0,000 s de CPU acumulada según `Get-Process`;
-- working set mediano: 159,22 MiB; máximo: 159,41 MiB;
-- GPU: mediana 0,000%, máximo 0,051% en 125 muestras de GPU Engine;
-- `swarms-ui.exe`: 4,10 MiB; `swarms-rs.exe`: 2,34 MiB.
-
-Estas cifras son una medición de este equipo, no un presupuesto universal. El
-driver gráfico domina la RAM de la ventana; CPU y GPU quedan prácticamente en
-reposo gracias al repaint bajo demanda.
-
-La auditoría histórica del linker permanece en
-`docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md`; describe un bloqueo anterior y no
-representa el estado actual del equipo.
-
-## Límites actuales
-
-- Iniciar, detener o reanudar workflows desde la UI.
-- Inyectar texto en una generación CLI que ya está produciendo tokens.
-- Steering de Hermes, Agy, OpenAI-compatible o agentes internos sin sesión
-  direccionable.
-- Series temporales, imágenes o ventanas flotantes.
-- WGPU o un frontend web.
-- Mantener logs completos en memoria.
+- The UI does not start, stop, or resume workflows.
+- It does not inject text into a provider turn already generating tokens.
+- Hermes, Agy, OpenAI-compatible providers, and provider-internal subagents are
+  not presented as steerable without a resumable session.
+- It does not keep complete logs in memory or add a WebView/WGPU frontend.

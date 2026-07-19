@@ -52,6 +52,7 @@ impl Limits {
 /// Schema v1 input is returned unchanged.
 pub fn compile_plan(mut plan: Value) -> Result<Value> {
     if plan.get("schema_version").and_then(Value::as_u64) != Some(2) {
+        apply_default_tools_policy(&mut plan)?;
         return Ok(plan);
     }
     let limits = Limits::from_plan(&plan)?;
@@ -115,6 +116,32 @@ pub fn compile_plan(mut plan: Value) -> Result<Value> {
     }
     validate_flat_plan(&plan, limits)?;
     Ok(plan)
+}
+
+/// A plan may opt in to a single explicit default for artifact-producing
+/// workers. Individual task values always win; absent defaults remain `none`.
+fn apply_default_tools_policy(plan: &mut Value) -> Result<()> {
+    let default = plan
+        .get("default_tools_policy")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_string();
+    if !matches!(default.as_str(), "none" | "full") {
+        return Err("default_tools_policy must be 'none' or 'full'".to_string());
+    }
+    let Some(stages) = plan.get_mut("stages").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    for task in stages
+        .iter_mut()
+        .filter_map(|stage| stage.get_mut("tasks").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        task.entry("tools_policy".to_string())
+            .or_insert_with(|| json!(default));
+    }
+    Ok(())
 }
 
 struct Compiler {
@@ -594,6 +621,18 @@ mod tests {
         );
         assert_eq!(tasks[4]["role"], "verifier");
         assert_eq!(tasks[6]["needs"], json!(["polish-round-001"]));
+    }
+
+    #[test]
+    fn applies_explicit_default_tools_policy_to_flat_tasks() {
+        let plan = compile_plan(json!({
+            "schema_version": 1,
+            "goal": "Write an artifact",
+            "default_tools_policy": "full",
+            "stages": [{"tasks": [{"id": "write", "route": "mock", "task": "write"}]}]
+        }))
+        .unwrap();
+        assert_eq!(plan["stages"][0]["tasks"][0]["tools_policy"], "full");
     }
 
     #[test]

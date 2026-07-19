@@ -72,6 +72,7 @@ pub struct CliSpec {
 pub const PROMPT_PREFIX: &str = "\
 You are a SWARMS worker with a narrow task.
 Return only the required result and keep output concise.
+Write code, code comments, docstrings, tests, documentation, and worker output in English unless a source artifact requires a localized literal.
 For coding, planning, and review, apply Ponytail/full: choose the smallest correct solution; reuse existing code, then the standard library, native platform, or installed dependencies; avoid speculative abstractions and new dependencies; fix root causes; never omit required validation, security, or error handling.
 When .codegraph exists and tools are available, prefer CodeGraph for codebase exploration and impact analysis.\n\n---\n\n";
 
@@ -95,7 +96,9 @@ pub fn build_prompt(
         lines.push("Use these completed dependency outputs as input:".to_string());
         lines.push(dependency_context.to_string());
     }
-    lines.join("\n")
+    // CLI arguments cannot contain NUL. Provider logs and dependency output are
+    // untrusted transport data, so remove it at the final prompt boundary.
+    lines.join("\n").replace('\0', "")
 }
 
 // ---------------------------------------------------------------------------
@@ -250,7 +253,8 @@ fn build_hermes(task: &Task, prompt_text: &str, provider_name: &str) -> Result<C
 
 fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
     let program = which("agy").unwrap_or_else(|| "agy".to_string());
-    let mut args = vec!["--print".to_string()];
+    // Evita que agy reutilice el proyecto implícito de otra ejecución.
+    let mut args = vec!["--new-project".to_string()];
 
     if !task.provider.model.is_empty() {
         args.push("--model".to_string());
@@ -263,6 +267,9 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
     } else {
         args.push("--sandbox".to_string());
     }
+    // agy consumes the token following --print as the non-interactive prompt.
+    // Keep every session option before it; otherwise --model becomes the prompt.
+    args.push("--print".to_string());
     args.push(prompt_text.to_string());
 
     Ok(CliSpec {

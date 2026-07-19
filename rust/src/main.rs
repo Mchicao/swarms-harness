@@ -137,7 +137,12 @@ fn print_doctor(root: &Path, router: &Router) -> Result<()> {
         .map(|p| p.wrapper.as_str())
         .collect();
     for w in &wrappers {
-        if swarms_runtime::adapter::AdapterKind::from_wrapper(w).is_none() {
+        if router
+            .providers
+            .values()
+            .any(|provider| provider.enabled && provider.wrapper == *w)
+            && swarms_runtime::adapter::AdapterKind::from_wrapper(w).is_none()
+        {
             println!("[WARN] unknown wrapper '{w}' in router config");
         }
     }

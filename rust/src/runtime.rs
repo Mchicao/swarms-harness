@@ -13,13 +13,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
 
 const MAX_DEP_CONTEXT_CHARS: usize = 12_000;
+const WORKER_CONSOLE_FINISHED_SENTINEL: &str = "__SWARMS_WORKER_FINISHED__";
+
+#[derive(Clone, Debug)]
+struct WorkerTerminal {
+    backend: String,
+    session: Option<String>,
+    workspace_id: Option<String>,
+    pane_id: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Atomic file writes
@@ -127,6 +136,7 @@ fn init_states(
     let mut states = load_task_states(run_dir)?;
     for task in tasks {
         let checkpoint_key = task_checkpoint_key(task, plan);
+        let legacy_checkpoint_key = task_checkpoint_key_with_attempts(task, plan);
         let state = states.entry(task.id.clone()).or_insert_with(|| {
             let mut s = TaskState::new(&task.id, &task.source_id, &task.stage, &task.spec.route);
             s.effective_route = task.effective_route.clone();
@@ -140,7 +150,8 @@ fn init_states(
         if state.effective_route.is_empty() {
             state.effective_route = task.effective_route.clone();
         }
-        let checkpoint_matches = state.checkpoint_key.as_deref() == Some(&checkpoint_key);
+        let checkpoint_matches = state.checkpoint_key.as_deref() == Some(&checkpoint_key)
+            || state.checkpoint_key.as_deref() == Some(&legacy_checkpoint_key);
         if !state.status.is_completed() || !checkpoint_matches {
             state.status = TaskStatus::Pending;
             state.error = None;
@@ -159,8 +170,23 @@ fn init_states(
 }
 
 fn task_checkpoint_key(task: &Task, plan: &Plan) -> String {
+    task_checkpoint_key_for_definition(task, plan, false)
+}
+
+/// Compatibility key for run state written before retry policy was separated
+/// from a task's semantic definition. It is used only while resuming an older
+/// run; subsequent state is rewritten with the current semantic key.
+fn task_checkpoint_key_with_attempts(task: &Task, plan: &Plan) -> String {
+    task_checkpoint_key_for_definition(task, plan, true)
+}
+
+fn task_checkpoint_key_for_definition(
+    task: &Task,
+    plan: &Plan,
+    include_max_attempts: bool,
+) -> String {
     let session = task.spec.effective_session(plan);
-    let definition = json!({
+    let mut definition = json!({
         "source_id": task.source_id,
         "stage": task.stage,
         "stage_parallel": task.stage_parallel,
@@ -178,9 +204,11 @@ fn task_checkpoint_key(task: &Task, plan: &Plan) -> String {
         "thinking": task.spec.effective_thinking(plan),
         "session": session,
         "execution_timeout": "disabled",
-        "max_attempts": task.spec.effective_max_attempts(plan),
-    })
-    .to_string();
+    });
+    if include_max_attempts {
+        definition["max_attempts"] = json!(task.spec.effective_max_attempts(plan));
+    }
+    let definition = definition.to_string();
     let hash = fnv1a64(definition.as_bytes());
     format!("fnv1a64:{hash:016x}")
 }
@@ -466,16 +494,17 @@ pub fn execute(
         let (sender, receiver) = mpsc::channel::<(String, TaskState)>();
         let mut active_ids = HashSet::new();
         for task in &ready.selected {
-            let prompt = build_task_prompt(&run_dir, task, tasks, &states);
+            let prompt = build_task_prompt(&run_dir, workspace_root, task, tasks, &states);
             let work_dir = run_dir.join("results").join(&task.id);
             let _ = fs::create_dir_all(&work_dir);
             let _ = fs::write(work_dir.join("prompt.txt"), &prompt);
-            start_visible_worker_console(&work_dir, task);
+            let terminal = start_visible_worker_console(&work_dir, task);
 
             let sender = sender.clone();
             let task = task.clone();
             let workspace_root = workspace_root.to_path_buf();
             let run_dir = run_dir.clone();
+            let console_log = work_dir.join("worker.log");
             let plan = plan.clone();
             let store = Arc::clone(&session_store);
 
@@ -486,6 +515,12 @@ pub fn execute(
                 state.last_progress_unix_ms = state.heartbeat_unix_ms;
                 state.worker_log_bytes = 0;
                 state.worker_log_modified_unix_ms = None;
+                state.terminal_backend = terminal.as_ref().map(|value| value.backend.clone());
+                state.terminal_session = terminal.as_ref().and_then(|value| value.session.clone());
+                state.terminal_workspace_id = terminal
+                    .as_ref()
+                    .and_then(|value| value.workspace_id.clone());
+                state.terminal_pane_id = terminal.as_ref().and_then(|value| value.pane_id.clone());
                 save_task_state(&run_dir, state)?;
             }
             active_ids.insert(task.id.clone());
@@ -498,6 +533,7 @@ pub fn execute(
 
             thread::spawn(move || {
                 let state = run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store);
+                signal_worker_console_finished(&console_log);
                 let _ = sender.send((task.id.clone(), state));
             });
         }
@@ -513,6 +549,18 @@ pub fn execute(
                     if let Some(previous) = states.get(&task_id) {
                         state.started_at.clone_from(&previous.started_at);
                         state.checkpoint_key.clone_from(&previous.checkpoint_key);
+                        state
+                            .terminal_backend
+                            .clone_from(&previous.terminal_backend);
+                        state
+                            .terminal_session
+                            .clone_from(&previous.terminal_session);
+                        state
+                            .terminal_workspace_id
+                            .clone_from(&previous.terminal_workspace_id);
+                        state
+                            .terminal_pane_id
+                            .clone_from(&previous.terminal_pane_id);
                     }
                     refresh_worker_progress(&run_dir, &mut state, unix_ms());
                     states.insert(task_id.clone(), state.clone());
@@ -585,16 +633,23 @@ pub fn execute(
 // Prompt generation
 // ---------------------------------------------------------------------------
 
-fn build_task_prompt(
+pub(crate) fn build_task_prompt(
     run_dir: &Path,
+    workspace_root: &Path,
     task: &Task,
     all_tasks: &[Task],
     states: &HashMap<String, TaskState>,
 ) -> String {
     let dep_context = dependency_outputs(run_dir, task, all_tasks, states);
+    let task_text = format!(
+        "{}\n\nWORKSPACE BOUNDARY: {}. Work only within this directory. \
+         Do not write or create artifacts outside it; allowed paths are relative to this workspace.",
+        task.spec.task,
+        workspace_root.display()
+    );
     adapter::build_prompt(
         &task.spec.role,
-        &task.spec.task,
+        &task_text,
         &task.spec.artifacts,
         &dep_context,
     )
@@ -627,16 +682,52 @@ pub(crate) fn dependency_outputs(
             if remaining == 0 {
                 break;
             }
-            let mut start = content.len().saturating_sub(remaining);
-            while start < content.len() && !content.is_char_boundary(start) {
+            let readable = readable_worker_output(&content);
+            let mut start = readable.len().saturating_sub(remaining);
+            while start < readable.len() && !readable.is_char_boundary(start) {
                 start += 1;
             }
-            let excerpt = &content[start..];
+            let excerpt = &readable[start..];
             sections.push(format!("Dependency {} output:\n{excerpt}", dep_task.id));
             remaining = remaining.saturating_sub(excerpt.len());
         }
     }
     sections.join("\n\n")
+}
+
+/// Extracts human-authored worker messages from OpenCode/Codex JSONL logs.
+///
+/// Worker logs remain complete for Herd and audit. Dependency prompts instead
+/// receive only text messages, avoiding tool payloads that can consume the
+/// entire context window and slow down a dependent task. Plain-text adapters
+/// retain their output with the viewer sentinel removed.
+fn readable_worker_output(content: &str) -> String {
+    let mut messages = Vec::new();
+    for line in content.lines() {
+        let Ok(item) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let text = item
+            .pointer("/part/text")
+            .and_then(Value::as_str)
+            .or_else(|| item.pointer("/message/content").and_then(Value::as_str))
+            .or_else(|| item.get("text").and_then(Value::as_str));
+        if let Some(text) = text {
+            let text = text.replace(WORKER_CONSOLE_FINISHED_SENTINEL, "");
+            if !text.trim().is_empty() {
+                messages.push(text.trim().to_string());
+            }
+        }
+    }
+    if !messages.is_empty() {
+        return messages.join("\n\n");
+    }
+
+    content
+        .lines()
+        .filter(|line| line.trim() != WORKER_CONSOLE_FINISHED_SENTINEL)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -891,8 +982,18 @@ pub(crate) fn run_task(
                     );
                 }
                 if attempt < max_attempts || recovered_retry {
-                    let backoff_ms = 100u64 << (attempt - 1).min(5);
-                    thread::sleep(Duration::from_millis(backoff_ms.min(5000)));
+                    let delay = retry_delay(&e, attempt);
+                    append_event(
+                        run_dir,
+                        "task_retry_scheduled",
+                        json!({
+                            "task_id": task.id,
+                            "attempt": attempt + 1,
+                            "delay_ms": delay.as_millis(),
+                            "reason": retry_reason(&e),
+                        }),
+                    );
+                    thread::sleep(delay);
                     continue;
                 }
                 break e;
@@ -911,6 +1012,35 @@ pub(crate) fn run_task(
     state.session_resume_count = session_resume_count;
     state.session_id = active_session_id;
     state
+}
+
+/// Returns a bounded retry delay without imposing an execution timeout.
+///
+/// OpenCode persists session state in one local SQLite database. Its CLI can
+/// briefly reject a concurrent startup with `database is locked`; waiting a few
+/// seconds lets the existing writer finish while preserving the configured
+/// worker concurrency for actual agent work. All other adapter failures retain
+/// the short exponential retry already used by the coordinator.
+fn retry_delay(error: &str, attempt: u32) -> Duration {
+    if is_transient_opencode_database_lock(error) {
+        let seconds = 5u64 << (attempt.saturating_sub(1).min(3));
+        return Duration::from_secs(seconds.min(40));
+    }
+
+    let millis = 100u64 << (attempt.saturating_sub(1).min(5));
+    Duration::from_millis(millis.min(5000))
+}
+
+fn retry_reason(error: &str) -> &'static str {
+    if is_transient_opencode_database_lock(error) {
+        "transient_opencode_database_lock"
+    } else {
+        "adapter_error"
+    }
+}
+
+fn is_transient_opencode_database_lock(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("database is locked")
 }
 
 fn session_resume_window() -> Duration {
@@ -1033,14 +1163,14 @@ fn execute_adapter(
                 &task.provider.provider,
             )?;
             let log_path = work_dir.join("worker.log");
-            let output = execute_cli(spec, root, &log_path)?;
+            let output = execute_cli(kind, spec, root, &log_path)?;
             let usage = adapter::parse_cli_usage(kind, &output);
             Ok(AdapterExec { output, usage })
         }
     }
 }
 
-fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
+fn execute_cli(kind: AdapterKind, spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1059,6 +1189,7 @@ fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn '{}': {e}", spec.program))?;
+    let mut terminal_event_seen_at = None;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -1075,6 +1206,21 @@ fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
                 ));
             }
             Ok(None) => {
+                if matches!(kind, AdapterKind::OpenCode | AdapterKind::Kilo)
+                    && opencode_terminal_event_seen(log_path)
+                {
+                    let seen_at = terminal_event_seen_at.get_or_insert_with(Instant::now);
+                    if seen_at.elapsed() >= Duration::from_secs(3) {
+                        // The provider already emitted its terminal protocol event.
+                        // Reap only the leaked CLI wrapper; its complete output is
+                        // then verified normally by the task runner.
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(fs::read_to_string(log_path).unwrap_or_default());
+                    }
+                } else {
+                    terminal_event_seen_at = None;
+                }
                 thread::sleep(Duration::from_millis(50));
             }
             Err(e) => return Err(format!("wait '{}': {e}", spec.program)),
@@ -1082,37 +1228,255 @@ fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
     }
 }
 
-/// Abre una consola de sólo lectura por worker real en Windows. El coordinador
-/// y el worker siguen en segundo plano; la ventana sólo sigue `worker.log`.
+/// OpenCode's JSONL protocol ends a completed turn with `step_finish/stop`.
+/// This is a completion signal, not an elapsed-time heuristic.
+fn opencode_terminal_event_seen(log_path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(log_path) else {
+        return false;
+    };
+    content.lines().any(|line| {
+        let Ok(item) = serde_json::from_str::<Value>(line) else {
+            return false;
+        };
+        item.get("type").and_then(Value::as_str) == Some("step_finish")
+            && item.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
+    })
+}
+
+/// Signals the read-only viewer that the worker has finished.
+fn signal_worker_console_finished(log_path: &Path) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
+        let _ = writeln!(file, "{WORKER_CONSOLE_FINISHED_SENTINEL}");
+    }
+}
+
+/// Opens a read-only console for each real Windows worker. The coordinator and
+/// worker remain in the background; the window shows context, tails
+/// `worker.log`, and closes after the completion signal.
 #[cfg(windows)]
-fn start_visible_worker_console(work_dir: &Path, task: &Task) {
+fn start_visible_worker_console(work_dir: &Path, task: &Task) -> Option<WorkerTerminal> {
     use std::os::windows::process::CommandExt;
 
-    if AdapterKind::from_wrapper(&task.provider.wrapper) == Some(AdapterKind::Mock)
-        || std::env::var("SWARMS_WORKER_CONSOLES")
-            .map(|value| value.eq_ignore_ascii_case("hidden") || value == "0")
-            .unwrap_or(false)
-    {
-        return;
+    let backend = worker_console_backend();
+    let use_herd = backend == "herdr";
+    let legacy_console_hidden = std::env::var("SWARMS_WORKER_CONSOLES")
+        .map(|value| value.eq_ignore_ascii_case("hidden") || value == "0")
+        .unwrap_or(false);
+    if !should_start_worker_terminal(
+        AdapterKind::from_wrapper(&task.provider.wrapper),
+        use_herd,
+        legacy_console_hidden,
+    ) {
+        return None;
     }
     let log_path = work_dir.join("worker.log");
     if fs::File::create(&log_path).is_err() {
-        return;
+        return None;
     }
     let path = log_path.to_string_lossy().replace('\'', "''");
+    let prompt_path = work_dir
+        .join("prompt.txt")
+        .to_string_lossy()
+        .replace('\'', "''");
     let title = format!("SWARMS | {} | {}", task.id, task.provider.model).replace('\'', "''");
-    let script = format!(
-        "$Host.UI.RawUI.WindowTitle='{title}'; Get-Content -LiteralPath '{path}' -Wait -Tail 0"
-    );
+    if use_herd {
+        return start_herdr_worker_pane(work_dir, &title, &path, &prompt_path);
+    }
+    let script = worker_console_script(&title, &path, &prompt_path);
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
     let _ = Command::new("powershell")
         .args(["-NoLogo", "-NoProfile", "-Command", &script])
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn();
+    Some(WorkerTerminal {
+        backend: "windows_console".to_string(),
+        session: None,
+        workspace_id: None,
+        pane_id: None,
+    })
+}
+
+#[cfg(windows)]
+fn should_start_worker_terminal(
+    adapter: Option<AdapterKind>,
+    use_herd: bool,
+    legacy_console_hidden: bool,
+) -> bool {
+    use_herd || (adapter != Some(AdapterKind::Mock) && !legacy_console_hidden)
+}
+
+/// Herd is opt-in while its native Windows support remains beta. The worker
+/// process stays under SWARMS, preserving quotas, raw logs, retries and resume.
+#[cfg(windows)]
+fn worker_console_backend() -> String {
+    std::env::var("SWARMS_TERMINAL_BACKEND")
+        .unwrap_or_else(|_| "native".to_string())
+        .to_ascii_lowercase()
+}
+
+#[cfg(windows)]
+fn herdr_program() -> String {
+    if let Ok(path) = std::env::var("SWARMS_HERDR_BIN") {
+        return path;
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let candidate = Path::new(&local)
+            .join("Programs")
+            .join("Herdr")
+            .join("bin")
+            .join("herdr.exe");
+        if candidate.is_file() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    "herdr".to_string()
+}
+
+#[cfg(windows)]
+fn herdr_session() -> String {
+    std::env::var("SWARMS_HERDR_SESSION").unwrap_or_else(|_| "swarms".to_string())
+}
+
+#[cfg(windows)]
+fn start_herdr_worker_pane(
+    work_dir: &Path,
+    title: &str,
+    log_path: &str,
+    prompt_path: &str,
+) -> Option<WorkerTerminal> {
+    static HERDR_START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let herdr = herdr_program();
+    let session = herdr_session();
+    let herd_cwd = work_dir.canonicalize().ok()?;
+    let _lock = HERDR_START_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .ok()?;
+    let running = herdr_server_is_running(&herdr, &session);
+    if !running {
+        // Herd's Windows preview server is most reliable when started through
+        // the same PowerShell process model documented by Herd itself.
+        let launch = format!(
+            "Start-Process -FilePath '{}' -ArgumentList @('--session','{}','server') -WindowStyle Hidden",
+            herdr.replace('\'', "''"),
+            session.replace('\'', "''")
+        );
+        Command::new("powershell")
+            .args(["-NoLogo", "-NoProfile", "-Command", &launch])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(100));
+            if herdr_server_is_running(&herdr, &session) {
+                break;
+            }
+        }
+    }
+    let output = Command::new(&herdr)
+        .args([
+            "--session",
+            &session,
+            "workspace",
+            "create",
+            "--cwd",
+            &herd_cwd.to_string_lossy(),
+            "--label",
+            title,
+            "--no-focus",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let result = serde_json::from_slice::<Value>(&output.stdout).ok()?;
+    let workspace_id = result
+        .pointer("/result/workspace/workspace_id")?
+        .as_str()?
+        .to_string();
+    let pane_id = result
+        .pointer("/result/root_pane/pane_id")?
+        .as_str()?
+        .to_string();
+    let escaped_herdr = herdr.replace('\'', "''");
+    let escaped_session = session.replace('\'', "''");
+    let escaped_pane = pane_id.replace('\'', "''");
+    let viewer = worker_console_script(title, log_path, prompt_path).replace(
+        &format!("if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ exit 0 }}"),
+        &format!("if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ & '{escaped_herdr}' --session '{escaped_session}' pane close '{escaped_pane}'; exit 0 }}"),
+    );
+    let script_path = work_dir.join("herdr-viewer.ps1");
+    fs::write(&script_path, viewer).ok()?;
+    let script_path = script_path.canonicalize().ok()?;
+    let command = format!(
+        "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+        script_path.display()
+    );
+    if !Command::new(&herdr)
+        .args(["--session", &session, "pane", "run", &pane_id, &command])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        return None;
+    }
+    Some(WorkerTerminal {
+        backend: "herdr".to_string(),
+        session: Some(session),
+        workspace_id: Some(workspace_id),
+        pane_id: Some(pane_id),
+    })
+}
+
+#[cfg(windows)]
+fn herdr_server_is_running(herdr: &str, session: &str) -> bool {
+    Command::new(herdr)
+        .args(["--session", session, "status", "server"])
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("status: running")
+        })
+}
+
+/// Renders the OpenCode JSONL protocol as a readable console without changing
+/// the raw `worker.log` used by the runtime for auditing.
+#[cfg(windows)]
+fn worker_console_script(title: &str, log_path: &str, prompt_path: &str) -> String {
+    format!(
+        r#"$Host.UI.RawUI.WindowTitle='{title}';
+Write-Host 'SWARMS worker active: {title}' -ForegroundColor Green;
+Write-Host '--- Assigned prompt ---' -ForegroundColor DarkCyan;
+Get-Content -LiteralPath '{prompt_path}' -TotalCount 40;
+Write-Host '--- Live agent activity ---' -ForegroundColor DarkCyan;
+function Show-SwarmsEvent([string]$line) {{
+    if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ exit 0 }}
+    try {{ $event = $line | ConvertFrom-Json -ErrorAction Stop }} catch {{ Write-Host $line; return }}
+    $part = $event.part
+    switch ($event.type) {{
+        'text' {{ if ($part.text) {{ Write-Host "AGENT> $($part.text)" -ForegroundColor Cyan }} }}
+        'tool_use' {{
+            $name = if ($part.tool) {{ $part.tool }} else {{ 'tool' }}
+            $status = if ($part.state.status) {{ $part.state.status }} else {{ 'started' }}
+            $input = $part.state.input
+            $detail = if ($input.command) {{ $input.command }} elseif ($input.filePath) {{ $input.filePath }} elseif ($input.path) {{ $input.path }} else {{ '' }}
+            Write-Host "TOOL [$name] $status $detail" -ForegroundColor Yellow
+        }}
+        'step_start' {{ Write-Host '--- step started ---' -ForegroundColor DarkGray }}
+        'step_finish' {{ Write-Host '--- step finished ---' -ForegroundColor DarkGray }}
+        'error' {{ Write-Host "ERROR> $($part.error)" -ForegroundColor Red }}
+    }}
+}}
+Get-Content -LiteralPath '{log_path}' -Wait -Tail 50 | ForEach-Object {{ Show-SwarmsEvent $_ }}"#
+    )
 }
 
 #[cfg(not(windows))]
-fn start_visible_worker_console(_work_dir: &Path, _task: &Task) {}
+fn start_visible_worker_console(_work_dir: &Path, _task: &Task) -> Option<WorkerTerminal> {
+    None
+}
 
 fn tail_chars(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -1261,6 +1625,10 @@ fn success_state(
         worker_log_bytes: 0,
         last_progress_unix_ms: None,
         worker_log_modified_unix_ms: None,
+        terminal_backend: None,
+        terminal_session: None,
+        terminal_workspace_id: None,
+        terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
     }
@@ -1300,6 +1668,10 @@ fn failed_state(
         worker_log_bytes: 0,
         last_progress_unix_ms: None,
         worker_log_modified_unix_ms: None,
+        terminal_backend: None,
+        terminal_session: None,
+        terminal_workspace_id: None,
+        terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
     }
@@ -1410,5 +1782,100 @@ mod auto_resume_tests {
             Duration::from_secs(300),
         )
         .is_none());
+    }
+
+    #[test]
+    fn worker_console_signal_is_appended_to_its_log() {
+        let path = std::env::temp_dir().join(format!("swarms-console-{}.log", unix_ms()));
+        fs::write(&path, "worker output\n").unwrap();
+        signal_worker_console_finished(&path);
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.ends_with(&format!("{WORKER_CONSOLE_FINISHED_SENTINEL}\n")));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn opencode_database_lock_uses_visible_startup_backoff() {
+        let error = "process 'opencode' exited Some(1): database is locked";
+        assert!(is_transient_opencode_database_lock(error));
+        assert_eq!(retry_reason(error), "transient_opencode_database_lock");
+        assert_eq!(retry_delay(error, 1), Duration::from_secs(5));
+        assert_eq!(retry_delay(error, 4), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn ordinary_adapter_error_keeps_short_retry_backoff() {
+        let error = "process 'provider' exited Some(1): unavailable";
+        assert!(!is_transient_opencode_database_lock(error));
+        assert_eq!(retry_reason(error), "adapter_error");
+        assert_eq!(retry_delay(error, 1), Duration::from_millis(100));
+        assert_eq!(retry_delay(error, 8), Duration::from_millis(3200));
+    }
+
+    #[test]
+    fn dependency_output_uses_text_events_not_tool_payloads() {
+        let log = [
+            r#"{"type":"tool_use","part":{"tool":"read","output":"very large payload"}}"#,
+            r#"{"type":"text","part":{"text":"The contract is complete."}}"#,
+            r#"{"type":"text","part":{"text":"12 focused tests pass."}}"#,
+            WORKER_CONSOLE_FINISHED_SENTINEL,
+        ]
+        .join("\n");
+        assert_eq!(
+            readable_worker_output(&log),
+            "The contract is complete.\n\n12 focused tests pass."
+        );
+    }
+
+    #[test]
+    fn dependency_output_preserves_plain_text_without_viewer_sentinel() {
+        assert_eq!(
+            readable_worker_output("plain result\n__SWARMS_WORKER_FINISHED__\n"),
+            "plain result"
+        );
+    }
+
+    #[test]
+    fn opencode_terminal_event_requires_explicit_stop_protocol() {
+        let path = std::env::temp_dir().join(format!("swarms-opencode-stop-{}.log", unix_ms()));
+        fs::write(
+            &path,
+            r#"{"type":"step_finish","part":{"reason":"tool-calls"}}"#,
+        )
+        .unwrap();
+        assert!(!opencode_terminal_event_seen(&path));
+        fs::write(&path, r#"{"type":"step_finish","part":{"reason":"stop"}}"#).unwrap();
+        assert!(opencode_terminal_event_seen(&path));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hidden_legacy_console_keeps_herd_observability_enabled() {
+        assert!(!should_start_worker_terminal(
+            Some(AdapterKind::OpenCode),
+            false,
+            true,
+        ));
+        assert!(should_start_worker_terminal(
+            Some(AdapterKind::OpenCode),
+            true,
+            true,
+        ));
+        assert!(should_start_worker_terminal(
+            Some(AdapterKind::Mock),
+            true,
+            true,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_console_script_formats_opencode_jsonl_without_losing_the_sentinel() {
+        let script = worker_console_script("SWARMS | probe", "C:/log", "C:/prompt");
+        assert!(script.contains("ConvertFrom-Json"));
+        assert!(script.contains("AGENT>"));
+        assert!(script.contains("TOOL"));
+        assert!(script.contains(WORKER_CONSOLE_FINISHED_SENTINEL));
     }
 }

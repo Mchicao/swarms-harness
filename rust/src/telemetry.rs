@@ -132,6 +132,16 @@ pub struct TaskState {
     pub last_progress_unix_ms: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_log_modified_unix_ms: Option<u128>,
+    /// Terminal surface used to observe this worker. Herd identifiers are
+    /// metadata only; scheduler ownership remains in the Rust runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
     /// Stable hash of the task definition used to validate resume checkpoints.
@@ -167,6 +177,10 @@ impl TaskState {
             worker_log_bytes: 0,
             last_progress_unix_ms: None,
             worker_log_modified_unix_ms: None,
+            terminal_backend: None,
+            terminal_session: None,
+            terminal_workspace_id: None,
+            terminal_pane_id: None,
             ended_at: None,
             checkpoint_key: None,
         }

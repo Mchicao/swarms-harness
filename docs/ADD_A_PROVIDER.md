@@ -27,3 +27,12 @@ When adding a real provider adapter:
 - record missing token telemetry honestly;
 - add tests that use `mock` or a fake adapter, not the real provider;
 - update `docs/workflow_plan_example.json` only if the example remains free/offline.
+
+## Herramientas interactivas
+
+Un proveedor sólo puede usarse por el scheduler si acepta una tarea no
+interactiva y devuelve una salida capturable. ZCode es una aplicación desktop,
+no un CLI headless público: el alias `zcode` debe resolver a `glm52`, que usa
+OpenCode con el plan de Z.AI. Freebuff actualmente sólo documenta UI
+interactiva, `login`, `--continue` y `--cwd`; mantenlo deshabilitado hasta que
+publique un modo de prompt/batch estructurado.

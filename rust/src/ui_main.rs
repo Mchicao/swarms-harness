@@ -57,6 +57,13 @@ impl RunStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwarmSortOrder {
+    Recent,
+    Alphabetical,
+    TaskCount,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RunContract {
     pub schema_version: u64,
@@ -123,6 +130,10 @@ pub struct TaskNode {
     pub heartbeat_unix_ms: Option<u128>,
     pub last_progress_unix_ms: Option<u128>,
     pub worker_log_bytes: u64,
+    pub terminal_backend: Option<String>,
+    pub terminal_session: Option<String>,
+    pub terminal_workspace_id: Option<String>,
+    pub terminal_pane_id: Option<String>,
     pub needs: Vec<String>,
     pub artifacts: Vec<String>,
     pub error: Option<String>,
@@ -196,6 +207,7 @@ pub struct RunIndex {
     pub last_activity_unix_ms: Option<u128>,
     pub task_count: usize,
     pub has_report: bool,
+    pub status: RunStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -442,6 +454,7 @@ pub fn list_runs(run_root: &Path) -> Vec<RunIndex> {
             let wf = read_json(&dir.join("workflow.json")).unwrap_or(Value::Null);
             let tasks_dir = dir.join("tasks");
             let mut task_count = 0;
+            let mut task_values = Vec::new();
             let mut last_activity_unix_ms = [
                 dir.join("workflow.json"),
                 dir.join("events.jsonl"),
@@ -457,11 +470,17 @@ pub fn list_runs(run_root: &Path) -> Vec<RunIndex> {
                         task_count += 1;
                         last_activity_unix_ms =
                             last_activity_unix_ms.max(modified_unix_ms(&entry.path()));
+                        if let Some(value) = read_json(&entry.path()) {
+                            task_values.push(value);
+                        }
                     }
                 }
             }
             let (project_id, project_name) = project_meta(&wf);
             let created_unix_ms = get_u128(&wf, "created_unix_ms");
+            let report = read_json(&dir.join("report-rs.json"))
+                .or_else(|| read_json(&dir.join("report.json")));
+            let status = derive_run_status(&task_values, report.as_ref());
             RunIndex {
                 run_id: get_str(&wf, "run_id")
                     .unwrap_or_else(|| e.file_name().to_string_lossy().into_owned()),
@@ -471,10 +490,12 @@ pub fn list_runs(run_root: &Path) -> Vec<RunIndex> {
                 created_unix_ms,
                 last_activity_unix_ms: last_activity_unix_ms.or(created_unix_ms),
                 task_count,
-                has_report: dir.join("report.json").exists() || dir.join("report-rs.json").exists(),
+                has_report: report.is_some(),
+                status,
             }
         })
         .collect();
+    runs.retain(|run| run.project_id != "dynamic-example" && run.run_id != "verify-dynamic-ir-run");
     runs.sort_by(|a, b| {
         a.has_report
             .cmp(&b.has_report)
@@ -505,6 +526,26 @@ pub fn relative_age(timestamp_ms: Option<u128>, now_ms: u128) -> String {
         86_400..=604_799 => format!("{}d ago", seconds / 86_400),
         604_800..=2_629_799 => format!("{}w ago", seconds / 604_800),
         _ => format!("{}mo ago", seconds / 2_629_800),
+    }
+}
+
+/// Temporal bucket label for a run, purely presentational. Does NOT change the
+/// run's status. Respects "label it, don't change its status" (STATE_CONTRACT).
+pub fn temporal_bucket(timestamp_ms: Option<u128>, now_ms: u128) -> &'static str {
+    let Some(timestamp_ms) = timestamp_ms else {
+        return "Older";
+    };
+    let age_ms = now_ms.saturating_sub(timestamp_ms);
+    const HOUR: u128 = 3_600_000;
+    const DAY: u128 = 24 * HOUR;
+    if age_ms < HOUR {
+        "Active · now"
+    } else if age_ms < DAY {
+        "Earlier today"
+    } else if age_ms < 2 * DAY {
+        "Yesterday"
+    } else {
+        "Older"
     }
 }
 
@@ -833,6 +874,10 @@ fn build_task_node(
         heartbeat_unix_ms: get_u128(task, "heartbeat_unix_ms"),
         last_progress_unix_ms: get_u128(task, "last_progress_unix_ms"),
         worker_log_bytes: get_u64(task, "worker_log_bytes").unwrap_or(0),
+        terminal_backend: get_str(task, "terminal_backend"),
+        terminal_session: get_str(task, "terminal_session"),
+        terminal_workspace_id: get_str(task, "terminal_workspace_id"),
+        terminal_pane_id: get_str(task, "terminal_pane_id"),
         needs: task
             .get("needs")
             .and_then(Value::as_array)
@@ -1234,31 +1279,32 @@ pub mod ui_egui {
     const POLL_IDLE: Duration = Duration::from_secs(5);
     const RUN_LIST_POLL: Duration = Duration::from_secs(10);
     const QUOTA_POLL: Duration = Duration::from_secs(30);
+    const HERD_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
     const MAX_EVENTS: usize = 500;
 
-    fn accent() -> egui::Color32 {
-        egui::Color32::from_rgb(128, 108, 255)
+    #[derive(Clone, Debug, Default)]
+    struct HerdWorkspace {
+        id: String,
+        label: String,
+        focused: bool,
     }
 
+    /// Accent color from the active theme. Thin wrapper over
+    /// `ui_theme::Theme::marraqueta().palette.accent` kept as a local shortcut
+    /// for the many call sites in this module.
+    fn accent() -> egui::Color32 {
+        crate::ui_theme::Theme::marraqueta().palette.accent
+    }
+
+    /// Muted text color from the active theme. Thin wrapper over
+    /// `ui_theme::Theme::marraqueta().palette.muted` kept as a local shortcut
+    /// for the many call sites in this module.
     fn muted() -> egui::Color32 {
-        egui::Color32::from_rgb(132, 135, 145)
+        crate::ui_theme::Theme::marraqueta().palette.muted
     }
 
     fn apply_theme(ctx: &egui::Context) {
-        let mut style = (*ctx.style()).clone();
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(8.0, 4.0);
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = egui::Color32::from_rgb(14, 15, 18);
-        style.visuals.window_fill = egui::Color32::from_rgb(17, 18, 22);
-        style.visuals.extreme_bg_color = egui::Color32::from_rgb(9, 10, 12);
-        style.visuals.faint_bg_color = egui::Color32::from_rgb(22, 24, 29);
-        style.visuals.selection.bg_fill = egui::Color32::from_rgb(45, 42, 78);
-        style.visuals.selection.stroke.color = egui::Color32::from_rgb(176, 166, 255);
-        style.visuals.hyperlink_color = egui::Color32::from_rgb(176, 166, 255);
-        style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(22, 24, 29);
-        style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(31, 33, 40);
-        ctx.set_style(style);
+        crate::ui_theme::Theme::marraqueta().apply(ctx);
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1275,7 +1321,7 @@ pub mod ui_egui {
         fn read(run_dir: &Path) -> Self {
             Self {
                 workflow: file_signature(&run_dir.join("workflow.json")),
-                tasks: modified(&run_dir.join("tasks")),
+                tasks: modified_dir_or_files(&run_dir.join("tasks")),
                 claims: modified(&run_dir.join("claims")),
                 results: modified(&run_dir.join("results")),
                 events: file_signature(&run_dir.join("events.jsonl")),
@@ -1287,11 +1333,33 @@ pub mod ui_egui {
 
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     enum CenterView {
+        T3Code,
+        #[default]
+        Swarms,
+        AgentSync,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum SwarmTab {
         #[default]
         Overview,
         Tasks,
         Activity,
         Resources,
+    }
+
+    fn modified_dir_or_files(path: &Path) -> Option<SystemTime> {
+        let mut max_time = fs::metadata(path).and_then(|meta| meta.modified()).ok();
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(mod_time) = meta.modified() {
+                        max_time = Some(max_time.map_or(mod_time, |t| t.max(mod_time)));
+                    }
+                }
+            }
+        }
+        max_time
     }
 
     fn modified(path: &Path) -> Option<SystemTime> {
@@ -1336,6 +1404,8 @@ pub mod ui_egui {
     struct UiPrivacyConfig {
         show_account_emails: bool,
         account_emails: BTreeMap<String, String>,
+        project_notes: BTreeMap<String, String>,
+        resource_enabled: BTreeMap<String, bool>,
     }
 
     impl Default for UiPrivacyConfig {
@@ -1343,6 +1413,8 @@ pub mod ui_egui {
             Self {
                 show_account_emails: true,
                 account_emails: BTreeMap::new(),
+                project_notes: BTreeMap::new(),
+                resource_enabled: BTreeMap::new(),
             }
         }
     }
@@ -1376,6 +1448,7 @@ pub mod ui_egui {
         run_root: PathBuf,
         runs: Vec<RunIndex>,
         active_run_id: Option<String>,
+        sort_order: SwarmSortOrder,
         reader: Option<RunReader>,
         contract: Option<RunContract>,
         events: Vec<EventRow>,
@@ -1410,6 +1483,17 @@ pub mod ui_egui {
         selected_resource: Option<String>,
         resource_root: PathBuf,
         resource_sync_feedback: Option<String>,
+        new_mcp_name: String,
+        new_mcp_cmd: String,
+        agent_md_text: String,
+        agent_md_path: Option<PathBuf>,
+        herd_workspaces: Vec<HerdWorkspace>,
+        herd_workspace_id: Option<String>,
+        herd_output: String,
+        herd_feedback: Option<String>,
+        last_herd_refresh: Option<Instant>,
+        swarm_tab: SwarmTab,
+        force_swarms: bool,
     }
 
     impl ObservabilityApp {
@@ -1422,10 +1506,11 @@ pub mod ui_egui {
             let ui_privacy = load_ui_config(&run_root);
             let project_root = find_workspace_root(&run_root).unwrap_or_else(|| run_root.clone());
             let resource_catalog = resources::discover(&project_root);
-            ObservabilityApp {
+            let mut app = ObservabilityApp {
                 run_root,
                 runs: Vec::new(),
                 active_run_id,
+                sort_order: SwarmSortOrder::Recent,
                 reader: None,
                 contract: None,
                 events: Vec::new(),
@@ -1448,7 +1533,7 @@ pub mod ui_egui {
                 last_quota_poll: None,
                 steer_prompt: String::new(),
                 steer_feedback: None,
-                center_view: CenterView::Overview,
+                center_view: CenterView::Swarms,
                 provider_icons: ProviderIcons,
                 ui_privacy,
                 config_open: false,
@@ -1460,7 +1545,20 @@ pub mod ui_egui {
                 selected_resource: None,
                 resource_root: project_root,
                 resource_sync_feedback: None,
-            }
+                new_mcp_name: String::new(),
+                new_mcp_cmd: String::new(),
+                agent_md_text: String::new(),
+                agent_md_path: None,
+                herd_workspaces: Vec::new(),
+                herd_workspace_id: None,
+                herd_output: String::new(),
+                herd_feedback: None,
+                last_herd_refresh: None,
+                swarm_tab: SwarmTab::Overview,
+                force_swarms: true,
+            };
+            app.load_agent_md();
+            app
         }
 
         fn save_ui_config(&mut self) {
@@ -1468,8 +1566,12 @@ pub mod ui_egui {
                 self.config_feedback = Some("No se encontró la raíz del proyecto".to_string());
                 return;
             };
-            let result = serde_json::to_string_pretty(&self.ui_privacy)
+            let result = fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
                 .map_err(|error| error.to_string())
+                .and_then(|()| {
+                    serde_json::to_string_pretty(&self.ui_privacy)
+                        .map_err(|error| error.to_string())
+                })
                 .and_then(|text| fs::write(&path, text).map_err(|error| error.to_string()));
             self.config_feedback = Some(match result {
                 Ok(()) => format!("Guardado en {}", path.display()),
@@ -1505,6 +1607,7 @@ pub mod ui_egui {
                                 self.resource_root = project_root;
                                 self.selected_resource = None;
                                 self.refresh_resources();
+                                self.load_agent_md();
                             }
                         }
                     } else {
@@ -1539,7 +1642,7 @@ pub mod ui_egui {
             let changed = self.signature.as_ref() != Some(&signature);
             if changed {
                 self.contract = Some(reader.read());
-                let mut new_events = reader.tail_events(MAX_EVENTS);
+                let mut new_events = reader.tail_events(MAX_EVENTS * 2);
                 self.events.append(&mut new_events);
                 if self.events.len() > MAX_EVENTS {
                     let drop = self.events.len() - MAX_EVENTS;
@@ -1696,42 +1799,67 @@ pub mod ui_egui {
             self.refresh_quotas_if_due();
 
             egui::TopBottomPanel::top("app_header")
-                .exact_height(46.0)
+                .exact_height(64.0)
                 .show(ctx, |ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.label(egui::RichText::new("SWARMS").strong().size(18.0));
-                        ui.label(egui::RichText::new("RUNTIME").small().color(muted()));
-                        if let Some(contract) = &self.contract {
-                            ui.separator();
+                    let theme = crate::ui_theme::Theme::marraqueta();
+                    let palette = theme.palette;
+                    fn sans() -> egui::FontFamily {
+                        egui::FontFamily::Name("IBM Plex Sans".into())
+                    }
+                    ui.columns(3, |columns| {
+                        columns[0].horizontal(|ui| {
+                            ui.add_space(theme.spacing.lg);
                             ui.label(
-                                egui::RichText::new(&contract.run.project_name)
+                                egui::RichText::new("SWARMS")
+                                    .family(sans())
                                     .strong()
-                                    .color(egui::Color32::from_rgb(220, 220, 226)),
-                            );
-                            ui.label(egui::RichText::new("/").color(muted()));
-                            ui.label(egui::RichText::new(&contract.run.run_id).color(muted()));
-                            ui.label(
-                                egui::RichText::new(format!("● {}", contract.run.status.label()))
-                                    .small()
-                                    .color(status_color(contract.run.status.label(), false)),
-                            );
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Config").clicked() {
-                                self.config_open = true;
-                            }
-                            ui.label(
-                                egui::RichText::new("local  •  native Rust")
-                                    .small()
-                                    .color(muted()),
+                                    .size(theme.type_scale.wordmark)
+                                    .color(palette.text),
                             );
                         });
+                        columns[1].horizontal_centered(|ui| {
+                            ui.style_mut().spacing.item_spacing.x = 8.0;
+                            for (view, label) in [
+                                (CenterView::T3Code, "Code"),
+                                (CenterView::Swarms, "Swarms"),
+                                (CenterView::AgentSync, "Sync"),
+                            ] {
+                                let selected = self.center_view == view;
+                                if ui
+                                    .add_sized(
+                                        [120.0, 36.0],
+                                        egui::Button::new(
+                                            egui::RichText::new(label).strong().size(15.0),
+                                        )
+                                        .selected(selected)
+                                        .fill(if selected {
+                                            palette.accent
+                                        } else {
+                                            palette.bg_elevated
+                                        })
+                                        .stroke(egui::Stroke::new(1.0, palette.border)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.center_view = view;
+                                }
+                            }
+                        });
+                        columns[2].with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("⚙").on_hover_text("Settings").clicked() {
+                                    self.config_open = true;
+                                }
+                                ui.add_space(theme.spacing.lg);
+                            },
+                        );
                     });
                 });
 
             if self.config_open {
                 let mut open = self.config_open;
-                egui::Window::new("Configuración")
+                egui::Window::new("Settings")
                     .open(&mut open)
                     .resizable(false)
                     .default_width(420.0)
@@ -1743,19 +1871,10 @@ pub mod ui_egui {
             egui::TopBottomPanel::bottom("footer")
                 .exact_height(38.0)
                 .show(ctx, |ui| {
+                    let theme = crate::ui_theme::Theme::marraqueta();
+                    let palette = theme.palette;
                     let contract = self.contract.as_ref();
-                    let status = contract.map_or(RunStatus::Loading, |c| c.run.status);
                     ui.horizontal_centered(|ui| {
-                        let status_color = status_color(status.label(), false);
-                        let (dot, _) =
-                            ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 3.0, status_color);
-                        ui.label(
-                            egui::RichText::new(format!("status: {}", status.label()))
-                                .small()
-                                .color(status_color),
-                        );
-                        ui.separator();
                         self.render_quota_strip(ui);
                         if let Some(c) = contract {
                             ui.separator();
@@ -1766,106 +1885,39 @@ pub mod ui_egui {
                                     c.run.task_count,
                                     self.events.len()
                                 ))
-                                .small()
-                                .color(muted()),
+                                .family(egui::FontFamily::Name("IBM Plex Mono".into()))
+                                .size(theme.type_scale.mono_small)
+                                .color(palette.muted),
                             );
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new("local").small().color(muted()));
-                        });
                     });
                 });
 
-            // Left: project -> run navigation.
-            egui::SidePanel::left("runs")
-                .resizable(true)
-                .default_width(285.0)
-                .show(ctx, |ui| {
-                    ui.heading("Projects");
-                    ui.label(
-                        egui::RichText::new(format!("{}", self.run_root.display()))
-                            .small()
-                            .color(muted()),
-                    );
-                    ui.separator();
-                    let runs = self.runs.clone();
-                    let groups = group_runs(&runs);
-                    let mut to_activate: Option<String> = None;
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        if groups.is_empty() {
-                            ui.label(egui::RichText::new("No projects yet").color(muted()));
-                        }
-                        for group in &groups {
-                            egui::CollapsingHeader::new(
-                                egui::RichText::new(format!(
-                                    "{}  {}",
-                                    group.project_name,
-                                    group.runs.len()
-                                ))
-                                .strong(),
-                            )
-                            .id_salt(&group.project_id)
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                for run in &group.runs {
-                                    let selected =
-                                        self.active_run_id.as_deref() == Some(run.run_id.as_str());
-                                    let dot = if run.has_report { "●" } else { "○" };
-                                    if ui
-                                        .selectable_label(
-                                            selected,
-                                            format!("{dot}  {}", run.run_id),
-                                        )
-                                        .clicked()
-                                    {
-                                        to_activate = Some(run.run_id.clone());
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(22.0);
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{}  ·  {} tasks",
-                                                run.runtime, run.task_count
-                                            ))
-                                            .small()
-                                            .color(muted()),
-                                        );
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                ui.label(
-                                                    egui::RichText::new(relative_age(
-                                                        run.last_activity_unix_ms,
-                                                        unix_ms(),
-                                                    ))
-                                                    .small()
-                                                    .color(muted()),
-                                                )
-                                                .on_hover_text("Last swarm activity");
-                                            },
-                                        );
-                                    });
-                                }
-                            });
-                        }
+            let show_left = self.center_view == CenterView::Swarms;
+            if show_left {
+                egui::SidePanel::left("runs")
+                    .resizable(true)
+                    .default_width(285.0)
+                    .show(ctx, |ui| {
+                        self.render_swarms_sidebar(ui, now_ms);
                     });
-                    if let Some(id) = to_activate {
-                        self.activate(id);
-                        ctx.request_repaint();
-                    }
-                });
+            }
 
-            // Right: selected task detail.
-            egui::SidePanel::right("detail")
-                .resizable(true)
-                .default_width(380.0)
-                .show(ctx, |ui| {
-                    self.render_detail(ui, now_ms);
-                });
+            let show_right = self.center_view == CenterView::Swarms;
+            if show_right {
+                egui::SidePanel::right("detail")
+                    .resizable(true)
+                    .default_width(380.0)
+                    .show(ctx, |ui| {
+                        self.render_detail(ui, now_ms);
+                    });
+            }
 
-            // Center: virtualized task tree.
-            egui::CentralPanel::default().show(ctx, |ui| {
-                self.render_center(ui, now_ms);
+            // Center panel: displays active cockpit/workspace.
+            egui::CentralPanel::default().show(ctx, |ui| match self.center_view {
+                CenterView::T3Code => self.render_t3code_cockpit(ui),
+                CenterView::Swarms => self.render_swarms_center(ui, now_ms),
+                CenterView::AgentSync => self.render_sandbox(ui),
             });
 
             // On-demand repaint: never run a fixed 60 FPS loop.
@@ -1874,28 +1926,25 @@ pub mod ui_egui {
     }
 
     impl ObservabilityApp {
-        fn render_center(&mut self, ui: &mut egui::Ui, now_ms: u128) {
+        fn render_swarms_center(&mut self, ui: &mut egui::Ui, now_ms: u128) {
             ui.horizontal(|ui| {
-                for (view, label) in [
-                    (CenterView::Overview, "Overview"),
-                    (CenterView::Tasks, "Tasks"),
-                    (CenterView::Activity, "Activity"),
-                    (CenterView::Resources, "Resources"),
+                for (tab, label) in [
+                    (SwarmTab::Overview, "Overview"),
+                    (SwarmTab::Tasks, "Tasks"),
+                    (SwarmTab::Activity, "Activity"),
+                    (SwarmTab::Resources, "Resources"),
                 ] {
-                    if ui
-                        .selectable_label(self.center_view == view, label)
-                        .clicked()
-                    {
-                        self.center_view = view;
+                    if ui.selectable_label(self.swarm_tab == tab, label).clicked() {
+                        self.swarm_tab = tab;
                     }
                 }
             });
             ui.separator();
-            match self.center_view {
-                CenterView::Overview => self.render_overview(ui),
-                CenterView::Tasks => self.render_tree(ui, now_ms),
-                CenterView::Activity => self.render_activity(ui),
-                CenterView::Resources => self.render_resources(ui),
+            match self.swarm_tab {
+                SwarmTab::Overview => self.render_overview(ui),
+                SwarmTab::Tasks => self.render_tree(ui, now_ms),
+                SwarmTab::Activity => self.render_activity(ui),
+                SwarmTab::Resources => self.render_resources(ui),
             }
         }
 
@@ -1910,6 +1959,50 @@ pub mod ui_egui {
                         .to_string(),
                 );
                 return;
+            }
+            let skill_choices: Vec<_> = self
+                .resource_catalog
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.scope == resources::ResourceScope::Project
+                        && entry.kind == resources::ResourceKind::Skill
+                })
+                .map(|entry| {
+                    (
+                        entry.name.clone(),
+                        self.ui_privacy
+                            .resource_enabled
+                            .get(&entry.id)
+                            .copied()
+                            .unwrap_or(true),
+                    )
+                })
+                .collect();
+            for (name, enabled) in skill_choices {
+                let action = if enabled { "enable" } else { "disable" };
+                match std::process::Command::new("skillshare")
+                    .args([action, &name, "-p"])
+                    .current_dir(&self.resource_root)
+                    .output()
+                {
+                    Ok(output) if output.status.success() => {}
+                    Ok(output) => {
+                        self.resource_sync_feedback = Some(format!(
+                            "Could not {action} {name}: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                                .lines()
+                                .next()
+                                .unwrap_or("unknown error")
+                        ));
+                        return;
+                    }
+                    Err(error) => {
+                        self.resource_sync_feedback =
+                            Some(format!("Skillshare unavailable: {error}"));
+                        return;
+                    }
+                }
             }
             let result = std::process::Command::new("skillshare")
                 .args(["sync", "-p", "--json"])
@@ -1927,6 +2020,239 @@ pub mod ui_egui {
                 Err(error) => format!("Skillshare unavailable: {error}"),
             });
             self.refresh_resources();
+        }
+
+        fn rulesync_root(&self) -> PathBuf {
+            std::env::var_os("SWARMS_RULESYNC_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.resource_root.clone())
+        }
+
+        fn rulesync_sources(&self, feature: &str) -> Vec<String> {
+            let source_root = self.rulesync_root().join(".rulesync");
+            let mut entries = match feature {
+                "skills" => fs::read_dir(source_root.join("skills"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let path = entry.path();
+                        entry
+                            .file_type()
+                            .ok()
+                            .filter(|kind| kind.is_dir() && path.join("SKILL.md").is_file())
+                            .and_then(|_| entry.file_name().to_str().map(str::to_string))
+                    })
+                    .collect(),
+                "mcp" => ["mcp.json", "mcp.jsonc"]
+                    .into_iter()
+                    .filter(|name| source_root.join(name).is_file())
+                    .map(str::to_string)
+                    .collect(),
+                "rules" => rulesync_rule_files(&source_root.join("rules")),
+                _ => Vec::new(),
+            };
+            entries.sort();
+            entries
+        }
+
+        fn rulesync_available(&self) -> bool {
+            self.rulesync_root().join(".rulesync").is_dir()
+        }
+
+        fn sync_rulesync_feature(&mut self, feature: &str) {
+            let root = self.rulesync_root();
+            let result = std::process::Command::new(
+                std::env::var("SWARMS_RULESYNC_BIN").unwrap_or_else(|_| "rulesync".to_string()),
+            )
+            .args([
+                "generate",
+                "--global",
+                "--features",
+                feature,
+                "--input-root",
+                &root.display().to_string(),
+            ])
+            .current_dir(&root)
+            .output();
+            self.resource_sync_feedback = Some(match result {
+                Ok(output) if output.status.success() => format!("Rulesync {feature} generated."),
+                Ok(output) => format!(
+                    "Rulesync {feature} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                ),
+                Err(error) => format!("Rulesync is unavailable: {error}"),
+            });
+        }
+
+        fn refresh_herd(&mut self) {
+            let session = herdr_session();
+            let output = std::process::Command::new(herdr_program())
+                .args(["--session", session, "workspace", "list"])
+                .output();
+            let output = match output {
+                Ok(output) if output.status.success() => output,
+                Ok(output) => {
+                    self.herd_feedback = Some(format!(
+                        "Herd is unavailable (exit {:?})",
+                        output.status.code()
+                    ));
+                    return;
+                }
+                Err(error) => {
+                    self.herd_feedback = Some(format!("Could not start Herd: {error}"));
+                    return;
+                }
+            };
+            let value: Value = match serde_json::from_slice(&output.stdout) {
+                Ok(value) => value,
+                Err(_) => {
+                    self.herd_feedback =
+                        Some("Herd returned an unreadable workspace list.".to_string());
+                    return;
+                }
+            };
+            self.herd_workspaces = value
+                .pointer("/result/workspaces")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|workspace| {
+                    Some(HerdWorkspace {
+                        id: workspace.get("workspace_id")?.as_str()?.to_string(),
+                        label: workspace.get("label")?.as_str()?.to_string(),
+                        focused: workspace
+                            .get("focused")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect();
+            if !self
+                .herd_workspaces
+                .iter()
+                .any(|workspace| Some(workspace.id.as_str()) == self.herd_workspace_id.as_deref())
+            {
+                self.herd_workspace_id = self
+                    .herd_workspaces
+                    .iter()
+                    .find(|workspace| workspace.focused)
+                    .or_else(|| self.herd_workspaces.first())
+                    .map(|workspace| workspace.id.clone());
+            }
+            let Some(workspace_id) = self.herd_workspace_id.as_deref() else {
+                self.herd_output.clear();
+                self.herd_feedback = Some("No Herd workspaces are open.".to_string());
+                return;
+            };
+            let panes = std::process::Command::new(herdr_program())
+                .args([
+                    "--session",
+                    session,
+                    "pane",
+                    "list",
+                    "--workspace",
+                    workspace_id,
+                ])
+                .output();
+            let pane_id = panes.ok().and_then(|output| {
+                serde_json::from_slice::<Value>(&output.stdout)
+                    .ok()?
+                    .pointer("/result/panes/0/pane_id")?
+                    .as_str()
+                    .map(str::to_string)
+            });
+            let Some(pane_id) = pane_id else {
+                self.herd_output.clear();
+                self.herd_feedback =
+                    Some("The selected Herd workspace has no readable pane.".to_string());
+                return;
+            };
+            match std::process::Command::new(herdr_program())
+                .args([
+                    "--session",
+                    session,
+                    "pane",
+                    "read",
+                    &pane_id,
+                    "--source",
+                    "recent",
+                    "--lines",
+                    "80",
+                ])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    self.herd_output = String::from_utf8_lossy(&output.stdout).to_string();
+                    self.herd_feedback = Some(format!("Herd workspace {workspace_id} refreshed."));
+                }
+                Ok(output) => {
+                    self.herd_feedback = Some(format!(
+                        "Could not read Herd pane (exit {:?})",
+                        output.status.code()
+                    ))
+                }
+                Err(error) => {
+                    self.herd_feedback = Some(format!("Could not read Herd pane: {error}"))
+                }
+            }
+            self.last_herd_refresh = Some(Instant::now());
+        }
+
+        fn refresh_herd_if_due(&mut self) {
+            if self
+                .last_herd_refresh
+                .is_none_or(|last| last.elapsed() >= HERD_REFRESH_INTERVAL)
+            {
+                self.refresh_herd();
+            }
+        }
+
+        fn render_herd_panel(&mut self, ui: &mut egui::Ui) {
+            let palette = crate::ui_theme::Theme::marraqueta().palette;
+            self.refresh_herd_if_due();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Herd").strong().size(18.0));
+                ui.label(egui::RichText::new("Live terminal workspaces").color(palette.muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.refresh_herd();
+                    }
+                    if let Some(workspace) = self.herd_workspace_id.as_deref() {
+                        if ui.button("Open in Herd").clicked() {
+                            self.herd_feedback =
+                                Some(focus_herdr_workspace(&herdr_session(), workspace));
+                        }
+                    }
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                for workspace in self.herd_workspaces.clone() {
+                    if ui
+                        .selectable_label(
+                            self.herd_workspace_id.as_deref() == Some(workspace.id.as_str()),
+                            workspace.label,
+                        )
+                        .clicked()
+                    {
+                        self.herd_workspace_id = Some(workspace.id);
+                        self.refresh_herd();
+                    }
+                }
+            });
+            if let Some(feedback) = &self.herd_feedback {
+                ui.label(egui::RichText::new(feedback).small().color(palette.muted));
+            }
+            ui.add(
+                egui::TextEdit::multiline(&mut self.herd_output)
+                    .font(egui::TextStyle::Monospace)
+                    .interactive(false)
+                    .desired_rows(20)
+                    .desired_width(ui.available_width()),
+            );
         }
 
         fn initialize_project_skills(&mut self) {
@@ -2135,7 +2461,597 @@ pub mod ui_egui {
             });
         }
 
-        fn render_overview(&self, ui: &mut egui::Ui) {
+        fn render_swarms_sidebar(&mut self, ui: &mut egui::Ui, now: u128) {
+            let theme = crate::ui_theme::Theme::marraqueta();
+            let palette = theme.palette;
+            ui.add_space(theme.spacing.sm);
+            ui.label(
+                egui::RichText::new("Runs")
+                    .family(egui::FontFamily::Name("IBM Plex Sans".into()))
+                    .strong()
+                    .size(theme.type_scale.heading)
+                    .color(palette.text),
+            );
+            ui.label(
+                egui::RichText::new(format!("{}", self.run_root.display()))
+                    .family(egui::FontFamily::Name("IBM Plex Mono".into()))
+                    .size(theme.type_scale.mono_small)
+                    .color(palette.muted),
+            );
+            ui.add_space(theme.spacing.xs);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Sort:")
+                        .size(theme.type_scale.mono_small)
+                        .color(palette.muted),
+                );
+                egui::ComboBox::from_id_salt("sort_order")
+                    .selected_text(match self.sort_order {
+                        SwarmSortOrder::Recent => "Recent",
+                        SwarmSortOrder::Alphabetical => "Name",
+                        SwarmSortOrder::TaskCount => "Tasks",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.sort_order, SwarmSortOrder::Recent, "Recent");
+                        ui.selectable_value(
+                            &mut self.sort_order,
+                            SwarmSortOrder::Alphabetical,
+                            "Name",
+                        );
+                        ui.selectable_value(
+                            &mut self.sort_order,
+                            SwarmSortOrder::TaskCount,
+                            "Tasks",
+                        );
+                    });
+            });
+            ui.add_space(theme.spacing.xs);
+            let mut runs = self.runs.clone();
+            match self.sort_order {
+                SwarmSortOrder::Recent => {
+                    runs.sort_by_key(|b| std::cmp::Reverse(b.last_activity_unix_ms));
+                }
+                SwarmSortOrder::Alphabetical => {
+                    runs.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+                }
+                SwarmSortOrder::TaskCount => {
+                    runs.sort_by_key(|b| std::cmp::Reverse(b.task_count));
+                }
+            }
+            let mut groups = group_runs(&runs);
+            match self.sort_order {
+                SwarmSortOrder::Recent => {
+                    groups.sort_by_key(|g| {
+                        std::cmp::Reverse(
+                            g.runs
+                                .iter()
+                                .map(|r| r.last_activity_unix_ms.unwrap_or(0))
+                                .max()
+                                .unwrap_or(0),
+                        )
+                    });
+                }
+                SwarmSortOrder::Alphabetical => {
+                    groups.sort_by(|a, b| {
+                        a.project_name
+                            .to_lowercase()
+                            .cmp(&b.project_name.to_lowercase())
+                    });
+                }
+                SwarmSortOrder::TaskCount => {
+                    groups.sort_by_key(|g| {
+                        std::cmp::Reverse(g.runs.iter().map(|r| r.task_count).max().unwrap_or(0))
+                    });
+                }
+            }
+            let mut to_activate: Option<String> = None;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if groups.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No active or historical runs found in workspace.")
+                            .color(palette.muted)
+                            .small(),
+                    );
+                }
+                for group in &groups {
+                    let total_runs = group.runs.len();
+                    let group_header = format!("📁 {} ({} runs)", group.project_name, total_runs);
+                    egui::CollapsingHeader::new(group_header)
+                        .id_salt(("swarm-project", &group.project_id))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for run in &group.runs {
+                                let active = self.active_run_id.as_deref() == Some(&run.run_id);
+                                let font_style = egui::FontId::new(
+                                    theme.type_scale.mono,
+                                    egui::FontFamily::Name("IBM Plex Mono".into()),
+                                );
+                                let text_color = if active { palette.accent } else { palette.text };
+                                ui.horizontal(|ui| {
+                                    crate::ui_theme::status_badge(
+                                        ui,
+                                        run.status.label(),
+                                        active,
+                                        crate::ui_theme::BadgeMode::Pill,
+                                        &theme,
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&run.run_id)
+                                            .font(font_style)
+                                            .color(text_color),
+                                    );
+                                    if let Some(t) = run.last_activity_unix_ms {
+                                        let bucket = temporal_bucket(Some(t), now);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(bucket)
+                                                        .size(theme.type_scale.mono_small - 1.0)
+                                                        .color(palette.muted),
+                                                );
+                                            },
+                                        );
+                                    }
+                                    let resp = ui.interact(
+                                        ui.min_rect(),
+                                        ui.id().with(&run.run_id),
+                                        egui::Sense::click(),
+                                    );
+                                    if resp.clicked() {
+                                        to_activate = Some(run.run_id.clone());
+                                    }
+                                });
+                            }
+                        });
+                }
+            });
+            if let Some(id) = to_activate {
+                self.activate(id);
+                ui.ctx().request_repaint();
+            }
+        }
+
+        fn render_t3code_cockpit(&mut self, ui: &mut egui::Ui) {
+            let theme = crate::ui_theme::Theme::marraqueta();
+            let palette = theme.palette;
+            self.render_herd_panel(ui);
+            ui.separator();
+            let Some(contract) = self.contract.as_ref() else {
+                ui.label(
+                    egui::RichText::new(
+                        "Select a SWARMS run to see its project notes and activity.",
+                    )
+                    .color(palette.muted),
+                );
+                return;
+            };
+            let project_id = contract.run.project_id.clone();
+            let project_name = contract.run.project_name.clone();
+            let run_id = contract.run.run_id.clone();
+            let status = contract.run.status;
+
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new(&run_id).strong().size(17.0));
+                    ui.label(egui::RichText::new(&project_name).color(palette.muted));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::ui_theme::status_badge(
+                        ui,
+                        status.label(),
+                        false,
+                        crate::ui_theme::BadgeMode::Pill,
+                        &theme,
+                    );
+                });
+            });
+            ui.group(|ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Project notes").strong());
+                    if ui.small_button("Save").clicked() {
+                        self.save_ui_config();
+                    }
+                });
+                let note = self.ui_privacy.project_notes.entry(project_id).or_default();
+                ui.add(
+                    egui::TextEdit::multiline(note)
+                        .hint_text("Decisions, context, pending work…")
+                        .desired_rows(3)
+                        .desired_width(ui.available_width()),
+                );
+            });
+
+            ui.add_space(theme.spacing.md);
+            ui.label(egui::RichText::new("Thread activity").strong());
+            egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - 145.0).max(120.0))
+                .show(ui, |ui| {
+                    if self.events.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No activity recorded yet.").color(palette.muted),
+                        );
+                    }
+                    for event in self.events.iter().rev().take(80).rev() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                egui::RichText::new(&event.event)
+                                    .family(egui::FontFamily::Name("IBM Plex Mono".into()))
+                                    .strong(),
+                            );
+                            if let Some(task_id) = &event.task_id {
+                                ui.label(egui::RichText::new(task_id).color(palette.accent));
+                            }
+                            if let Some(provider) = &event.provider {
+                                ui.label(provider);
+                            }
+                            if let Some(error) = &event.error {
+                                ui.label(egui::RichText::new(error).color(palette.pill_failed));
+                            }
+                        });
+                        ui.separator();
+                    }
+                });
+            ui.separator();
+            ui.add(
+                egui::TextEdit::multiline(&mut self.steer_prompt)
+                    .hint_text("Ask for a follow-up change…")
+                    .desired_rows(3)
+                    .desired_width(ui.available_width()),
+            );
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.force_swarms, "Use SWARMS runtime");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled(false, egui::Button::new("Send ↑"))
+                        .on_disabled_hover_text(
+                            "Starting new Code threads is not wired to a provider yet.",
+                        );
+                });
+            });
+        }
+
+        fn render_sandbox(&mut self, ui: &mut egui::Ui) {
+            let palette = crate::ui_theme::Theme::marraqueta().palette;
+            let root = self.rulesync_root();
+            let rulesync_available = self.rulesync_available();
+            let skills = self.rulesync_sources("skills");
+            let mcps = self.rulesync_sources("mcp");
+            let rules = self.rulesync_sources("rules");
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Global Rulesync rules")
+                            .strong()
+                            .size(18.0),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("Source: {}\\.rulesync", root.display()))
+                            .small()
+                            .color(palette.muted),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.resource_sync_feedback =
+                            Some("Rulesync source refreshed.".to_string());
+                    }
+                });
+            });
+            if let Some(feedback) = &self.resource_sync_feedback {
+                ui.label(egui::RichText::new(feedback).small().color(palette.accent));
+            }
+            ui.separator();
+
+            if !rulesync_available {
+                empty_state(
+                    ui,
+                    "No global Rulesync source found",
+                    "Set SWARMS_RULESYNC_ROOT or initialize .rulesync in this workspace. Sync actions stay disabled until a real source exists.",
+                );
+                return;
+            }
+
+            ui.columns(3, |columns| {
+                columns[0].horizontal(|ui| {
+                    ui.label(egui::RichText::new("Skills").strong().size(15.0));
+                    if ui
+                        .add_enabled(rulesync_available, egui::Button::new("Sync Skills"))
+                        .clicked()
+                    {
+                        self.sync_rulesync_feature("skills");
+                    }
+                });
+                columns[0].separator();
+                render_rulesync_sources(
+                    &mut columns[0],
+                    &skills,
+                    "No global Rulesync skills.",
+                    palette.muted,
+                );
+
+                columns[1].horizontal(|ui| {
+                    ui.label(egui::RichText::new("MCP").strong().size(15.0));
+                    if ui
+                        .add_enabled(rulesync_available, egui::Button::new("Sync MCP"))
+                        .clicked()
+                    {
+                        self.sync_rulesync_feature("mcp");
+                    }
+                });
+                columns[1].separator();
+                render_rulesync_sources(
+                    &mut columns[1],
+                    &mcps,
+                    "No global Rulesync MCP sources.",
+                    palette.muted,
+                );
+
+                columns[2].horizontal(|ui| {
+                    ui.label(egui::RichText::new("Rules / AGENTS.md").strong().size(15.0));
+                    if ui
+                        .add_enabled(rulesync_available, egui::Button::new("Sync AGENTS.md"))
+                        .clicked()
+                    {
+                        self.sync_rulesync_feature("rules");
+                    }
+                });
+                columns[2].separator();
+                render_rulesync_sources(
+                    &mut columns[2],
+                    &rules,
+                    "No global Rulesync rules.",
+                    palette.muted,
+                );
+            });
+        }
+
+        #[allow(dead_code)]
+        fn render_sandbox_legacy(&mut self, ui: &mut egui::Ui) {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Agent Sandbox & Tool Boundaries")
+                            .strong()
+                            .size(16.0),
+                    );
+                    if ui.button("⟳ Refresh").clicked() {
+                        self.refresh_resources();
+                    }
+                    if ui
+                        .button("Sync Skillshare")
+                        .on_hover_text("Sync Skills/Rules")
+                        .clicked()
+                    {
+                        self.sync_project_skills();
+                    }
+                });
+
+                if let Some(feedback) = &self.resource_sync_feedback {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(feedback).small().color(accent()));
+                }
+
+                ui.separator();
+
+                let width = ui.available_width();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Layer 1: Global Core
+                    ui.group(|ui| {
+                        ui.set_width(width - 24.0);
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("🌐 Global Core Context")
+                                        .strong()
+                                        .size(13.0),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Shared across all projects")
+                                        .small()
+                                        .color(muted()),
+                                );
+                            });
+                            ui.add_space(4.0);
+
+                            let global_entries: Vec<_> = self
+                                .resource_catalog
+                                .entries
+                                .iter()
+                                .filter(|e| e.scope == resources::ResourceScope::Global)
+                                .collect();
+
+                            if global_entries.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("No global skills or MCPs registered.")
+                                        .small()
+                                        .color(muted()),
+                                );
+                            } else {
+                                ui.horizontal_wrapped(|ui| {
+                                    for entry in &global_entries {
+                                        let name = &entry.name;
+                                        let kind_str = match entry.kind {
+                                            resources::ResourceKind::Skill => "Skill 🎓",
+                                            resources::ResourceKind::Mcp => "MCP 🔌",
+                                            resources::ResourceKind::Instructions => {
+                                                "Instruction 📄"
+                                            }
+                                        };
+                                        ui.group(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(name).strong().small(),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(kind_str)
+                                                        .small()
+                                                        .color(muted()),
+                                                );
+                                            });
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    });
+
+                    // Connection Flow Indicator
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("⤓ Inherits & Overlays Local Configs ⤓")
+                                .strong()
+                                .color(accent()),
+                        );
+                        ui.add_space(8.0);
+                    });
+
+                    // Layer 2: Active Project Sandbox
+                    ui.group(|ui| {
+                        ui.set_width(width - 24.0);
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("📁 Active Project Sandbox")
+                                        .strong()
+                                        .size(13.0),
+                                );
+                                ui.label(
+                                    egui::RichText::new(
+                                        self.resource_root.to_string_lossy().into_owned(),
+                                    )
+                                    .small()
+                                    .color(muted()),
+                                );
+                            });
+                            ui.add_space(4.0);
+
+                            let project_entries: Vec<_> = self
+                                .resource_catalog
+                                .entries
+                                .iter()
+                                .filter(|e| e.scope == resources::ResourceScope::Project)
+                                .collect();
+
+                            if project_entries.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "No local skills or MCPs in active project workspace.",
+                                    )
+                                    .small()
+                                    .color(muted()),
+                                );
+                            } else {
+                                ui.horizontal_wrapped(|ui| {
+                                    for entry in &project_entries {
+                                        let name = &entry.name;
+                                        let kind_str = match entry.kind {
+                                            resources::ResourceKind::Skill => "Skill 🎓",
+                                            resources::ResourceKind::Mcp => "MCP 🔌",
+                                            resources::ResourceKind::Instructions => {
+                                                "Instruction 📄"
+                                            }
+                                        };
+                                        ui.group(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(name).strong().small(),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(kind_str)
+                                                        .small()
+                                                        .color(muted()),
+                                                );
+                                            });
+                                        });
+                                    }
+                                });
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Add Project-Local Tool Configuration")
+                                    .strong()
+                                    .small(),
+                            );
+
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("MCP Name:").small());
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.new_mcp_name)
+                                        .desired_width(120.0),
+                                );
+
+                                ui.label(egui::RichText::new("Command/Path:").small());
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.new_mcp_cmd)
+                                        .desired_width(220.0),
+                                );
+
+                                if ui.button("+ Add Local MCP").clicked() {
+                                    self.add_local_mcp_server();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
+        }
+
+        fn load_agent_md(&mut self) {
+            let path = self.resource_root.join("AGENTS.md");
+            self.agent_md_text = fs::read_to_string(&path).unwrap_or_default();
+            self.agent_md_path = Some(path);
+        }
+
+        fn add_local_mcp_server(&mut self) {
+            if self.new_mcp_name.trim().is_empty() || self.new_mcp_cmd.trim().is_empty() {
+                self.resource_sync_feedback =
+                    Some("Please fill in both MCP name and command.".to_string());
+                return;
+            }
+            let path = self.resource_root.join("opencode.json");
+            let mut val = if path.exists() {
+                read_json(&path).unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+            if !val.is_object() {
+                val = serde_json::json!({});
+            }
+            if val.get("mcp").is_none() {
+                val["mcp"] = serde_json::json!({});
+            }
+            if let Some(mcp_obj) = val["mcp"].as_object_mut() {
+                mcp_obj.insert(
+                    self.new_mcp_name.trim().to_string(),
+                    serde_json::json!({
+                        "command": self.new_mcp_cmd.trim().to_string(),
+                        "args": []
+                    }),
+                );
+            }
+            if let Ok(content) = serde_json::to_string_pretty(&val) {
+                if fs::write(&path, content).is_ok() {
+                    self.resource_sync_feedback = Some(format!(
+                        "Added local MCP server '{}' successfully.",
+                        self.new_mcp_name
+                    ));
+                    self.new_mcp_name.clear();
+                    self.new_mcp_cmd.clear();
+                    self.refresh_resources();
+                } else {
+                    self.resource_sync_feedback =
+                        Some("Failed to write opencode.json settings.".to_string());
+                }
+            }
+        }
+
+        fn render_overview(&mut self, ui: &mut egui::Ui) {
             let Some(contract) = &self.contract else {
                 empty_state(
                     ui,
@@ -2144,15 +3060,30 @@ pub mod ui_egui {
                 );
                 return;
             };
+            let theme = crate::ui_theme::Theme::marraqueta();
+            let palette = theme.palette;
+            fn mono() -> egui::FontFamily {
+                egui::FontFamily::Name("IBM Plex Mono".into())
+            }
+            fn sans() -> egui::FontFamily {
+                egui::FontFamily::Name("IBM Plex Sans".into())
+            }
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Swarm map").strong().size(16.0));
+                ui.label(
+                    egui::RichText::new("Swarm map")
+                        .family(sans())
+                        .strong()
+                        .size(theme.type_scale.heading)
+                        .color(palette.text),
+                );
                 ui.label(
                     egui::RichText::new("stages flow left to right")
-                        .small()
-                        .color(muted()),
+                        .family(sans())
+                        .size(theme.type_scale.caption)
+                        .color(palette.muted),
                 );
             });
-            let column_width = 190.0;
+            let column_width = 220.0;
             let node_height = 58.0;
             let gap = 18.0;
             let max_tasks = contract
@@ -2165,18 +3096,32 @@ pub mod ui_egui {
                 contract.stages.len().max(1) as f32 * (column_width + gap),
                 54.0 + max_tasks as f32 * (node_height + gap),
             );
+
+            let mut to_select: Option<String> = None;
+
             egui::ScrollArea::both().show(ui, |ui| {
                 let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
                 let origin = response.rect.min;
                 let mut positions: HashMap<String, egui::Rect> = HashMap::new();
+                // Stage labels: bare name, no numbered markers (anti-slop).
                 for (stage_index, stage) in contract.stages.iter().enumerate() {
                     let x = origin.x + stage_index as f32 * (column_width + gap);
+                    if stage_index > 0 {
+                        // Draw a clean arrow before the stage name
+                        painter.text(
+                            egui::pos2(x - gap / 2.0 - 4.0, origin.y + 8.0),
+                            egui::Align2::CENTER_TOP,
+                            "→",
+                            egui::FontId::new(theme.type_scale.heading, sans()),
+                            palette.muted,
+                        );
+                    }
                     painter.text(
                         egui::pos2(x, origin.y + 8.0),
                         egui::Align2::LEFT_TOP,
                         &stage.name,
-                        egui::FontId::proportional(14.0),
-                        accent(),
+                        egui::FontId::new(theme.type_scale.heading, sans()),
+                        palette.text_dim,
                     );
                     for (task_index, task) in stage.tasks.iter().enumerate() {
                         let y = origin.y + 38.0 + task_index as f32 * (node_height + gap);
@@ -2190,6 +3135,8 @@ pub mod ui_egui {
                         }
                     }
                 }
+                // Connectors: muted line + small arrowhead (DAG is directed).
+                // No gradient, no shadow.
                 for stage in &contract.stages {
                     for task in &stage.tasks {
                         let Some(target) = positions.get(&task.task_id) else {
@@ -2197,55 +3144,164 @@ pub mod ui_egui {
                         };
                         for dependency in &task.needs {
                             if let Some(source) = positions.get(dependency) {
-                                painter.line_segment(
-                                    [source.right_center(), target.left_center()],
-                                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(62, 64, 74)),
-                                );
+                                let start = source.right_center();
+                                let end = target.left_center();
+                                let stroke_color = palette.border;
+                                let mid_x = start.x + (end.x - start.x) * 0.5;
+                                let p1 = egui::pos2(mid_x, start.y);
+                                let p2 = egui::pos2(mid_x, end.y);
+                                let stroke = egui::Stroke::new(1.0_f32, stroke_color);
+                                painter.line_segment([start, p1], stroke);
+                                painter.line_segment([p1, p2], stroke);
+                                painter.line_segment([p2, end], stroke);
+                                // Arrowhead: small filled triangle at the target end.
+                                let ah = 5.0;
+                                let tip = egui::pos2(end.x, end.y);
+                                let base_top = egui::pos2(end.x - ah, end.y - ah * 0.6);
+                                let base_bot = egui::pos2(end.x - ah, end.y + ah * 0.6);
+                                painter.add(egui::Shape::convex_polygon(
+                                    vec![tip, base_top, base_bot],
+                                    stroke_color,
+                                    egui::Stroke::NONE,
+                                ));
                             }
                         }
                     }
                 }
+
+                // Nodes: fill + label communicate state, not stripes or glow.
                 for stage in &contract.stages {
                     for task in &stage.tasks {
                         let Some(rect) = positions.get(&task.task_id) else {
                             continue;
                         };
-                        painter.rect_filled(*rect, 7.0, egui::Color32::from_rgb(23, 25, 31));
+                        let stale = false; // overview nodes don't carry staleness
+                        let (fill, text_color, border_color) = crate::ui_theme::status_colors(
+                            &task.status,
+                            stale,
+                            crate::ui_theme::BadgeMode::DagNode,
+                            &palette,
+                        );
+                        painter.rect_filled(*rect, theme.spacing.radius_card, fill);
                         painter.rect_stroke(
                             *rect,
-                            7.0,
-                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(46, 48, 58)),
+                            theme.spacing.radius_card,
+                            egui::Stroke::new(1.0_f32, border_color),
                             egui::StrokeKind::Inside,
                         );
-                        painter.circle_filled(
-                            egui::pos2(rect.left() + 13.0, rect.top() + 16.0),
-                            4.0,
-                            status_color(&task.status, false),
-                        );
+
+                        // Card interactive select target
+                        let card_resp =
+                            ui.interact(*rect, ui.id().with(&task.task_id), egui::Sense::click());
+                        if card_resp.clicked() {
+                            to_select = Some(task.task_id.clone());
+                        }
+
+                        // Running node: ▸ glyph + bold + larger title.
+                        let is_running = task.status == "in_progress";
+                        let label_text = task.source_id.as_deref().unwrap_or(&task.task_id);
+                        let title = if is_running {
+                            format!("▸ {}", label_text)
+                        } else {
+                            label_text.to_string()
+                        };
+                        let title_truncated = Self::truncate_text(&title, 24);
+                        let title_size = if is_running {
+                            theme.type_scale.mono + 1.0
+                        } else {
+                            theme.type_scale.mono
+                        };
                         painter.text(
-                            egui::pos2(rect.left() + 24.0, rect.top() + 9.0),
+                            egui::pos2(rect.left() + 11.0, rect.top() + 9.0),
                             egui::Align2::LEFT_TOP,
-                            task.source_id.as_deref().unwrap_or(&task.task_id),
-                            egui::FontId::proportional(13.0),
-                            egui::Color32::from_rgb(224, 225, 230),
+                            title_truncated,
+                            egui::FontId::new(title_size, mono()),
+                            text_color,
                         );
+
+                        // Draw static status + model text
+                        let model_name =
+                            Self::short_model_name(task.model.as_deref().unwrap_or("local"));
+                        let sub_text = format!("{}  ·  {}", task.status, model_name);
+                        let sub_text_truncated = Self::truncate_text(&sub_text, 28);
                         painter.text(
-                            egui::pos2(rect.left() + 13.0, rect.top() + 34.0),
+                            egui::pos2(rect.left() + 11.0, rect.top() + 34.0),
                             egui::Align2::LEFT_TOP,
-                            format!(
-                                "{}  ·  {}",
-                                task.status,
-                                task.model.as_deref().unwrap_or("local")
-                            ),
-                            egui::FontId::proportional(11.0),
-                            muted(),
+                            sub_text_truncated,
+                            egui::FontId::new(theme.type_scale.mono_small, mono()),
+                            text_color,
                         );
                     }
                 }
             });
+
+            if let Some(id) = to_select {
+                self.selected_task = Some(id);
+            }
         }
 
-        fn render_activity(&self, ui: &mut egui::Ui) {
+        fn truncate_text(text: &str, max_len: usize) -> String {
+            if text.chars().count() > max_len {
+                let truncated: String = text.chars().take(max_len - 3).collect();
+                format!("{}...", truncated)
+            } else {
+                text.to_string()
+            }
+        }
+
+        fn short_model_name(name: &str) -> String {
+            match name {
+                "zai-coding-plan/glm-5.2" => "GLM5.2".to_string(),
+                "Gemini 3.5 Flash (Medium)" => "G3.5F (Med)".to_string(),
+                "Gemini 3.5 Flash (High)" => "G3.5F (High)".to_string(),
+                "Gemini 3.5 Flash (Low)" => "G3.5F (Low)".to_string(),
+                "Gemini 3.1 Pro (Low)" => "G3.1P (Low)".to_string(),
+                "Gemini 3.1 Pro (High)" => "G3.1P (High)".to_string(),
+                "Claude Sonnet 4.6 (Thinking)" => "C4.6S (Think)".to_string(),
+                "Claude Opus 4.6 (Thinking)" => "C4.6O (Think)".to_string(),
+                "GPT-OSS 120B (Medium)" => "GPT-OSS (Med)".to_string(),
+                "5.6 Sol" => "Sol".to_string(),
+                "5.6 Terra" => "Terra".to_string(),
+                "5.6 Luna" => "Luna".to_string(),
+                "5.5" => "Codex 5.5".to_string(),
+                "5.4" => "Codex 5.4".to_string(),
+                "5.4 Mini" => "Codex Mini".to_string(),
+                other => other.to_string(),
+            }
+        }
+
+        fn update_task_agent_full(
+            &self,
+            task_id: &str,
+            model: &str,
+            provider: &str,
+            wrapper: &str,
+            variant: Option<&str>,
+        ) {
+            if let Some(reader) = &self.reader {
+                let task_file = reader
+                    .run_dir
+                    .join("tasks")
+                    .join(format!("{}.json", task_id));
+                if task_file.exists() {
+                    if let Some(mut val) = read_json(&task_file) {
+                        val["model"] = serde_json::Value::String(model.to_string());
+                        val["provider"] = serde_json::Value::String(provider.to_string());
+                        val["wrapper"] = serde_json::Value::String(wrapper.to_string());
+                        if let Some(var) = variant {
+                            val["variant"] = serde_json::Value::String(var.to_string());
+                        } else {
+                            val.as_object_mut().map(|o| o.remove("variant"));
+                        }
+                        if let Ok(content) = serde_json::to_string_pretty(&val) {
+                            let _ = fs::write(&task_file, content);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn render_activity(&mut self, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new("Activity").strong().size(16.0));
             if self.events.is_empty() {
                 empty_state(
@@ -2255,6 +3311,7 @@ pub mod ui_egui {
                 );
                 return;
             }
+            let mut to_select: Option<String> = None;
             egui::ScrollArea::vertical().show_rows(ui, 30.0, self.events.len(), |ui, range| {
                 for index in range {
                     let event = &self.events[self.events.len() - 1 - index];
@@ -2262,7 +3319,9 @@ pub mod ui_egui {
                         ui.label(egui::RichText::new("●").color(accent()));
                         ui.label(egui::RichText::new(&event.event).strong());
                         if let Some(task_id) = &event.task_id {
-                            ui.label(egui::RichText::new(task_id).small().color(muted()));
+                            if ui.link(task_id).clicked() {
+                                to_select = Some(task_id.clone());
+                            }
                         }
                         if let Some(provider) = &event.provider {
                             ui.label(egui::RichText::new(provider).small().color(muted()));
@@ -2270,19 +3329,20 @@ pub mod ui_egui {
                     });
                 }
             });
+            if let Some(id) = to_select {
+                self.selected_task = Some(id);
+            }
         }
 
         fn render_quota_strip(&self, ui: &mut egui::Ui) {
             if let Some(snapshot) = &self.quota_snapshot {
+                let palette = crate::ui_theme::Theme::marraqueta().palette;
                 for entry in &snapshot.entries {
                     let remaining = quota_remaining(&entry.windows);
                     let color = quota_color(remaining);
                     let response = egui::Frame::new()
-                        .fill(egui::Color32::from_rgb(20, 22, 27))
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgb(42, 45, 54),
-                        ))
+                        .fill(palette.bg_elevated)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(6, 3))
                         .show(ui, |ui| {
@@ -2291,7 +3351,7 @@ pub mod ui_egui {
                                 ui.label(
                                     egui::RichText::new(quota_short_label(&entry.key))
                                         .small()
-                                        .color(egui::Color32::from_rgb(205, 207, 214)),
+                                        .color(palette.text_dim),
                                 );
                                 ui.label(
                                     egui::RichText::new(format!("{remaining:.0}%"))
@@ -2376,7 +3436,10 @@ pub mod ui_egui {
                     self.filter.clear();
                 }
                 if let Some(err) = &self.error {
-                    ui.label(egui::RichText::new(err).color(egui::Color32::from_rgb(220, 80, 80)));
+                    ui.label(
+                        egui::RichText::new(err)
+                            .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
+                    );
                 }
             });
             ui.separator();
@@ -2392,7 +3455,7 @@ pub mod ui_egui {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(format!("error: {err}"))
-                            .color(egui::Color32::from_rgb(220, 80, 80)),
+                            .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
                     );
                 });
                 return;
@@ -2455,9 +3518,11 @@ pub mod ui_egui {
                                         ui.label(egui::RichText::new("●").color(color));
                                         if row.stale {
                                             ui.label(
-                                                egui::RichText::new("stale")
-                                                    .small()
-                                                    .color(egui::Color32::from_rgb(190, 130, 220)),
+                                                egui::RichText::new("stale").small().color(
+                                                    crate::ui_theme::Theme::marraqueta()
+                                                        .palette
+                                                        .pill_stale,
+                                                ),
                                             );
                                         }
                                         ui.selectable_label(is_sel, rich)
@@ -2534,7 +3599,10 @@ pub mod ui_egui {
                     }
                     row("role", &node.role);
                     row("provider", node.provider.as_deref().unwrap_or("—"));
-                    row("model", node.model.as_deref().unwrap_or("—"));
+                    row(
+                        "model",
+                        &Self::short_model_name(node.model.as_deref().unwrap_or("—")),
+                    );
                     if let Some(wrapper) = &node.wrapper {
                         row("wrapper", wrapper);
                     }
@@ -2550,6 +3618,21 @@ pub mod ui_egui {
                             &format!("{age}s ago · {} bytes", node.worker_log_bytes),
                         );
                     }
+                    if let Some(backend) = &node.terminal_backend {
+                        let target = match (&node.terminal_session, &node.terminal_pane_id) {
+                            (Some(session), Some(pane)) => {
+                                format!("{backend} · {session} · {pane}")
+                            }
+                            _ => backend.clone(),
+                        };
+                        row("terminal", &target);
+                    }
+                    if node.provider_subagent_visibility != "not_reported" {
+                        row("subagent visibility", &node.provider_subagent_visibility);
+                    }
+                    if !node.provider_subagents.is_empty() {
+                        row("provider subagents", &node.provider_subagents.join(", "));
+                    }
                     row("agent", &node.agent.agent_id);
                     if let Some(owner) = &node.agent.owner {
                         row("owner", owner);
@@ -2558,9 +3641,169 @@ pub mod ui_egui {
                         row("needs", &node.needs.join(", "));
                     }
                 });
+
+            if node.terminal_backend.as_deref() == Some("herdr") {
+                if let (Some(session), Some(workspace)) =
+                    (&node.terminal_session, &node.terminal_workspace_id)
+                {
+                    if ui.button("Focus Herd pane").clicked() {
+                        self.steer_feedback = Some(focus_herdr_workspace(session, workspace));
+                    }
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Route & Model Override").strong());
+
+            let current_provider = node.provider.as_deref().unwrap_or("mock");
+            let current_family = match current_provider {
+                "codex_cli" => "Codex (Account 1)",
+                "hermes" => "Codex (Account 2)",
+                "antigravity_cli" => "Antigravity / Gemini",
+                "opencode" => "OpenCode",
+                _ => "Mock / Offline",
+            };
+
+            let mut selected_family = current_family;
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Provider:").small().color(muted()));
+                egui::ComboBox::from_id_salt(ui.id().with(&node.task_id).with("family_combo"))
+                    .selected_text(selected_family)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut selected_family,
+                            "Mock / Offline",
+                            "Mock / Offline",
+                        );
+                        ui.selectable_value(
+                            &mut selected_family,
+                            "Codex (Account 1)",
+                            "Codex (Account 1)",
+                        );
+                        ui.selectable_value(
+                            &mut selected_family,
+                            "Codex (Account 2)",
+                            "Codex (Account 2)",
+                        );
+                        ui.selectable_value(
+                            &mut selected_family,
+                            "Antigravity / Gemini",
+                            "Antigravity / Gemini",
+                        );
+                        ui.selectable_value(&mut selected_family, "OpenCode", "OpenCode");
+                    });
+            });
+
+            let current_model = node.model.as_deref().unwrap_or("mock-worker");
+            let mut selected_model = current_model.to_string();
+
+            let models_for_family = match selected_family {
+                "Codex (Account 1)" | "Codex (Account 2)" => {
+                    vec!["5.6 Sol", "5.6 Terra", "5.6 Luna", "5.5", "5.4", "5.4 Mini"]
+                }
+                "Antigravity / Gemini" => vec![
+                    "Gemini 3.5 Flash (Medium)",
+                    "Gemini 3.5 Flash (High)",
+                    "Gemini 3.5 Flash (Low)",
+                    "Gemini 3.1 Pro (Low)",
+                    "Gemini 3.1 Pro (High)",
+                    "Claude Sonnet 4.6 (Thinking)",
+                    "Claude Opus 4.6 (Thinking)",
+                    "GPT-OSS 120B (Medium)",
+                ],
+                "OpenCode" => vec!["zai-coding-plan/glm-5.2"],
+                _ => vec!["mock-worker"],
+            };
+
+            if !models_for_family.contains(&selected_model.as_str()) {
+                selected_model = models_for_family[0].to_string();
+            }
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Model:").small().color(muted()));
+                egui::ComboBox::from_id_salt(ui.id().with(&node.task_id).with("model_combo"))
+                    .selected_text(Self::short_model_name(&selected_model))
+                    .show_ui(ui, |ui| {
+                        for m in &models_for_family {
+                            ui.selectable_value(
+                                &mut selected_model,
+                                m.to_string(),
+                                Self::short_model_name(m),
+                            );
+                        }
+                    });
+            });
+
+            let is_codex = selected_family.starts_with("Codex");
+            let mut selected_variant = node.variant.as_deref().unwrap_or("auto").to_string();
+
+            if is_codex {
+                let current_effort_label = match selected_variant.as_str() {
+                    "minimal" => "Light",
+                    "medium" => "Medium",
+                    "high" => "High",
+                    _ => "Light",
+                };
+                let mut selected_effort_label = current_effort_label;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Effort:").small().color(muted()));
+                    egui::ComboBox::from_id_salt(ui.id().with(&node.task_id).with("effort_combo"))
+                        .selected_text(selected_effort_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut selected_effort_label, "Light", "Light");
+                            ui.selectable_value(&mut selected_effort_label, "Medium", "Medium");
+                            ui.selectable_value(&mut selected_effort_label, "High", "High");
+                        });
+                });
+                selected_variant = match selected_effort_label {
+                    "Light" => "minimal",
+                    "Medium" => "medium",
+                    "High" => "high",
+                    _ => "minimal",
+                }
+                .to_string();
+            }
+
+            let has_family_changed = selected_family != current_family;
+            let has_model_changed = selected_model != current_model;
+            let has_variant_changed =
+                is_codex && selected_variant != node.variant.as_deref().unwrap_or("auto");
+
+            if has_family_changed || has_model_changed || has_variant_changed {
+                let provider = match selected_family {
+                    "Codex (Account 1)" => "codex_cli",
+                    "Codex (Account 2)" => "hermes",
+                    "Antigravity / Gemini" => "antigravity_cli",
+                    "OpenCode" => "opencode",
+                    _ => "mock",
+                };
+                let wrapper = match selected_family {
+                    "Codex (Account 1)" => "codex",
+                    "Codex (Account 2)" => "hermes",
+                    "Antigravity / Gemini" => "gemini",
+                    "OpenCode" => "opencode",
+                    _ => "mock",
+                };
+                self.update_task_agent_full(
+                    &node.task_id,
+                    &selected_model,
+                    provider,
+                    wrapper,
+                    if is_codex {
+                        Some(&selected_variant)
+                    } else {
+                        None
+                    },
+                );
+            }
+
             if let Some(e) = &node.error {
                 ui.separator();
-                ui.label(egui::RichText::new("error").color(egui::Color32::from_rgb(220, 80, 80)));
+                ui.label(
+                    egui::RichText::new("error")
+                        .color(crate::ui_theme::Theme::marraqueta().palette.pill_failed),
+                );
                 ui.label(egui::RichText::new(e).monospace());
             }
 
@@ -2688,6 +3931,40 @@ pub mod ui_egui {
         ctx.request_repaint();
     }
 
+    fn render_rulesync_sources(
+        ui: &mut egui::Ui,
+        sources: &[String],
+        empty: &str,
+        muted: egui::Color32,
+    ) {
+        if sources.is_empty() {
+            ui.label(egui::RichText::new(empty).small().color(muted));
+            return;
+        }
+        for source in sources {
+            ui.label(egui::RichText::new(source).family(egui::FontFamily::Monospace));
+        }
+    }
+
+    fn rulesync_rule_files(root: &Path) -> Vec<String> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
+                    if let Ok(relative) = path.strip_prefix(root) {
+                        files.push(relative.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
     fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
         ui.add_space(48.0);
         ui.vertical_centered(|ui| {
@@ -2698,6 +3975,38 @@ pub mod ui_egui {
 
     fn steer_capable(wrapper: &str) -> bool {
         matches!(wrapper, "codex" | "opencode" | "kilo" | "mock")
+    }
+
+    fn herdr_program() -> String {
+        if let Ok(path) = std::env::var("SWARMS_HERDR_BIN") {
+            return path;
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let candidate = PathBuf::from(local)
+                .join("Programs")
+                .join("Herdr")
+                .join("bin")
+                .join("herdr.exe");
+            if candidate.is_file() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+        "herdr".to_string()
+    }
+
+    fn herdr_session() -> String {
+        std::env::var("SWARMS_HERDR_SESSION").unwrap_or_else(|_| "swarms".to_string())
+    }
+
+    fn focus_herdr_workspace(session: &str, workspace: &str) -> String {
+        match std::process::Command::new(herdr_program())
+            .args(["--session", session, "workspace", "focus", workspace])
+            .status()
+        {
+            Ok(status) if status.success() => "Herd pane focused".to_string(),
+            Ok(status) => format!("Herd focus failed (exit {:?})", status.code()),
+            Err(error) => format!("Could not start Herd: {error}"),
+        }
     }
 
     fn quota_label(key: &str) -> &str {
@@ -2850,8 +4159,11 @@ pub mod ui_egui {
         });
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 5.0), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 2.5, egui::Color32::from_rgb(47, 50, 59));
+        ui.painter().rect_filled(
+            rect,
+            2.5,
+            crate::ui_theme::Theme::marraqueta().palette.bg_elevated,
+        );
         ui.painter().rect_filled(
             egui::Rect::from_min_size(
                 rect.min,
@@ -2873,12 +4185,13 @@ pub mod ui_egui {
     }
 
     fn quota_color(remaining: f64) -> egui::Color32 {
+        let p = crate::ui_theme::Theme::marraqueta().palette;
         if remaining < 15.0 {
-            egui::Color32::from_rgb(235, 91, 91)
+            p.pill_failed
         } else if remaining < 35.0 {
-            egui::Color32::from_rgb(225, 170, 78)
+            p.pill_blocked
         } else {
-            egui::Color32::from_rgb(85, 198, 118)
+            p.pill_done
         }
     }
 
@@ -2901,18 +4214,14 @@ pub mod ui_egui {
             .join(" ")
     }
 
+    /// Semantic status color for a task status string. Thin wrapper over
+    /// `ui_theme::status_colors(..., BadgeMode::DagNode, ...)` returning the
+    /// fill color, kept as a local shortcut for the task-tree call sites.
     fn status_color(status: &str, stale: bool) -> egui::Color32 {
-        if stale {
-            return egui::Color32::from_rgb(190, 130, 220);
-        }
-        match status {
-            "completed" => egui::Color32::from_rgb(90, 190, 110),
-            "in_progress" => egui::Color32::from_rgb(90, 160, 230),
-            "failed" => egui::Color32::from_rgb(220, 80, 80),
-            "queued" => egui::Color32::from_rgb(150, 150, 150),
-            "blocked" => egui::Color32::from_rgb(230, 170, 70),
-            _ => egui::Color32::from_rgb(150, 150, 150),
-        }
+        let p = crate::ui_theme::Theme::marraqueta().palette;
+        let (fill, _, _) =
+            crate::ui_theme::status_colors(status, stale, crate::ui_theme::BadgeMode::DagNode, &p);
+        fill
     }
 
     /// Parse the minimal CLI: --run-root, --run-id, --ready-file,
@@ -2949,11 +4258,39 @@ pub mod ui_egui {
         cwd.join(".agent/swarm/runs")
     }
 
+    fn marraqueta_toast_icon() -> egui::IconData {
+        const SIZE: usize = 32;
+        let mut rgba = vec![0_u8; SIZE * SIZE * 4];
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let rounded = ((6..=25).contains(&x) && (8..=27).contains(&y))
+                    || ((8..=23).contains(&x) && (5..=29).contains(&y))
+                    || ((5..=26).contains(&x) && (11..=25).contains(&y));
+                if !rounded {
+                    continue;
+                }
+                let crust = x <= 7 || x >= 24 || y >= 25 || (y <= 9 && (8..=23).contains(&x));
+                let (r, g, b) = if crust {
+                    (156, 102, 32)
+                } else {
+                    (245, 230, 200)
+                };
+                let index = (y * SIZE + x) * 4;
+                rgba[index..index + 4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+        egui::IconData {
+            rgba,
+            width: SIZE as u32,
+            height: SIZE as u32,
+        }
+    }
+
     pub fn run() -> eframe::Result {
         let (run_root, run_id, ready_file, bench) = parse_args();
         let runs = list_runs(&run_root);
         let initial = run_id.or_else(|| (runs.len() == 1).then(|| runs[0].run_id.clone()));
-        let mut app = ObservabilityApp::new(run_root, None, ready_file, bench);
+        let mut app = ObservabilityApp::new(run_root, initial.clone(), ready_file, bench);
         app.runs = runs;
         app.last_runs_poll = Some(Instant::now());
         if let Some(run_id) = initial {
@@ -2962,7 +4299,8 @@ pub mod ui_egui {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1200.0, 800.0])
-                .with_title("SWARMS"),
+                .with_title("SWARMS")
+                .with_icon(std::sync::Arc::new(marraqueta_toast_icon())),
             ..Default::default()
         };
         eframe::run_native(
@@ -2970,6 +4308,7 @@ pub mod ui_egui {
             options,
             Box::new(move |cc| {
                 egui_extras::install_image_loaders(&cc.egui_ctx);
+                crate::ui_theme::Theme::install_fonts(&cc.egui_ctx);
                 apply_theme(&cc.egui_ctx);
                 Ok(Box::new(app))
             }),
@@ -3125,6 +4464,63 @@ pub mod ui_egui {
                 runs
             );
             fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn rulesync_rule_files_lists_nested_markdown_only() {
+            let root = std::env::temp_dir().join(format!("swarms-rulesync-{}", unix_ms()));
+            fs::create_dir_all(root.join("nested")).unwrap();
+            fs::write(root.join("first.md"), "first").unwrap();
+            fs::write(root.join("nested").join("second.md"), "second").unwrap();
+            fs::write(root.join("nested").join("ignore.json"), "{}").unwrap();
+
+            assert_eq!(
+                rulesync_rule_files(&root),
+                vec!["first.md".to_string(), "nested/second.md".to_string()]
+            );
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn task_snapshot_preserves_herdr_terminal_fields() {
+            let task: serde_json::Value = serde_json::from_str(
+                r#"{
+                "task_id": "t-herdr",
+                "status": "in_progress",
+                "terminal_backend": "herdr",
+                "terminal_session": "swarms",
+                "terminal_workspace_id": "ws-abc",
+                "terminal_pane_id": "pane-123"
+            }"#,
+            )
+            .unwrap();
+            let node = build_task_node(
+                &task,
+                &std::collections::HashMap::new(),
+                &std::collections::HashMap::new(),
+                &[],
+            );
+            assert_eq!(node.terminal_backend.as_deref(), Some("herdr"));
+            assert_eq!(node.terminal_session.as_deref(), Some("swarms"));
+            assert_eq!(node.terminal_workspace_id.as_deref(), Some("ws-abc"));
+            assert_eq!(node.terminal_pane_id.as_deref(), Some("pane-123"));
+        }
+
+        #[test]
+        fn subagent_visibility_parsing_preserves_opaque_and_reported() {
+            for vis in ["opaque", "reported", "not_reported"] {
+                let json = format!(
+                    r#"{{"task_id":"t-vis","status":"pending","provider_subagent_visibility":"{vis}"}}"#
+                );
+                let task: serde_json::Value = serde_json::from_str(&json).unwrap();
+                let node = build_task_node(
+                    &task,
+                    &std::collections::HashMap::new(),
+                    &std::collections::HashMap::new(),
+                    &[],
+                );
+                assert_eq!(node.provider_subagent_visibility, vis);
+            }
         }
     }
 }

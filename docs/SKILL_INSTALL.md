@@ -1,55 +1,60 @@
-# Install The SWARMS Skill
+# Install SWARMS skills
 
-`AGENTS.md` and `CLAUDE.md` help agents after they are inside this repository. The installable skill helps agents know how to use SWARMS from other projects too.
+Use the two skills together without duplicating their responsibilities:
 
-The skill lives at:
+- `.skillshare/skills/swarms/` teaches an agent to create a SWARMS contract and operate the
+  native Rust runtime and its observer UI.
+- `.skillshare/skills/multi-provider-agent-orchestration/` teaches an agent how to split,
+  delegate, observe and integrate work across coding agents. It is independent
+  of this repository's runtime.
 
-```text
-skills/swarms/
-```
+`AGENTS.md` is the repository contract once an agent is already working in
+SWARMS. The installable skills make the two capabilities discoverable from
+other projects.
 
 ## Codex
 
-Copy or symlink the skill folder into your Codex skills directory:
+Copy or symlink both folders into the Codex skills directory:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
-Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\multi-provider-agent-orchestration "$env:USERPROFILE\.codex\skills\multi-provider-agent-orchestration"
 ```
 
-Or from macOS/Linux:
+On macOS/Linux:
 
 ```bash
 mkdir -p ~/.codex/skills
-cp -R skills/swarms ~/.codex/skills/swarms
+cp -R .skillshare/skills/swarms ~/.codex/skills/swarms
+cp -R .skillshare/skills/multi-provider-agent-orchestration ~/.codex/skills/multi-provider-agent-orchestration
 ```
 
-## Claude Code
+## Other agent harnesses
 
-Claude Code does not use the same skill loader everywhere, so keep both:
+Copy each required folder into the harness's Markdown-skill location. If it
+only supports custom instructions, reference `.skillshare/skills/swarms/SKILL.md` for
+runtime operation and `.skillshare/skills/multi-provider-agent-orchestration/SKILL.md` for
+delegation policy.
 
-- `CLAUDE.md` in the SWARMS repo;
-- `skills/swarms/SKILL.md` copied into any agent/skill system that supports Markdown skills.
-
-If your tool supports custom instructions, paste or reference `skills/swarms/SKILL.md`.
-
-## Skillshare
-
-If you use Skillshare or another multi-agent skill sync tool, point it at `skills/swarms/` and sync to Codex, Claude, OpenCode, or other supported targets.
+Within this repository, `skillshare sync -p` distributes exactly these two
+canonical skills to Codex, Gemini, Antigravity and OpenCode.
 
 ## Validation
 
 After installing, start a fresh agent context and ask:
 
 ```text
-Use the SWARMS skill to run the offline doctor and mock benchmark.
+Use the SWARMS skill to create a mock workflow contract, run it, and open the observer UI.
 ```
 
-The agent should run:
+It should run the Rust lifecycle, beginning with:
 
 ```powershell
-python scripts\swarm.py doctor
-python scripts\swarm.py run --plan docs\workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+cargo run --manifest-path rust/Cargo.toml -- doctor
+cargo run --manifest-path rust/Cargo.toml -- review --plan <plan.json>
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan <plan.json> --force
 ```
 
-It should not run Gemini, Codex, Claude, OpenCode, or any paid provider unless you explicitly ask.
+It must use `mock` unless real configured providers were explicitly authorized.
+It must not treat legacy timeout fields as worker-kill deadlines.
