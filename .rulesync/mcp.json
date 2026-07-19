@@ -1,0 +1,11 @@
+{
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/mcp-schema.json",
+  "mcpServers": {
+    "rulesync": {
+      "type": "stdio",
+      "command": "rulesync",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}

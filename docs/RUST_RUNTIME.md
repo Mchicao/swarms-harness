@@ -38,7 +38,29 @@ does not affect scheduling, quotas, run paths, or checkpoint identity.
 | `model.rs` | Domain types: Plan, Task, Provider, ThinkingLevel, SessionConfig |
 | `quota.rs` | Read-only external quota snapshot and freshness/threshold guard |
 | `review.rs` | Static plan validation: DAG, routes, thinking, session, artifacts |
-| `runtime.rs` | Scheduler: DAG waves, retries, timeout, resume, verify, artifacts |
+| `runtime.rs` | Scheduler: DAG waves, retries, progreso observable, resume, verify, artifacts |
+
+## Long-running workers
+
+El runtime Rust no aplica deadlines ni mata workers por tiempo. Los campos
+históricos `default_timeout_seconds` y `timeout_seconds` se aceptan para leer
+planes anteriores, pero no se ejecutan. Cada heartbeat observa el tamaño y la
+modificación de `worker.log`; la UI marca una tarea `stale` si no hay progreso,
+sin cambiar su estado ni cancelar el proceso.
+
+En Windows, los workers reales abren por defecto una consola de sólo lectura
+que sigue `worker.log` mientras el coordinador continúa en segundo plano. Usa
+`$env:SWARMS_WORKER_CONSOLES = "hidden"` para suprimir esas ventanas.
+
+### Herd terminal backend
+
+Set `$env:SWARMS_TERMINAL_BACKEND = "herdr"` before `swarms-rs run` to show
+real-worker logs in persistent Herd panes instead of separate PowerShell
+windows. SWARMS still owns worker processes, retries, quotas and raw logs;
+Herd is the observable terminal surface. The task snapshot records its Herd
+session and pane ID, which `swarms-ui` displays. If Herd is unavailable, the
+runtime falls back to the native Windows console. Set `SWARMS_HERDR_BIN` or
+`SWARMS_HERDR_SESSION` only when the default executable/session must change.
 | `adapter.rs` | Native adapters: mock, CLI command builders, OpenAI-compat HTTP, session/usage parsing |
 | `session.rs` | Session affinity store: persist, validate, reuse, lock |
 | `telemetry.rs` | Usage normalisation, task state, report generation |

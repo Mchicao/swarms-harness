@@ -43,6 +43,8 @@ Consumers may rely on these fields:
   "status": "in_progress",
   "attempts": 2,
   "heartbeat_unix_ms": 1784145600000,
+  "worker_log_bytes": 1248,
+  "last_progress_unix_ms": 1784145600000,
   "error": null
 }
 ```
@@ -61,9 +63,11 @@ fan-out but hides identifiers, and `reported` only when machine-readable logs
 provide explicit child IDs. In the latter case, adapters may append those IDs
 to `provider_subagents`; the two child lists remain separate.
 
-The UI should treat a running task as stale only relative to
-`workflow.json.heartbeat_interval_seconds`, and label it as stale rather than
-changing its status. Unknown fields must be ignored for forward compatibility.
+The UI should treat a running task as stale when `last_progress_unix_ms` is
+older than `workflow.json.heartbeat_interval_seconds`; it falls back to the
+coordinator heartbeat for historical runs. `stale` is visual only and never
+cancels or changes the task status. Unknown fields must be ignored for forward
+compatibility.
 
 ## Event stream
 

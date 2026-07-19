@@ -29,6 +29,16 @@ cargo run --release --manifest-path rust/Cargo.toml -- `
 `--force` and `--resume` are mutually exclusive. `--force` wipes the run
 directory and starts over; `--resume` preserves completed work.
 
+## Sin deadlines de worker
+
+El runtime Rust no cancela workers ni verificaciones por un timeout de plan.
+Los campos históricos `default_timeout_seconds` y `timeout_seconds` permanecen
+como compatibilidad de lectura, pero no crean deadlines. La detección de un
+agente posiblemente pegado es observacional: el scheduler registra
+`worker_log_bytes` y `last_progress_unix_ms`, la UI muestra la consola/log y
+marca `stale` si no hay avance. El usuario decide si investigar, orientar o
+interrumpir el run; el runtime no mata el proceso sólo por silencio.
+
 ## Idempotent checkpoints
 
 Every task has a **checkpoint key**: a stable FNV-1a hash of its full

@@ -56,3 +56,10 @@ uv.lock
 
 # Visual brainstorming companion (superpowers)
 .superpowers/
+
+# Local agent tool dirs (Skillshare sync targets, not source)
+.aider/
+.claude/
+.codex/
+.cursor/
+.hermes/

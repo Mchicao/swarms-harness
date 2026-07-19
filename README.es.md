@@ -69,7 +69,7 @@ SWARMS incluye rutas, wrappers, docs o telemetria para:
 - Gateways compatibles con OpenAI configurados por el usuario.
 - Workers offline `mock` para CI, demos y configuracion segura.
 - Parsing de tokens/costos para logs de Codex, OpenCode, salidas CLI, cache reads, cache writes y reasoning tokens.
-- Una skill SWARMS en `skills/swarms/` para que el agente de cada persona ayude a configurar planes, proveedores, limites y verificacion.
+- Dos skills en `.skillshare/skills/`: `swarms` para operar este runtime y `multi-provider-agent-orchestration` para delegar trabajo entre agentes.
 
 El router versionado solo habilita `mock`. Eso mantiene el clone local y gratis. Tu configuracion privada vive en archivos ignorados como `config/swarm_router.local.json` y en tus propias variables de entorno.
 
@@ -84,10 +84,11 @@ Tu defines la politica:
 - Los provider caps limitan concurrencia por ruta.
 - La telemetria registra lo que reporta la CLI o API, y marca uso faltante en vez de fingir que fue gratis.
 
-El repo incluye una skill para enseñar a agentes compatibles a usar SWARMS:
+El repo incluye dos skills para enseñar a agentes compatibles a operar SWARMS y delegar trabajo:
 
 ```powershell
-Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\multi-provider-agent-orchestration "$env:USERPROFILE\.codex\skills\multi-provider-agent-orchestration"
 ```
 
 Despues de eso, un agente puede revisar tu setup local, crear un plan, revisarlo y correr la validacion offline antes de que habilites rutas reales.

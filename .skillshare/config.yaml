@@ -4,5 +4,13 @@ targets:
     - gemini
     - antigravity
     - opencode
+    - copilot
+    - hermes
+    - openclaw
+    - xcode-codex
+    - claude
+    - cursor
+    - name: aider
+      path: .aider/skills
 audit:
     block_threshold: CRITICAL

@@ -67,7 +67,7 @@ SWARMS includes compatibility paths, wrappers, docs, routing names, or telemetry
 - OpenAI-compatible gateway routes configured by the user.
 - Offline `mock` workers for CI, demos, and safe setup.
 - Token/cost parsing for Codex logs, OpenCode logs, stdout-like CLI usage, cache reads, cache writes, and reasoning tokens.
-- A bundled SWARMS skill in `skills/swarms/` so a user's agent can help configure plans, providers, caps, and verification.
+- Two bundled skills in `.skillshare/skills/`: `swarms` for operating this runtime and `multi-provider-agent-orchestration` for safe delegation across agents.
 
 The committed router enables only `mock`. That keeps a clone local and free. Your private setup lives in ignored files such as `config/swarm_router.local.json` and your own environment variables.
 
@@ -85,7 +85,7 @@ You choose the policy:
 The included skill teaches compatible agents how to use SWARMS:
 
 ```powershell
-Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
 ```
 
 After that, an agent can inspect your local provider setup, draft a plan, review it, and run the offline validation path before you enable real routes.

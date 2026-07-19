@@ -139,6 +139,26 @@ fn dag_self_dependency() {
     assert!(!cycles.is_empty(), "self-dependency should be detected");
 }
 
+#[test]
+fn legacy_timeout_fields_never_create_a_worker_deadline() {
+    let mut task = make_task("long", &[], "mock");
+    task.spec.timeout_seconds = Some(1);
+    let plan = model::Plan {
+        schema_version: None,
+        goal: None,
+        project: None,
+        planner: None,
+        review_policy: None,
+        budget_policy: model::BudgetPolicy::default(),
+        stages: Vec::new(),
+        thinking: None,
+        session: None,
+        default_timeout_seconds: Some(1),
+        default_max_attempts: None,
+    };
+    assert_eq!(task.spec.effective_timeout(&plan), None);
+}
+
 // ---------------------------------------------------------------------------
 // 2. Adapter command mappings
 // ---------------------------------------------------------------------------
@@ -283,6 +303,49 @@ fn agy_full_policy_accepts_edits() {
         .any(|args| args == ["--mode", "accept-edits"]));
 }
 
+#[test]
+fn agy_print_prompt_follows_session_options() {
+    let mut task = make_task("t1", &[], "mock");
+    task.provider.model = "Gemini 3.5 Flash (Medium)".to_string();
+    let spec = adapter::build_cli_command(
+        AdapterKind::Agy,
+        &task,
+        "complete the assigned task",
+        ThinkingLevel::Auto,
+        None,
+        "antigravity_cli",
+    )
+    .unwrap();
+
+    let print_index = spec.args.iter().position(|arg| arg == "--print").unwrap();
+    let project_index = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--new-project")
+        .unwrap();
+    assert!(project_index < print_index);
+    assert_eq!(
+        spec.args.get(print_index + 1).map(String::as_str),
+        Some("complete the assigned task")
+    );
+    let model_index = spec.args.iter().position(|arg| arg == "--model").unwrap();
+    assert!(model_index < print_index);
+}
+
+#[test]
+fn task_prompt_binds_the_declared_workspace() {
+    let task = make_task("workspace", &[], "mock");
+    let prompt = runtime::build_task_prompt(
+        std::path::Path::new("."),
+        std::path::Path::new("C:\\workspaces\\target"),
+        &task,
+        std::slice::from_ref(&task),
+        &HashMap::new(),
+    );
+    assert!(prompt.contains("WORKSPACE BOUNDARY: C:\\workspaces\\target"));
+    assert!(prompt.contains("Do not write or create artifacts outside it"));
+}
+
 // ---------------------------------------------------------------------------
 // 3. Session ID parsing
 // ---------------------------------------------------------------------------
@@ -342,13 +405,17 @@ fn no_session_id_from_garbage() {
 // ---------------------------------------------------------------------------
 
 fn temp_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "swarms-test-{}-{}",
+        "swarms-test-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed),
     ));
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -566,13 +633,7 @@ fn quoted_verify_command_survives_platform_shell_parsing() {
     } else {
         r#"test "a" = "a""#
     };
-    runtime::execute_shell(
-        command,
-        &dir,
-        &dir.join("verify.log"),
-        std::time::Duration::from_secs(5),
-    )
-    .unwrap();
+    runtime::execute_shell(command, &dir, &dir.join("verify.log")).unwrap();
     fs::remove_dir_all(dir).ok();
 }
 
@@ -791,6 +852,19 @@ fn prompt_dependency_context_after_prefix() {
     let p = adapter::build_prompt("coder", "task text", &["file.py".to_string()], dep);
     assert!(p.contains(dep));
     assert!(p.contains("Allowed artifacts: file.py"));
+}
+
+#[test]
+fn prompt_sanitizes_nul_from_dependency_transport() {
+    let prompt = adapter::build_prompt(
+        "programmer",
+        "build the lane",
+        &["core/pbir_logic.py".to_string()],
+        "Dependency output\0must not reach a CLI argument",
+    );
+
+    assert!(!prompt.contains('\0'));
+    assert!(prompt.contains("Dependency outputmust not reach a CLI argument"));
 }
 
 // ---------------------------------------------------------------------------

@@ -234,17 +234,14 @@ fn discover_from(
 fn merge_linked_skills(entries: &mut Vec<ResourceEntry>) {
     let mut merged: Vec<ResourceEntry> = Vec::with_capacity(entries.len());
     for mut candidate in entries.drain(..) {
-        if candidate.kind != ResourceKind::Skill {
+        if !matches!(candidate.kind, ResourceKind::Skill | ResourceKind::Mcp) {
             merged.push(candidate);
             continue;
         }
-        let canonical =
-            fs::canonicalize(&candidate.path).unwrap_or_else(|_| candidate.path.clone());
         let existing = merged.iter_mut().find(|entry| {
-            entry.kind == ResourceKind::Skill
+            entry.kind == candidate.kind
                 && entry.scope == candidate.scope
                 && entry.name == candidate.name
-                && fs::canonicalize(&entry.path).unwrap_or_else(|_| entry.path.clone()) == canonical
         });
         if let Some(existing) = existing {
             for agent in candidate.shared_with.drain(..) {
@@ -252,7 +249,9 @@ fn merge_linked_skills(entries: &mut Vec<ResourceEntry>) {
                     existing.shared_with.push(agent);
                 }
             }
-            if candidate.path.to_string_lossy().contains(".skillshare") {
+            if candidate.kind == ResourceKind::Skill
+                && candidate.path.to_string_lossy().contains("skillshare")
+            {
                 existing.path = candidate.path;
             }
             existing
@@ -327,7 +326,7 @@ fn add_mcp_toml(
             .and_then(|value| value.strip_suffix(']'))
         {
             let name = name.trim_matches('"').trim();
-            if !name.is_empty() {
+            if !name.is_empty() && !name.contains('.') {
                 names.insert(name.to_owned());
             }
         }
@@ -537,5 +536,55 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].shared_with.contains(&AgentKind::Codex));
         assert!(entries[0].shared_with.contains(&AgentKind::Gemini));
+    }
+
+    #[test]
+    fn same_named_global_skills_merge_even_when_copied() {
+        let mut entries = vec![
+            entry(
+                "shared".into(),
+                ResourceKind::Skill,
+                ResourceScope::Global,
+                Some(AgentKind::Codex),
+                PathBuf::from("codex/shared"),
+                ResourceStatus::Available,
+            ),
+            entry(
+                "shared".into(),
+                ResourceKind::Skill,
+                ResourceScope::Global,
+                Some(AgentKind::Gemini),
+                PathBuf::from("gemini/shared"),
+                ResourceStatus::Available,
+            ),
+        ];
+        merge_linked_skills(&mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].shared_with.len(), 2);
+    }
+
+    #[test]
+    fn same_named_global_mcps_merge_their_agents() {
+        let mut entries = vec![
+            entry(
+                "codegraph".into(),
+                ResourceKind::Mcp,
+                ResourceScope::Global,
+                Some(AgentKind::Codex),
+                PathBuf::from("codex.toml"),
+                ResourceStatus::Available,
+            ),
+            entry(
+                "codegraph".into(),
+                ResourceKind::Mcp,
+                ResourceScope::Global,
+                Some(AgentKind::Gemini),
+                PathBuf::from("gemini.json"),
+                ResourceStatus::Available,
+            ),
+        ];
+        merge_linked_skills(&mut entries);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].shared_with.len(), 2);
     }
 }

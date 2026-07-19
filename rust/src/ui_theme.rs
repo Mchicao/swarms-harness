@@ -93,7 +93,7 @@ impl Theme {
             accent_dim: Color32::from_rgb(0xD9, 0xC7, 0xA8),
             text: Color32::from_rgb(0x2A, 0x1D, 0x15),
             text_dim: Color32::from_rgb(0x4A, 0x37, 0x28),
-            muted: Color32::from_rgb(0x7A, 0x65, 0x55),
+            muted: Color32::from_rgb(0x5A, 0x48, 0x38),
             cream: Color32::from_rgb(0xF5, 0xE6, 0xC8),
             node_done: Color32::from_rgb(0xDC, 0xE0, 0xB8),
             node_done_border: Color32::from_rgb(0x7A, 0x8A, 0x4A),
@@ -220,7 +220,11 @@ pub fn status_colors(
     let p = *palette;
     if stale {
         return match mode {
-            BadgeMode::DagNode => (p.node_stale, p.cream, p.node_stale_border),
+            BadgeMode::DagNode => (
+                p.node_stale,
+                Color32::from_rgb(0x5A, 0x3A, 0x5A),
+                p.node_stale_border,
+            ),
             BadgeMode::Pill => (p.pill_stale, p.cream, p.pill_stale),
         };
     }
