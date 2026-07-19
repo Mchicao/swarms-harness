@@ -139,6 +139,26 @@ fn dag_self_dependency() {
     assert!(!cycles.is_empty(), "self-dependency should be detected");
 }
 
+#[test]
+fn legacy_timeout_fields_never_create_a_worker_deadline() {
+    let mut task = make_task("long", &[], "mock");
+    task.spec.timeout_seconds = Some(1);
+    let plan = model::Plan {
+        schema_version: None,
+        goal: None,
+        project: None,
+        planner: None,
+        review_policy: None,
+        budget_policy: model::BudgetPolicy::default(),
+        stages: Vec::new(),
+        thinking: None,
+        session: None,
+        default_timeout_seconds: Some(1),
+        default_max_attempts: None,
+    };
+    assert_eq!(task.spec.effective_timeout(&plan), None);
+}
+
 // ---------------------------------------------------------------------------
 // 2. Adapter command mappings
 // ---------------------------------------------------------------------------
@@ -566,13 +586,7 @@ fn quoted_verify_command_survives_platform_shell_parsing() {
     } else {
         r#"test "a" = "a""#
     };
-    runtime::execute_shell(
-        command,
-        &dir,
-        &dir.join("verify.log"),
-        std::time::Duration::from_secs(5),
-    )
-    .unwrap();
+    runtime::execute_shell(command, &dir, &dir.join("verify.log")).unwrap();
     fs::remove_dir_all(dir).ok();
 }
 

@@ -121,19 +121,20 @@ pub struct TaskNode {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub heartbeat_unix_ms: Option<u128>,
+    pub last_progress_unix_ms: Option<u128>,
+    pub worker_log_bytes: u64,
     pub needs: Vec<String>,
     pub artifacts: Vec<String>,
     pub error: Option<String>,
 }
 
 impl TaskNode {
-    /// A running/queued task is stale only relative to the run heartbeat
-    /// interval, per STATE_CONTRACT. Staleness is a visual label and must not
-    /// mutate the task status.
+    /// Una tarea activa sin progreso de log se marca `stale`; el heartbeat del
+    /// coordinador queda como fallback y nunca cambia el estado persistido.
     pub fn is_stale(&self, now_ms: u128, interval_secs: u64) -> bool {
         let running = matches!(self.status.as_str(), "in_progress" | "queued");
         running
-            && match self.heartbeat_unix_ms {
+            && match self.last_progress_unix_ms.or(self.heartbeat_unix_ms) {
                 Some(hb) => now_ms.saturating_sub(hb) > u128::from(interval_secs) * 1000,
                 None => false,
             }
@@ -830,6 +831,8 @@ fn build_task_node(
         started_at: get_str(task, "started_at"),
         ended_at: get_str(task, "ended_at"),
         heartbeat_unix_ms: get_u128(task, "heartbeat_unix_ms"),
+        last_progress_unix_ms: get_u128(task, "last_progress_unix_ms"),
+        worker_log_bytes: get_u64(task, "worker_log_bytes").unwrap_or(0),
         needs: task
             .get("needs")
             .and_then(Value::as_array)
@@ -1182,13 +1185,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_detection_uses_heartbeat_interval() {
+    fn stale_detection_prefers_worker_progress_over_heartbeat() {
         let now = 10_000_000u128;
         let mut task = TaskNode {
             status: "in_progress".into(),
             heartbeat_unix_ms: Some(now - 5_000),
+            last_progress_unix_ms: Some(now - 200),
             ..Default::default()
         };
+        assert!(!task.is_stale(now, 1));
+        task.last_progress_unix_ms = Some(now - 5_000);
         assert!(task.is_stale(now, 1));
         assert!(!task.is_stale(now, 30));
         task.status = "completed".into();
@@ -2536,6 +2542,13 @@ pub mod ui_egui {
                     if let Some(heartbeat) = node.heartbeat_unix_ms {
                         let age = heartbeat_age_seconds(Some(heartbeat), now_ms).unwrap_or(0);
                         row("heartbeat", &format!("{age}s ago"));
+                    }
+                    if let Some(progress) = node.last_progress_unix_ms {
+                        let age = heartbeat_age_seconds(Some(progress), now_ms).unwrap_or(0);
+                        row(
+                            "worker progress",
+                            &format!("{age}s ago · {} bytes", node.worker_log_bytes),
+                        );
                     }
                     row("agent", &node.agent.agent_id);
                     if let Some(owner) = &node.agent.owner {

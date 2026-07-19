@@ -148,6 +148,9 @@ fn init_states(
             state.verify_error = None;
             state.started_at = None;
             state.heartbeat_unix_ms = None;
+            state.worker_log_bytes = 0;
+            state.last_progress_unix_ms = None;
+            state.worker_log_modified_unix_ms = None;
             state.ended_at = None;
         }
         state.checkpoint_key = Some(checkpoint_key);
@@ -174,7 +177,7 @@ fn task_checkpoint_key(task: &Task, plan: &Plan) -> String {
         "verify": task.spec.verify,
         "thinking": task.spec.effective_thinking(plan),
         "session": session,
-        "timeout_seconds": task.spec.effective_timeout(plan),
+        "execution_timeout": "disabled",
         "max_attempts": task.spec.effective_max_attempts(plan),
     })
     .to_string();
@@ -467,6 +470,7 @@ pub fn execute(
             let work_dir = run_dir.join("results").join(&task.id);
             let _ = fs::create_dir_all(&work_dir);
             let _ = fs::write(work_dir.join("prompt.txt"), &prompt);
+            start_visible_worker_console(&work_dir, task);
 
             let sender = sender.clone();
             let task = task.clone();
@@ -479,6 +483,9 @@ pub fn execute(
                 state.status = TaskStatus::InProgress;
                 state.started_at = Some(now_iso());
                 state.heartbeat_unix_ms = Some(unix_ms());
+                state.last_progress_unix_ms = state.heartbeat_unix_ms;
+                state.worker_log_bytes = 0;
+                state.worker_log_modified_unix_ms = None;
                 save_task_state(&run_dir, state)?;
             }
             active_ids.insert(task.id.clone());
@@ -507,6 +514,7 @@ pub fn execute(
                         state.started_at.clone_from(&previous.started_at);
                         state.checkpoint_key.clone_from(&previous.checkpoint_key);
                     }
+                    refresh_worker_progress(&run_dir, &mut state, unix_ms());
                     states.insert(task_id.clone(), state.clone());
                     save_task_state(&run_dir, &states[&task_id])?;
                     append_event(
@@ -533,6 +541,7 @@ pub fn execute(
                 for task_id in &active_ids {
                     if let Some(state) = states.get_mut(task_id) {
                         state.heartbeat_unix_ms = Some(heartbeat);
+                        refresh_worker_progress(&run_dir, state, heartbeat);
                         save_task_state(&run_dir, state)?;
                     }
                 }
@@ -643,9 +652,7 @@ pub(crate) fn run_task(
     session_store: &SessionStore,
 ) -> TaskState {
     let thinking = task.spec.effective_thinking(plan);
-    let timeout_secs = task.spec.effective_timeout(plan);
     let max_attempts = task.spec.effective_max_attempts(plan).max(1);
-    let timeout = Duration::from_secs(timeout_secs);
     let work_dir = run_dir.join("results").join(&task.id);
     let started = Instant::now();
 
@@ -682,7 +689,6 @@ pub(crate) fn run_task(
             active_session_id.as_deref(),
             root,
             &work_dir,
-            timeout,
         );
 
         match exec_result {
@@ -761,7 +767,6 @@ pub(crate) fn run_task(
                             new_session_id.as_deref().or(active_session_id.as_deref()),
                             root,
                             &work_dir,
-                            timeout,
                         );
                         match steered {
                             Ok(next) => {
@@ -826,7 +831,7 @@ pub(crate) fn run_task(
                     return failed_state(task, thinking, started, attempt, &e, &exec.usage);
                 }
 
-                let (verified, verify_error) = run_verify_commands(task, root, &work_dir, timeout);
+                let (verified, verify_error) = run_verify_commands(task, root, &work_dir);
 
                 if verified == Some(false) {
                     let err = verify_error
@@ -918,6 +923,30 @@ fn session_resume_window() -> Duration {
     )
 }
 
+fn refresh_worker_progress(run_dir: &Path, state: &mut TaskState, observed_at: u128) {
+    let path = run_dir
+        .join("results")
+        .join(&state.task_id)
+        .join("worker.log");
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis());
+    let changed = metadata.len() != state.worker_log_bytes
+        || modified
+            .zip(state.worker_log_modified_unix_ms)
+            .is_some_and(|(current, previous)| current > previous);
+    state.worker_log_bytes = metadata.len();
+    state.worker_log_modified_unix_ms = modified;
+    if changed {
+        state.last_progress_unix_ms = Some(observed_at);
+    }
+}
+
 fn fresh_log_session_id(kind: AdapterKind, log_path: &Path, window: Duration) -> Option<String> {
     let modified = fs::metadata(log_path).ok()?.modified().ok()?;
     let output = fs::read_to_string(log_path).ok()?;
@@ -973,7 +1002,6 @@ fn execute_adapter(
     session_id: Option<&str>,
     root: &Path,
     work_dir: &Path,
-    timeout: Duration,
 ) -> Result<AdapterExec> {
     let kind = AdapterKind::from_wrapper(&task.provider.wrapper)
         .ok_or_else(|| format!("unsupported wrapper: {}", task.provider.wrapper))?;
@@ -988,7 +1016,7 @@ fn execute_adapter(
             })
         }
         AdapterKind::OpenAiCompat => {
-            let out = adapter::execute_openai_compat(task, prompt, thinking, timeout)?;
+            let out = adapter::execute_openai_compat(task, prompt, thinking)?;
             let _ = fs::write(work_dir.join("worker.log"), &out.content);
             Ok(AdapterExec {
                 output: out.content,
@@ -1005,14 +1033,14 @@ fn execute_adapter(
                 &task.provider.provider,
             )?;
             let log_path = work_dir.join("worker.log");
-            let output = execute_cli(spec, root, &log_path, timeout)?;
+            let output = execute_cli(spec, root, &log_path)?;
             let usage = adapter::parse_cli_usage(kind, &output);
             Ok(AdapterExec { output, usage })
         }
     }
 }
 
-fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path, timeout: Duration) -> Result<String> {
+fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1031,8 +1059,6 @@ fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path, timeout: Duration) ->
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn '{}': {e}", spec.program))?;
-    let deadline = Instant::now() + timeout;
-
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -1049,23 +1075,44 @@ fn execute_cli(spec: CliSpec, cwd: &Path, log_path: &Path, timeout: Duration) ->
                 ));
             }
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let output = fs::read_to_string(log_path).unwrap_or_default();
-                    let tail = tail_chars(&output, 2000);
-                    return Err(format!(
-                        "process '{}' timed out after {}s\n{tail}",
-                        spec.program,
-                        timeout.as_secs()
-                    ));
-                }
                 thread::sleep(Duration::from_millis(50));
             }
             Err(e) => return Err(format!("wait '{}': {e}", spec.program)),
         }
     }
 }
+
+/// Abre una consola de sólo lectura por worker real en Windows. El coordinador
+/// y el worker siguen en segundo plano; la ventana sólo sigue `worker.log`.
+#[cfg(windows)]
+fn start_visible_worker_console(work_dir: &Path, task: &Task) {
+    use std::os::windows::process::CommandExt;
+
+    if AdapterKind::from_wrapper(&task.provider.wrapper) == Some(AdapterKind::Mock)
+        || std::env::var("SWARMS_WORKER_CONSOLES")
+            .map(|value| value.eq_ignore_ascii_case("hidden") || value == "0")
+            .unwrap_or(false)
+    {
+        return;
+    }
+    let log_path = work_dir.join("worker.log");
+    if fs::File::create(&log_path).is_err() {
+        return;
+    }
+    let path = log_path.to_string_lossy().replace('\'', "''");
+    let title = format!("SWARMS | {} | {}", task.id, task.provider.model).replace('\'', "''");
+    let script = format!(
+        "$Host.UI.RawUI.WindowTitle='{title}'; Get-Content -LiteralPath '{path}' -Wait -Tail 0"
+    );
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let _ = Command::new("powershell")
+        .args(["-NoLogo", "-NoProfile", "-Command", &script])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn();
+}
+
+#[cfg(not(windows))]
+fn start_visible_worker_console(_work_dir: &Path, _task: &Task) {}
 
 fn tail_chars(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -1112,14 +1159,13 @@ fn run_verify_commands(
     task: &Task,
     root: &Path,
     work_dir: &Path,
-    timeout: Duration,
 ) -> (Option<bool>, Option<String>) {
     if task.spec.verify.is_empty() {
         return (None, None);
     }
     for cmd_str in &task.spec.verify {
         let log_path = work_dir.join("verify.log");
-        match execute_shell(cmd_str, root, &log_path, timeout) {
+        match execute_shell(cmd_str, root, &log_path) {
             Ok(()) => {}
             Err(e) => return (Some(false), Some(e)),
         }
@@ -1127,12 +1173,7 @@ fn run_verify_commands(
     (Some(true), None)
 }
 
-pub(crate) fn execute_shell(
-    cmd_str: &str,
-    cwd: &Path,
-    log_path: &Path,
-    timeout: Duration,
-) -> Result<()> {
+pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Result<()> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1158,8 +1199,6 @@ pub(crate) fn execute_shell(
         .stderr(Stdio::from(err));
 
     let mut child = command.spawn().map_err(|e| format!("spawn verify: {e}"))?;
-    let deadline = Instant::now() + timeout;
-
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -1171,11 +1210,6 @@ pub(crate) fn execute_shell(
                 return Err(format!("verify failed (exit {:?}): {tail}", status.code()));
             }
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("verify timed out after {}s", timeout.as_secs()));
-                }
                 thread::sleep(Duration::from_millis(50));
             }
             Err(e) => return Err(format!("wait verify: {e}")),
@@ -1224,6 +1258,9 @@ fn success_state(
         error: None,
         started_at: Some(now_iso()),
         heartbeat_unix_ms: Some(unix_ms()),
+        worker_log_bytes: 0,
+        last_progress_unix_ms: None,
+        worker_log_modified_unix_ms: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
     }
@@ -1260,6 +1297,9 @@ fn failed_state(
         error: Some(error.to_string()),
         started_at: Some(now_iso()),
         heartbeat_unix_ms: Some(unix_ms()),
+        worker_log_bytes: 0,
+        last_progress_unix_ms: None,
+        worker_log_modified_unix_ms: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
     }
