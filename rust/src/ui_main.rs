@@ -1476,6 +1476,7 @@ pub mod ui_egui {
         ui_privacy: UiPrivacyConfig,
         config_open: bool,
         config_feedback: Option<String>,
+        notes_open: bool,
         resource_catalog: resources::ResourceCatalog,
         resource_scope: resources::ResourceScope,
         resource_kind: Option<resources::ResourceKind>,
@@ -1490,10 +1491,10 @@ pub mod ui_egui {
         herd_workspaces: Vec<HerdWorkspace>,
         herd_workspace_id: Option<String>,
         herd_output: String,
+        herd_runs: Vec<(String, egui::Color32)>,
         herd_feedback: Option<String>,
         last_herd_refresh: Option<Instant>,
         swarm_tab: SwarmTab,
-        force_swarms: bool,
     }
 
     impl ObservabilityApp {
@@ -1538,6 +1539,7 @@ pub mod ui_egui {
                 ui_privacy,
                 config_open: false,
                 config_feedback: None,
+                notes_open: false,
                 resource_catalog,
                 resource_scope: resources::ResourceScope::Project,
                 resource_kind: None,
@@ -1552,10 +1554,10 @@ pub mod ui_egui {
                 herd_workspaces: Vec::new(),
                 herd_workspace_id: None,
                 herd_output: String::new(),
+                herd_runs: Vec::new(),
                 herd_feedback: None,
                 last_herd_refresh: None,
                 swarm_tab: SwarmTab::Overview,
-                force_swarms: true,
             };
             app.load_agent_md();
             app
@@ -1867,6 +1869,17 @@ pub mod ui_egui {
                 self.config_open = open;
             }
 
+            if self.notes_open {
+                let mut open = self.notes_open;
+                egui::Window::new("Project notes")
+                    .open(&mut open)
+                    .resizable(true)
+                    .default_width(500.0)
+                    .default_height(400.0)
+                    .show(ctx, |ui| self.render_notes(ui));
+                self.notes_open = open;
+            }
+
             // Compact bottom status line.
             egui::TopBottomPanel::bottom("footer")
                 .exact_height(38.0)
@@ -1938,6 +1951,11 @@ pub mod ui_egui {
                         self.swarm_tab = tab;
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("📝 Notes").clicked() {
+                        self.notes_open = true;
+                    }
+                });
             });
             ui.separator();
             match self.swarm_tab {
@@ -2145,6 +2163,7 @@ pub mod ui_egui {
             }
             let Some(workspace_id) = self.herd_workspace_id.as_deref() else {
                 self.herd_output.clear();
+                self.herd_runs.clear();
                 self.herd_feedback = Some("No Herd workspaces are open.".to_string());
                 return;
             };
@@ -2167,6 +2186,7 @@ pub mod ui_egui {
             });
             let Some(pane_id) = pane_id else {
                 self.herd_output.clear();
+                self.herd_runs.clear();
                 self.herd_feedback =
                     Some("The selected Herd workspace has no readable pane.".to_string());
                 return;
@@ -2182,11 +2202,16 @@ pub mod ui_egui {
                     "recent",
                     "--lines",
                     "80",
+                    "--format",
+                    "ansi",
                 ])
                 .output()
             {
                 Ok(output) if output.status.success() => {
-                    self.herd_output = String::from_utf8_lossy(&output.stdout).to_string();
+                    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+                    let palette = crate::ui_theme::Theme::marraqueta().palette;
+                    self.herd_runs = parse_ansi_to_runs(&raw, palette.text, &palette);
+                    self.herd_output = strip_ansi_escapes(&raw);
                     self.herd_feedback = Some(format!("Herd workspace {workspace_id} refreshed."));
                 }
                 Ok(output) => {
@@ -2246,13 +2271,42 @@ pub mod ui_egui {
             if let Some(feedback) = &self.herd_feedback {
                 ui.label(egui::RichText::new(feedback).small().color(palette.muted));
             }
-            ui.add(
-                egui::TextEdit::multiline(&mut self.herd_output)
-                    .font(egui::TextStyle::Monospace)
-                    .interactive(false)
-                    .desired_rows(20)
-                    .desired_width(ui.available_width()),
-            );
+            // Fill all remaining vertical space with the pane output, painted
+            // with Marraqueta colours parsed from Herdr's ANSI output.
+            let mono_size = crate::ui_theme::Theme::marraqueta().type_scale.mono;
+            let font_id = egui::FontId::monospace(mono_size);
+            let runs = self.herd_runs.clone();
+            // egui 0.32 TextEdit layouter signature: (Ui, &dyn TextBuffer, wrap_width).
+            // The buffer is the read-only `herd_output` we already pass to the widget;
+            // we ignore it here because the visible colours come from `runs`.
+            let mut layouter = move |ui: &egui::Ui, _buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                let mut job = egui::text::LayoutJob::default();
+                job.wrap.max_width = wrap_width;
+                job.wrap.max_rows = 40;
+                for (text, color) in &runs {
+                    job.append(
+                        text,
+                        0.0,
+                        egui::TextFormat {
+                            font_id: font_id.clone(),
+                            color: *color,
+                            ..Default::default()
+                        },
+                    );
+                }
+                ui.fonts(|f| f.layout_job(job))
+            };
+            let available = egui::Vec2::new(ui.available_width(), ui.available_height());
+            ui.allocate_ui(available, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.herd_output)
+                        .font(egui::TextStyle::Monospace)
+                        .interactive(false)
+                        .desired_width(ui.available_width())
+                        .desired_rows(40)
+                        .layouter(&mut layouter),
+                );
+            });
         }
 
         fn initialize_project_skills(&mut self) {
@@ -2614,102 +2668,8 @@ pub mod ui_egui {
         }
 
         fn render_t3code_cockpit(&mut self, ui: &mut egui::Ui) {
-            let theme = crate::ui_theme::Theme::marraqueta();
-            let palette = theme.palette;
+            // Code tab = Herd terminal workspaces, nothing else.
             self.render_herd_panel(ui);
-            ui.separator();
-            let Some(contract) = self.contract.as_ref() else {
-                ui.label(
-                    egui::RichText::new(
-                        "Select a SWARMS run to see its project notes and activity.",
-                    )
-                    .color(palette.muted),
-                );
-                return;
-            };
-            let project_id = contract.run.project_id.clone();
-            let project_name = contract.run.project_name.clone();
-            let run_id = contract.run.run_id.clone();
-            let status = contract.run.status;
-
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(&run_id).strong().size(17.0));
-                    ui.label(egui::RichText::new(&project_name).color(palette.muted));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    crate::ui_theme::status_badge(
-                        ui,
-                        status.label(),
-                        false,
-                        crate::ui_theme::BadgeMode::Pill,
-                        &theme,
-                    );
-                });
-            });
-            ui.group(|ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Project notes").strong());
-                    if ui.small_button("Save").clicked() {
-                        self.save_ui_config();
-                    }
-                });
-                let note = self.ui_privacy.project_notes.entry(project_id).or_default();
-                ui.add(
-                    egui::TextEdit::multiline(note)
-                        .hint_text("Decisions, context, pending work…")
-                        .desired_rows(3)
-                        .desired_width(ui.available_width()),
-                );
-            });
-
-            ui.add_space(theme.spacing.md);
-            ui.label(egui::RichText::new("Thread activity").strong());
-            egui::ScrollArea::vertical()
-                .max_height((ui.available_height() - 145.0).max(120.0))
-                .show(ui, |ui| {
-                    if self.events.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No activity recorded yet.").color(palette.muted),
-                        );
-                    }
-                    for event in self.events.iter().rev().take(80).rev() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(&event.event)
-                                    .family(egui::FontFamily::Name("IBM Plex Mono".into()))
-                                    .strong(),
-                            );
-                            if let Some(task_id) = &event.task_id {
-                                ui.label(egui::RichText::new(task_id).color(palette.accent));
-                            }
-                            if let Some(provider) = &event.provider {
-                                ui.label(provider);
-                            }
-                            if let Some(error) = &event.error {
-                                ui.label(egui::RichText::new(error).color(palette.pill_failed));
-                            }
-                        });
-                        ui.separator();
-                    }
-                });
-            ui.separator();
-            ui.add(
-                egui::TextEdit::multiline(&mut self.steer_prompt)
-                    .hint_text("Ask for a follow-up change…")
-                    .desired_rows(3)
-                    .desired_width(ui.available_width()),
-            );
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.force_swarms, "Use SWARMS runtime");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_enabled(false, egui::Button::new("Send ↑"))
-                        .on_disabled_hover_text(
-                            "Starting new Code threads is not wired to a provider yet.",
-                        );
-                });
-            });
         }
 
         fn render_sandbox(&mut self, ui: &mut egui::Ui) {
@@ -3382,6 +3342,38 @@ pub mod ui_egui {
             }
         }
 
+        fn render_notes(&mut self, ui: &mut egui::Ui) {
+            let palette = crate::ui_theme::Theme::marraqueta().palette;
+            let Some(contract) = self.contract.as_ref() else {
+                ui.label(
+                    egui::RichText::new("Select a SWARMS run to keep project notes.")
+                        .color(palette.muted),
+                );
+                return;
+            };
+            let project_id = contract.run.project_id.clone();
+            ui.label(egui::RichText::new(&contract.run.project_name).strong());
+            ui.add_space(4.0);
+            let note = self.ui_privacy.project_notes.entry(project_id).or_default();
+            ui.add(
+                egui::TextEdit::multiline(note)
+                    .hint_text("Decisions, context, pending work…")
+                    .desired_width(ui.available_width())
+                    .desired_rows(15),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    self.save_ui_config();
+                }
+                ui.label(
+                    egui::RichText::new("Stored in config/swarm_ui.local.json")
+                        .small()
+                        .color(palette.muted),
+                );
+            });
+        }
+
         fn render_config(&mut self, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new("Privacidad de cuentas").strong());
             ui.checkbox(
@@ -3975,6 +3967,207 @@ pub mod ui_egui {
 
     fn steer_capable(wrapper: &str) -> bool {
         matches!(wrapper, "codex" | "opencode" | "kilo" | "mock")
+    }
+
+    /// Strip CSI/OSC ANSI escape sequences, returning plain text.
+    /// Used to keep `herd_output` (the read-only backing buffer) free of escapes.
+    fn strip_ansi_escapes(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut out = String::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == 0x1B && i + 1 < bytes.len() {
+                let n = bytes[i + 1];
+                if n == b'[' {
+                    // CSI: skip to first byte outside 0x40..0x7E after params/intermediates
+                    i += 2;
+                    while i < bytes.len() {
+                        let c = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7E).contains(&c) {
+                            break;
+                        }
+                    }
+                    continue;
+                } else if n == b']' {
+                    // OSC: skip to BEL or ST (ESC \)
+                    i += 2;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                } else {
+                    // Two-byte escape (e.g. ESC =, ESC >): skip both bytes.
+                    i += 2;
+                    continue;
+                }
+            }
+            // Drop other C0 controls except tab/newline/cr.
+            if b == b'\t' || b == b'\n' || b == b'\r' || b >= 0x20 {
+                out.push(b as char);
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Map a standard 4-bit ANSI colour index (0..15) to a Marraqueta palette token.
+    fn ansi_color(index: u32, palette: &crate::ui_theme::Palette) -> egui::Color32 {
+        match index {
+            0 => palette.text_dim,         // black
+            1 => palette.pill_failed,      // red
+            2 => palette.pill_done,        // green
+            3 => palette.accent,           // yellow / brown
+            4 => palette.pill_blocked,     // blue
+            5 => palette.pill_stale,       // magenta
+            6 => palette.node_run_border,  // cyan
+            7 => palette.text,             // white
+            8 => palette.muted,            // bright black (grey)
+            9 => palette.pill_failed,      // bright red
+            10 => palette.pill_done,       // bright green
+            11 => palette.accent,          // bright yellow
+            12 => palette.pill_blocked,    // bright blue
+            13 => palette.pill_stale,      // bright magenta
+            14 => palette.node_run_border, // bright cyan
+            _ => palette.text,             // bright white + fallback
+        }
+    }
+
+    /// Parse a CSI SGR parameter list into a colour, applying it on top of `current`.
+    /// Handles `0` reset, `30..37`/`90..97` (8/16-colour), and `38;2;r;g;b` (truecolor).
+    /// Foreground-only: background SGR codes (`40..47`, `100..107`, `48;...`) are ignored
+    /// to keep the Marraqueta background fill intact.
+    fn apply_sgr(
+        params: &[u32],
+        current: egui::Color32,
+        palette: &crate::ui_theme::Palette,
+    ) -> egui::Color32 {
+        if params.is_empty() || params[0] == 0 {
+            return palette.text;
+        }
+        let mut i = 0;
+        while i < params.len() {
+            let p = params[i];
+            match p {
+                0 => return palette.text,
+                30..=37 | 90..=97 => return ansi_color(p - 30, palette),
+                38 => {
+                    // 38;2;r;g;b  (truecolor) — only extended form we honour.
+                    if i + 4 < params.len() && params[i + 1] == 2 {
+                        let r = params[i + 2] as u8;
+                        let g = params[i + 3] as u8;
+                        let b = params[i + 4] as u8;
+                        return egui::Color32::from_rgb(r, g, b);
+                    }
+                    // 38;5;n (256-colour) — coarse fallback to the 4-bit ring.
+                    if i + 2 < params.len() && params[i + 1] == 5 {
+                        let n = params[i + 2];
+                        if n < 16 {
+                            return ansi_color(n, palette);
+                        }
+                        return palette.text_dim;
+                    }
+                    i += 1;
+                }
+                39 => return palette.text, // default fg
+                _ => {}
+            }
+            i += 1;
+        }
+        current
+    }
+
+    /// Parse text containing CSI SGR escape sequences into colour runs.
+    /// Non-SGR escapes (`ESC[H`, `ESC[?1049h`, OSC, two-byte) are stripped.
+    /// Returns a list of `(text, colour)` chunks; empty input yields one empty run.
+    fn parse_ansi_to_runs(
+        input: &str,
+        default_color: egui::Color32,
+        palette: &crate::ui_theme::Palette,
+    ) -> Vec<(String, egui::Color32)> {
+        let bytes = input.as_bytes();
+        let mut runs: Vec<(String, egui::Color32)> = Vec::new();
+        let mut current = String::new();
+        let mut color = default_color;
+        let mut i = 0;
+
+        macro_rules! flush {
+            () => {{
+                if !current.is_empty() {
+                    runs.push((std::mem::take(&mut current), color));
+                }
+            }};
+        }
+
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == 0x1B && i + 1 < bytes.len() {
+                let n = bytes[i + 1];
+                if n == b'[' {
+                    // CSI: collect parameter bytes (0x30..0x3F) + intermediates (0x20..0x2F),
+                    // terminate at final byte (0x40..0x7E).
+                    let mut j = i + 2;
+                    let start = j;
+                    while j < bytes.len() && (0x30..=0x3F).contains(&bytes[j]) {
+                        j += 1;
+                    }
+                    while j < bytes.len() && (0x20..=0x2F).contains(&bytes[j]) {
+                        j += 1;
+                    }
+                    let final_byte = if j < bytes.len() { bytes[j] } else { 0 };
+                    let param_str = std::str::from_utf8(&bytes[start..j]).unwrap_or("");
+                    if final_byte == b'm' {
+                        flush!();
+                        let params: Vec<u32> = param_str
+                            .split(';')
+                            .filter(|s| !s.is_empty())
+                            .filter_map(|s| s.parse::<u32>().ok())
+                            .collect();
+                        color = apply_sgr(&params, color, palette);
+                    }
+                    i = if j < bytes.len() { j + 1 } else { j };
+                    continue;
+                } else if n == b']' {
+                    // OSC: skip to BEL or ST.
+                    flush!();
+                    i += 2;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1B && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                } else {
+                    // Two-byte escape.
+                    i += 2;
+                    continue;
+                }
+            }
+            if b == b'\t' || b == b'\n' || b == b'\r' || b >= 0x20 {
+                current.push(b as char);
+            }
+            i += 1;
+        }
+        flush!();
+        if runs.is_empty() {
+            runs.push((String::new(), default_color));
+        }
+        runs
     }
 
     fn herdr_program() -> String {
