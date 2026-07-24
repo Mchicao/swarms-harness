@@ -1837,7 +1837,7 @@ pub mod ui_egui {
                                         } else {
                                             palette.bg_elevated
                                         })
-                                        .stroke(egui::Stroke::new(1.0, palette.border)),
+                                        .stroke(egui::Stroke::new(1.0_f32, palette.border)),
                                     )
                                     .clicked()
                                 {
@@ -2091,7 +2091,7 @@ pub mod ui_egui {
         fn refresh_herd(&mut self) {
             let session = herdr_session();
             let output = std::process::Command::new(herdr_program())
-                .args(["--session", session, "workspace", "list"])
+                .args(["--session", &session, "workspace", "list"])
                 .output();
             let output = match output {
                 Ok(output) if output.status.success() => output,
@@ -2151,7 +2151,7 @@ pub mod ui_egui {
             let panes = std::process::Command::new(herdr_program())
                 .args([
                     "--session",
-                    session,
+                    &session,
                     "pane",
                     "list",
                     "--workspace",
@@ -2174,7 +2174,7 @@ pub mod ui_egui {
             match std::process::Command::new(herdr_program())
                 .args([
                     "--session",
-                    session,
+                    &session,
                     "pane",
                     "read",
                     &pane_id,

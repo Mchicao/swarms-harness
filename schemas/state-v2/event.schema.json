@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/bolmer/swarms-harness/schemas/state-v2/event.schema.json",
+  "title": "SWARMS Event v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "event_id",
+    "run_id",
+    "timestamp",
+    "sequence",
+    "kind",
+    "data"
+  ],
+  "properties": {
+    "schema": {"const": "swarms.event"},
+    "schema_version": {"const": 2},
+    "event_id": {"type": "string", "minLength": 16},
+    "run_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": ["string", "null"]},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "kind": {
+      "enum": [
+        "run_started",
+        "run_finished",
+        "task_state_changed",
+        "retry_scheduled",
+        "retry_started",
+        "steering_accepted",
+        "steering_rejected",
+        "steering_applied",
+        "steering_malformed",
+        "session_created",
+        "session_reused",
+        "session_rejected",
+        "quota_decision",
+        "process_finished",
+        "verification_finished",
+        "artifact_checked",
+        "persistence_degraded",
+        "usage_observed",
+        "report_completed"
+      ]
+    },
+    "data": {"type": "object"}
+  }
+}
