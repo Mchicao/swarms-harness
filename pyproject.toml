@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swarms-harness"
-version = "0.1.0"
-description = "Quota-saving workflow harness for coding agents."
+version = "0.2.0"
+description = "Legacy Python support tools for the native Rust SWARMS runtime."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -36,12 +36,9 @@ yaml = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Mchicao/swarms-harness"
+Homepage = "https://github.com/bolmer/swarms-harness"
+Repository = "https://github.com/bolmer/swarms-harness"
 Website = "https://swarms-orchestrator.vercel.app/"
-Issues = "https://github.com/Mchicao/swarms-harness/issues"
-
-[project.scripts]
-swarms = "scripts.swarm:main"
 
 [tool.setuptools]
 include-package-data = true
