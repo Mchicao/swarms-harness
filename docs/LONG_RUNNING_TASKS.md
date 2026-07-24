@@ -143,6 +143,7 @@ its claim behind. Two recovery paths exist:
 
 ```python
 from scripts.workflow_runtime import ClaimStore
+
 recovered = ClaimStore(run_dir / "claims", stale_seconds=300).recover_expired()
 ```
 
