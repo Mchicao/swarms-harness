@@ -41,6 +41,9 @@ def run_codex(prompt: str, model: str, tools_policy: str, timeout: int) -> tuple
     out_file = cwd / "codex_output.md"
     cmd = [
         binary,
+        # SWARMS-CODEX-001: La opción global debe preceder a `exec`.
+        "-a",
+        "never",
         "exec",
         "--model",
         model,

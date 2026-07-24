@@ -197,6 +197,18 @@ def review_plan(plan: Any, role_policy: dict[str, Any] | None = None) -> dict[st
 
     for _, task in tasks:
         task_id = task.get("id")
+        parent_task_id = task.get("parent_task_id", task.get("parent_id"))
+        if parent_task_id is not None and (not isinstance(parent_task_id, str) or parent_task_id not in task_ids):
+            findings.append(
+                Finding(
+                    "error",
+                    "missing_parent_task",
+                    f"Parent task {parent_task_id!r} does not match any task id",
+                    task_id,
+                )
+            )
+        elif parent_task_id == task_id:
+            findings.append(Finding("error", "self_parent_task", "Task cannot be its own parent", task_id))
         needs = task.get("needs", [])
         if not isinstance(needs, list):
             findings.append(Finding("error", "invalid_dependencies", "Task needs must be a list", task_id))

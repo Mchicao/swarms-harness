@@ -69,7 +69,7 @@ SWARMS incluye rutas, wrappers, docs o telemetria para:
 - Gateways compatibles con OpenAI configurados por el usuario.
 - Workers offline `mock` para CI, demos y configuracion segura.
 - Parsing de tokens/costos para logs de Codex, OpenCode, salidas CLI, cache reads, cache writes y reasoning tokens.
-- Una skill SWARMS en `skills/swarms/` para que el agente de cada persona ayude a configurar planes, proveedores, limites y verificacion.
+- Dos skills en `.skillshare/skills/`: `swarms` para operar este runtime y `multi-provider-agent-orchestration` para delegar trabajo entre agentes.
 
 El router versionado solo habilita `mock`. Eso mantiene el clone local y gratis. Tu configuracion privada vive en archivos ignorados como `config/swarm_router.local.json` y en tus propias variables de entorno.
 
@@ -84,10 +84,11 @@ Tu defines la politica:
 - Los provider caps limitan concurrencia por ruta.
 - La telemetria registra lo que reporta la CLI o API, y marca uso faltante en vez de fingir que fue gratis.
 
-El repo incluye una skill para enseñar a agentes compatibles a usar SWARMS:
+El repo incluye dos skills para enseñar a agentes compatibles a operar SWARMS y delegar trabajo:
 
 ```powershell
-Copy-Item -Recurse -Force .\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
+Copy-Item -Recurse -Force .\.skillshare\skills\multi-provider-agent-orchestration "$env:USERPROFILE\.codex\skills\multi-provider-agent-orchestration"
 ```
 
 Despues de eso, un agente puede revisar tu setup local, crear un plan, revisarlo y correr la validacion offline antes de que habilites rutas reales.
@@ -101,9 +102,26 @@ cargo run --release --manifest-path rust/Cargo.toml -- doctor
 cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
+Observador nativo opcional y de bajo consumo:
+
+```powershell
+cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
+```
+
 El flujo completo está en `docs/RUST_RUNTIME.md`. Python sigue disponible para compatibilidad de benchmarks y telemetría heredados.
 
 ## Inicio Rapido
+
+En un PC nuevo, inspecciona primero los agentes locales antes de habilitar o
+ejecutar rutas reales:
+
+```powershell
+python scripts/swarm.py preflight --format json
+```
+
+Consulta [docs/AGENT_PREFLIGHT.md](docs/AGENT_PREFLIGHT.md). `doctor` ejecuta
+este inventario primero y `run` rechaza agentes reales no verificados antes de
+crear claims o workers.
 
 Requiere Python 3.10+ y Git.
 
@@ -112,6 +130,24 @@ python scripts/swarm.py doctor
 python scripts/swarm.py review --plan docs/workflow_plan_example.json
 python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
 python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+```
+
+Reanuda un run interrumpido con el mismo plan e identificador:
+
+```powershell
+# SWARMS-RESUME-004: conserva checkpoints de tareas terminadas.
+cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --run-id my-run --resume --provider-cap mock=3
+```
+
+Los archivos de estado son una frontera de integración de sólo lectura para
+interfaces locales; consulta `docs/STATE_CONTRACT.md`.
+
+Para coordinar un repositorio vecino, conserva SWARMS como harness y declara
+el destino:
+
+```powershell
+# SWARMS-CLI-001: Ejecuta workers con herramientas en el repositorio objetivo.
+python scripts/swarm.py dry-run --plan C:\proyecto\plan.json --workspace-root C:\proyecto --force
 ```
 
 Instalacion editable opcional:

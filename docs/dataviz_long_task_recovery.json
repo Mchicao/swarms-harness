@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "goal": "Endurecer SWARMS para coordinar tareas DataVIZ largas, multipaso y reanudables sin repetir trabajo completado ni depender de proveedores reales durante las pruebas.",
+  "planner": {
+    "route": "codex_orchestrator",
+    "model": "GPT-5.6 Sol High"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": true,
+    "premium_allowed": true
+  },
+  "budget_policy": {
+    "max_total_workers": 5,
+    "global_max_concurrency": 2,
+    "provider_concurrency": {
+      "mock": 2,
+      "gemini_flash": 1,
+      "glm52": 1,
+      "claude": 0
+    }
+  },
+  "default_timeout_seconds": 3600,
+  "default_max_attempts": 2,
+  "stages": [
+    {
+      "name": "Recuperación multipaso",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "long_task_recovery",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Añadir el corte vertical mínimo para checkpoints idempotentes, leases con heartbeat, reanudación tras reinicio y recuperación de claims vencidos. Mantener Python como control plane y usar Rust sólo si mejora una frontera de coordinación ya medida. Añadir pruebas de interrupción/reinicio y documentación operacional.",
+          "artifacts": [
+            "scripts/workflow_runtime.py",
+            "rust/src/main.rs",
+            "docs/LONG_RUNNING_TASKS.md"
+          ],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": [
+            "uv run pytest -q",
+            "uv run ruff check ."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Prueba adversarial",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "recovery_review",
+          "role": "verifier",
+          "route": "gemini_flash",
+          "model": "Gemini 3.5 Flash",
+          "task": "Simular una interrupción entre pasos, un reinicio del coordinador y un claim vencido. Verificar que las tareas terminadas no se repiten, las pendientes se reclaman una sola vez y el reporte conserva evidencia. Documentar límites restantes sin invocar proveedores reales.",
+          "artifacts": [
+            "docs/LONG_RUNNING_TASKS_REVIEW.md"
+          ],
+          "tools_policy": "full",
+          "needs": [
+            "long_task_recovery"
+          ],
+          "verify": [
+            "uv run pytest -q tests/test_workflow_runtime.py",
+            "uv run ruff check scripts tests"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Observabilidad local",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "observable_run_contract",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Exponer un contrato read-only y versionado que represente run, etapas, tareas, agente propietario y subagentes anidados, con modelo, estado, timestamps y último heartbeat. Debe derivarse de checkpoints existentes, sanitizar rutas/errores y funcionar sin dependencias web externas. Añadir fixtures y pruebas del árbol y de runs vacíos o parciales.",
+          "artifacts": [
+            "scripts/run_observability.py",
+            "tests/test_run_observability.py",
+            "docs/SWARM_UI_CONTRACT.md"
+          ],
+          "tools_policy": "full",
+          "needs": [
+            "long_task_recovery"
+          ],
+          "verify": [
+            "uv run pytest -q tests/test_run_observability.py",
+            "uv run ruff check scripts/run_observability.py tests/test_run_observability.py"
+          ]
+        },
+        {
+          "id": "operator_ui",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Crear un spike de UI nativa Rust y read-only como segundo binario feature-gated, comenzando con egui/eframe y sin afectar dependencias del coordinador cuando la feature esté apagada. Debe mostrar jerarquía tarea→agente→subagentes, modelo, etapa, estado y heartbeat; el detalle aparece dentro de la misma ventana y nunca inicia ventanas o procesos en primer plano. Incluir estados vacío/cargando/error/stale, navegación por teclado, contraste AA, repaint bajo demanda y listas virtualizadas. Medir CPU/RAM/startup/tamaño antes de fijar el toolkit.",
+          "artifacts": [
+            "rust/src/ui_main.rs",
+            "rust/tests/ui_state.rs",
+            "docs/SWARM_UI.md"
+          ],
+          "tools_policy": "full",
+          "needs": [
+            "observable_run_contract"
+          ],
+          "verify": [
+            "cargo test --manifest-path rust/Cargo.toml --features ui-egui",
+            "cargo clippy --manifest-path rust/Cargo.toml --features ui-egui --all-targets -- -D warnings"
+          ]
+        },
+        {
+          "id": "operator_ui_review",
+          "role": "verifier",
+          "route": "gemini_flash",
+          "model": "Gemini 3.5 Flash",
+          "task": "Revisar la UI local en desktop, tablet y móvil. Verificar árbol profundo, nombres largos, estados stale/error/empty, teclado, foco visible, reduced motion y que ninguna acción abra o enfoque procesos externos. Registrar brechas sin ampliar el alcance a edición del workflow.",
+          "artifacts": [
+            "docs/SWARM_UI_REVIEW.md"
+          ],
+          "tools_policy": "full",
+          "needs": [
+            "operator_ui"
+          ],
+          "verify": [
+            "cargo test --manifest-path rust/Cargo.toml --features ui-egui"
+          ]
+        }
+      ]
+    }
+  ]
+}

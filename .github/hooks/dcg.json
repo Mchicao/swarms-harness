@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "C:\\Users\\matia\\.local\\bin\\dcg.exe",
+        "powershell": "C:\\Users\\matia\\.local\\bin\\dcg.exe",
+        "cwd": ".",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

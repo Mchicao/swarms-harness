@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multi-provider orchestration"
+  short_description: "Delegate and integrate work across coding agents."
+  default_prompt: "Use $multi-provider-agent-orchestration to split this goal into safe, verifiable agent handoffs."

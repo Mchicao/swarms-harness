@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "goal": "Aceptar el contrato read-only de observabilidad del swarm después de corregir la salida UTF-8 del worker.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 1, "global_max_concurrency": 1, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 1800,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Recuperación de observabilidad",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "observable_run_contract_recovery",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Aceptar o corregir el contrato read-only ya generado en scripts/run_observability.py, tests/test_run_observability.py y docs/SWARM_UI_CONTRACT.md. Inspecciona los artefactos existentes antes de editar. Debe derivar run, etapas, tareas, agente propietario y subagentes desde checkpoints, sanitizar rutas/errores, soportar runs vacíos/parciales y no reclamar jobs ni iniciar workers. Ejecuta la suite dirigida con --basetemp .cache/pytest-observability-recovery y Ruff dirigido. No cambies workflow_runtime.py ni el coordinador Rust.",
+          "artifacts": ["scripts/run_observability.py", "tests/test_run_observability.py", "docs/SWARM_UI_CONTRACT.md"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": [
+            "uv run pytest -q --basetemp .cache/pytest-observability-recovery tests/test_run_observability.py",
+            "uv run ruff check scripts/run_observability.py tests/test_run_observability.py"
+          ]
+        }
+      ]
+    }
+  ]
+}

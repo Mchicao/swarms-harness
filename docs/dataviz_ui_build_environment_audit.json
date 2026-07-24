@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "goal": "Auditar de forma reproducible el entorno Windows necesario para verificar el spike UI Rust de SWARMS y dejar un runbook seguro.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 1, "global_max_concurrency": 1, "provider_concurrency": {"mock": 0, "gemini_flash": 0, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 600,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Auditoría de toolchain UI",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "ui_build_environment_audit",
+          "role": "critic",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Realiza una auditoría read-only del entorno de compilación para rust/src/ui_main.rs en C:\\Proyectos\\SWARMS. Lee rust/Cargo.toml, rust/src/ui_main.rs, docs/SWARM_UI.md, docs/STATE_CONTRACT.md, docs/UI_RUNTIME_EVALUATION.md y el contrato canónico del workspace Migrador sólo como contexto. Inspecciona rustup/cargo targets y versiones, link.exe/cl.exe/vswhere/clang/lld-link, y Docker si es relevante. No instales paquetes, no cambies PATH, no edites Cargo.lock/Cargo.toml ni procesos. Escribe únicamente docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md con evidencia de comandos, causa exacta del bloqueo, alternativas soportadas y pasos manuales con confirmación requerida. Distingue fuente formateada de binario verificado; no declares que cargo test/clippy pasan si no tienen exit code 0.",
+          "artifacts": ["docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["git diff --check -- docs/SWARM_UI_BUILD_ENVIRONMENT_AUDIT.md"]
+        }
+      ]
+    }
+  ]
+}

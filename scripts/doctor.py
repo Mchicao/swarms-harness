@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .agent_preflight import discover_agents, format_text
     from .paths import PROJECT_ROOT
 except ImportError:  # pragma: no cover - direct script execution path.
+    from agent_preflight import discover_agents, format_text
     from paths import PROJECT_ROOT
 
 
@@ -42,6 +44,13 @@ def check_python() -> bool:
         fail(f"Python 3.10+ required, found {sys.version.split()[0]}")
         return False
     ok(f"Python {sys.version.split()[0]}")
+    return True
+
+
+def check_agents() -> bool:
+    """Print the read-only agent inventory before other doctor checks."""
+    report = discover_agents()
+    print(format_text(report))
     return True
 
 
@@ -179,6 +188,7 @@ def check_secret_hygiene() -> bool:
 
 def main() -> int:
     checks = [
+        check_agents,
         check_python,
         check_git,
         check_public_cli,

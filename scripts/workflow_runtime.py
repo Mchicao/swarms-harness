@@ -54,6 +54,13 @@ OPENAI_COMPAT_KEY_ENV = {
 }
 MAX_DEPENDENCY_CONTEXT_CHARS = 12_000
 DEFAULT_WORKER_TIMEOUT = int(os.environ.get("SWARMS_WORKER_TIMEOUT", "600"))
+DEFAULT_HEARTBEAT_SECONDS = max(1, int(os.environ.get("SWARMS_HEARTBEAT_SECONDS", "30")))
+DEFAULT_CLAIM_STALE_SECONDS = max(1, int(os.environ.get("SWARMS_CLAIM_STALE_SECONDS", "900")))
+# FNV-1a 64-bit constants for stable checkpoint keys. Each runtime reads only
+# its own checkpoints (result.json vs result-rs.json), so the hash only needs
+# to be stable within a runtime, not byte-identical across Python and Rust.
+CHECKPOINT_FNV_OFFSET = 0xCBF29CE484222325
+CHECKPOINT_FNV_PRIME = 0x100000001B3
 SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SERIAL_PROVIDERS = {"antigravity_cli"}
 
@@ -63,6 +70,10 @@ NEEDS_RE = re.compile(r"@needs\((?P<deps>[^)]+)\)")
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def unix_ms() -> int:
+    return time.time_ns() // 1_000_000
 
 
 def slugify(value: str) -> str:
@@ -137,9 +148,15 @@ class WorkflowTask:
     role: str
     needs: list[str] = field(default_factory=list)
     source_id: str | None = None
+    agent_id: str | None = None
+    parent_task_id: str | None = None
+    subagents: list[str] = field(default_factory=list)
+    provider_subagent_visibility: str = "not_reported"
+    provider_subagents: list[str] = field(default_factory=list)
     route: str = "mock"
     provider: str = "mock"
     model: str = "mock-worker"
+    variant: str | None = None
     wrapper: str = "mock"
     tools_policy: str = "none"
     status: str = "pending"
@@ -148,6 +165,7 @@ class WorkflowTask:
     error: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    heartbeat_unix_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -158,9 +176,15 @@ class WorkflowTask:
             "role": self.role,
             "needs": self.needs,
             "source_id": self.source_id,
+            "agent_id": self.agent_id or self.source_id or self.task_id,
+            "parent_task_id": self.parent_task_id,
+            "subagents": self.subagents,
+            "provider_subagent_visibility": self.provider_subagent_visibility,
+            "provider_subagents": self.provider_subagents,
             "route": self.route,
             "provider": self.provider,
             "model": self.model,
+            "variant": self.variant,
             "wrapper": self.wrapper,
             "tools_policy": self.tools_policy,
             "status": self.status,
@@ -169,11 +193,46 @@ class WorkflowTask:
             "error": self.error,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
+            "heartbeat_unix_ms": self.heartbeat_unix_ms,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WorkflowTask:
-        return cls(**data)
+        normalized = dict(data)
+        normalized.setdefault("parent_task_id", normalized.pop("parent_id", None))
+        return cls(**normalized)
+
+
+def checkpoint_key(task: WorkflowTask) -> str:
+    """Stable FNV-1a hash of the task definition.
+
+    Two runs of the same task (same id, route, text, provider, model, needs,
+    artifacts, ...) produce the same key. Any change to the definition
+    invalidates it so a stale result is never silently reused on resume.
+    """
+    definition = json.dumps(
+        {
+            "task_id": task.task_id,
+            "source_id": task.source_id,
+            "stage": task.stage,
+            "route": task.route,
+            "text": task.text,
+            "role": task.role,
+            "needs": task.needs,
+            "artifacts": task.artifacts,
+            "tools_policy": task.tools_policy,
+            "provider": task.provider,
+            "model": task.model,
+            "variant": task.variant,
+            "wrapper": task.wrapper,
+        },
+        sort_keys=True,
+    )
+    hash_value = CHECKPOINT_FNV_OFFSET
+    for byte in definition.encode("utf-8"):
+        hash_value ^= byte
+        hash_value = (hash_value * CHECKPOINT_FNV_PRIME) & 0xFFFFFFFFFFFFFFFF
+    return f"{hash_value:016x}"
 
 
 class ClaimStore:
@@ -225,6 +284,28 @@ class ClaimStore:
         except json.JSONDecodeError:
             path.unlink(missing_ok=True)
 
+    def recover_expired(self) -> int:
+        """Sweep and remove all expired claim files; return the count recovered.
+
+        Called on resume so claims left by a crashed worker whose heartbeat
+        went silent are reclaimed without waiting for a new ``try_claim``.
+        """
+        if not self.claims_dir.exists():
+            return 0
+        recovered = 0
+        for path in self.claims_dir.glob("*.lock"):
+            try:
+                if time.time() - path.stat().st_mtime > self.stale_seconds:
+                    path.unlink(missing_ok=True)
+                    recovered += 1
+            except OSError:
+                continue
+        return recovered
+
+    def force_release(self, task_id: str) -> None:
+        """Remove a claim regardless of owner; used on resume after a crash."""
+        self.claim_path(task_id).unlink(missing_ok=True)
+
 
 class WorkflowRuntime:
     def __init__(
@@ -237,10 +318,13 @@ class WorkflowRuntime:
         provider_max_concurrency: dict[str, int] | None = None,
         run_root: Path = DEFAULT_RUNS_DIR,
         router_config: Path | None = None,
+        workspace_root: Path = WORKSPACE_ROOT,
+        claim_stale_seconds: int = DEFAULT_CLAIM_STALE_SECONDS,
     ):
         self.tasks_file = tasks_file
         self.workflow_plan = workflow_plan
         self.router_config = load_config(router_config)
+        self.workspace_root = workspace_root.resolve()
         self.run_id = run_id or str(uuid.uuid4())
         if not SAFE_RUN_ID_RE.fullmatch(self.run_id):
             raise ValueError(f"Unsafe run_id {self.run_id!r}; use letters, numbers, dot, underscore, or dash")
@@ -250,7 +334,8 @@ class WorkflowRuntime:
             raise ValueError(f"run_id escapes run_root: {self.run_id!r}")
         self.tasks_dir = self.run_dir / "tasks"
         self.results_dir = self.run_dir / "results"
-        self.claim_store = ClaimStore(self.run_dir / "claims")
+        self.claim_stale_seconds = claim_stale_seconds
+        self.claim_store = ClaimStore(self.run_dir / "claims", stale_seconds=claim_stale_seconds)
         self.max_total_workers = max_total_workers
         if global_max_concurrency < 1 or max_total_workers < 1:
             raise ValueError("Worker and concurrency limits must be positive")
@@ -267,7 +352,13 @@ class WorkflowRuntime:
         self.state_lock = threading.RLock()
 
     def event(self, event_type: str, **payload: Any) -> None:
-        item = {"time": utc_now(), "event": event_type, **payload}
+        item = {
+            "time": utc_now(),
+            "time_unix_ms": unix_ms(),
+            "run_id": self.run_id,
+            "event": event_type,
+            **payload,
+        }
         with self.state_lock:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
@@ -317,6 +408,7 @@ class WorkflowRuntime:
                     raise ValueError(f"Unknown route {route!r}")
                 provider = route_config.get("provider")
                 model = route_config.get("model")
+                variant = route_config.get("variant")
                 wrapper = route_config.get("wrapper")
                 if not all(isinstance(value, str) for value in (provider, model, wrapper)):
                     raise ValueError(f"Route {route!r} has an invalid provider definition")
@@ -336,15 +428,24 @@ class WorkflowRuntime:
                         role=spec.get("role", "general"),
                         needs=list(spec.get("needs", [])),
                         source_id=str(spec.get("id", "")) or None,
+                        agent_id=str(spec.get("agent_id", spec.get("id", ""))) or None,
+                        parent_task_id=str(spec.get("parent_task_id", spec.get("parent_id", ""))) or None,
                         route=route,
                         provider=provider,
                         model=model,
+                        variant=variant if isinstance(variant, str) and variant else None,
                         wrapper=wrapper,
                         tools_policy=spec.get("tools_policy", "none"),
                         artifacts=list(spec.get("artifacts", [])),
                     )
                 )
                 index += 1
+        children: dict[str, list[str]] = {}
+        for task in tasks:
+            if task.parent_task_id and task.agent_id:
+                children.setdefault(task.parent_task_id, []).append(task.agent_id)
+        for task in tasks:
+            task.subagents = children.get(task.source_id or task.task_id, [])
         if len(tasks) > self.max_total_workers:
             raise ValueError(f"Workflow has {len(tasks)} tasks, above max_total_workers={self.max_total_workers}")
         return tasks
@@ -362,8 +463,37 @@ class WorkflowRuntime:
                 artifacts.append(token)
         return artifacts
 
-    def initialize(self, instance_id: str | None = None, force: bool = False) -> list[WorkflowTask]:
+    def initialize(
+        self,
+        instance_id: str | None = None,
+        force: bool = False,
+        resume: bool = False,
+    ) -> list[WorkflowTask]:
+        if force and resume:
+            raise ValueError("force and resume are mutually exclusive")
         workflow_state = self.run_dir / "workflow.json"
+        if resume and not workflow_state.exists():
+            raise ValueError(f"Cannot resume missing run: {self.run_id}")
+        if resume:
+            claims_recovered = self.claim_store.recover_expired()
+            tasks = self.load_tasks()
+            for task in tasks:
+                if task.status != "completed":
+                    # The previous runtime is dead; force-release any claim it
+                    # left so the requeued task can be claimed by a fresh worker.
+                    self.claim_store.force_release(task.task_id)
+                    task.status = "pending"
+                    task.error = None
+                    task.started_at = None
+                    task.ended_at = None
+                    self.save_task(task)
+                    self.event("task_requeued", task_id=task.task_id, attempts=task.attempts)
+            self.event(
+                "workflow_resumed",
+                completed=sum(task.status == "completed" for task in tasks),
+                claims_recovered=claims_recovered,
+            )
+            return tasks
         if workflow_state.exists() and not force:
             tasks = self.load_tasks()
             for task in tasks:
@@ -376,7 +506,7 @@ class WorkflowRuntime:
             return tasks
         if force and self.run_dir.exists():
             shutil.rmtree(self.run_dir)
-            self.claim_store = ClaimStore(self.run_dir / "claims")
+            self.claim_store = ClaimStore(self.run_dir / "claims", stale_seconds=self.claim_stale_seconds)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         tasks = self.build_tasks(instance_id)
         for task in tasks:
@@ -385,7 +515,11 @@ class WorkflowRuntime:
             self.run_dir / "workflow.json",
             {
                 "run_id": self.run_id,
+                "state_schema_version": 1,
+                "runtime": "python",
                 "created_at": utc_now(),
+                "workspace_root": str(self.workspace_root),
+                "heartbeat_interval_seconds": DEFAULT_HEARTBEAT_SECONDS,
                 "tasks_file": str(self.tasks_file),
                 "workflow_plan": str(self.workflow_plan) if self.workflow_plan else None,
                 "global_max_concurrency": self.global_max_concurrency,
@@ -404,6 +538,25 @@ class WorkflowRuntime:
     def load_tasks(self) -> list[WorkflowTask]:
         with self.state_lock:
             return [WorkflowTask.from_dict(read_json(path)) for path in sorted(self.tasks_dir.glob("*.json"))]
+
+    def load_completed_checkpoint(self, task: WorkflowTask) -> dict[str, Any] | None:
+        """Return a stored completed result whose checkpoint still matches.
+
+        On resume, a task that was ``in_progress`` when the runtime crashed may
+        already have a valid ``result.json`` on disk (the worker finished but
+        the coordinator died before persisting ``completed`` state). Reusing
+        that result avoids re-running an idempotent-but-expensive worker.
+        """
+        result_path = self.results_dir / task.task_id / "result.json"
+        if not result_path.exists():
+            return None
+        try:
+            result = read_json(result_path)
+        except (json.JSONDecodeError, OSError):
+            return None
+        if result.get("success") is True and result.get("checkpoint_key") == checkpoint_key(task):
+            return result
+        return None
 
     def dependency_satisfied(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> bool:
         for dep in task.needs:
@@ -489,6 +642,11 @@ class WorkflowRuntime:
                     task.tools_policy,
                 ]
             )
+        if task.wrapper in {"gemini", "opencode"}:
+            # SWARMS-003: El harness y el repositorio objetivo son raíces distintas.
+            command.extend(["--cwd", str(self.workspace_root)])
+        if task.wrapper == "opencode" and task.variant:
+            command.extend(["--variant", task.variant])
         if task.wrapper == "openai_compat":
             key_env = OPENAI_COMPAT_KEY_ENV.get(task.provider, "OPENAI_COMPAT_API_KEY")
             base_url_env = f"{task.provider.upper()}_BASE_URL"
@@ -503,6 +661,19 @@ class WorkflowRuntime:
         return command
 
     def run_task(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> dict[str, Any]:
+        cached = self.load_completed_checkpoint(task)
+        if cached is not None:
+            task.status = "completed"
+            task.attempts = cached.get("attempts", task.attempts)
+            task.ended_at = cached.get("ended_at") or utc_now()
+            task.heartbeat_unix_ms = unix_ms()
+            self.save_task(task)
+            self.event(
+                "task_checkpoint_hit",
+                task_id=task.task_id,
+                checkpoint_key=cached["checkpoint_key"],
+            )
+            return cached
         owner = f"{task.provider}-{task.task_id}-{uuid.uuid4().hex[:8]}"
         if not self.claim_store.try_claim(task.task_id, owner):
             task.status = "blocked"
@@ -515,6 +686,7 @@ class WorkflowRuntime:
             task.status = "in_progress"
             task.attempts += 1
             task.started_at = utc_now()
+            task.heartbeat_unix_ms = unix_ms()
             self.save_task(task)
             self.event("task_started", task_id=task.task_id, provider=task.provider, model=task.model)
             work_dir = self.results_dir / task.task_id
@@ -523,40 +695,56 @@ class WorkflowRuntime:
             output_log = work_dir / "worker.log"
             status_path = work_dir / "status.json"
             started = time.time()
+            heartbeat_stop = threading.Event()
+            heartbeat_thread = threading.Thread(
+                target=self._heartbeat_until_stopped,
+                args=(task, owner, heartbeat_stop),
+                daemon=True,
+            )
+            heartbeat_thread.start()
             try:
-                command = self.worker_command(task, prompt, status_path)
-                with output_log.open("w", encoding="utf-8") as log:
-                    proc = subprocess.run(
-                        command,
-                        cwd=WORKSPACE_ROOT,
-                        text=True,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        timeout=DEFAULT_WORKER_TIMEOUT,
-                        encoding="utf-8",
-                        errors="replace",
-                    )
-                returncode = proc.returncode
-            except (OSError, ValueError) as exc:
-                returncode = 127
-                output_log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
-            except subprocess.TimeoutExpired:
-                returncode = 124
-                with output_log.open("a", encoding="utf-8") as log:
-                    log.write(f"\nWorker timed out after {DEFAULT_WORKER_TIMEOUT}s\n")
+                try:
+                    command = self.worker_command(task, prompt, status_path)
+                    with output_log.open("w", encoding="utf-8") as log:
+                        proc = subprocess.run(
+                            command,
+                            cwd=PROJECT_ROOT,
+                            text=True,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            timeout=DEFAULT_WORKER_TIMEOUT,
+                            encoding="utf-8",
+                            errors="replace",
+                        )
+                    returncode = proc.returncode
+                except (OSError, ValueError) as exc:
+                    returncode = 127
+                    output_log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+                except subprocess.TimeoutExpired:
+                    returncode = 124
+                    with output_log.open("a", encoding="utf-8") as log:
+                        log.write(f"\nWorker timed out after {DEFAULT_WORKER_TIMEOUT}s\n")
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join()
             success = returncode == 0
             task.status = "completed" if success else "failed"
             task.error = None if success else read_text_tail(output_log)[-2000:]
             task.ended_at = utc_now()
+            task.heartbeat_unix_ms = unix_ms()
             self.save_task(task)
             result = {
                 "task_id": task.task_id,
                 "success": success,
+                "status": "completed" if success else "failed",
                 "returncode": returncode,
                 "duration_seconds": round(time.time() - started, 3),
                 "provider": task.provider,
                 "model": task.model,
                 "output_log": str(output_log),
+                "checkpoint_key": checkpoint_key(task),
+                "attempts": task.attempts,
+                "ended_at": task.ended_at,
             }
             write_json_atomic(work_dir / "result.json", result)
             self.event("task_finished", **result)
@@ -564,8 +752,24 @@ class WorkflowRuntime:
         finally:
             self.claim_store.release(task.task_id, owner)
 
-    def run(self, instance_id: str | None = None, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
-        tasks = self.initialize(instance_id, force=force)
+    def _heartbeat_until_stopped(self, task: WorkflowTask, owner: str, stop: threading.Event) -> None:
+        while not stop.wait(DEFAULT_HEARTBEAT_SECONDS):
+            self._record_task_heartbeat(task, owner)
+
+    def _record_task_heartbeat(self, task: WorkflowTask, owner: str) -> None:
+        task.heartbeat_unix_ms = unix_ms()
+        self.claim_store.heartbeat(task.task_id, owner)
+        self.save_task(task)
+        self.event("task_heartbeat", task_id=task.task_id)
+
+    def run(
+        self,
+        instance_id: str | None = None,
+        dry_run: bool = False,
+        force: bool = False,
+        resume: bool = False,
+    ) -> dict[str, Any]:
+        tasks = self.initialize(instance_id, force=force, resume=resume)
         if dry_run:
             report = self.report(tasks, status="planned")
             write_json_atomic(self.run_dir / "report.json", report)
@@ -674,10 +878,17 @@ def main() -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-total-workers", type=int, default=1000)
     parser.add_argument("--global-max-concurrency", type=int, default=16)
     parser.add_argument("--provider-cap", action="append", default=[], help="Route cap as route=count")
     parser.add_argument("--router-config", type=Path)
+    parser.add_argument(
+        "--claim-stale-seconds",
+        type=int,
+        default=DEFAULT_CLAIM_STALE_SECONDS,
+        help="Seconds before an unheartbeat claim is considered expired and recoverable",
+    )
     args = parser.parse_args()
 
     runtime = WorkflowRuntime(
@@ -688,8 +899,14 @@ def main() -> int:
         global_max_concurrency=args.global_max_concurrency,
         provider_max_concurrency=parse_provider_caps(args.provider_cap),
         router_config=args.router_config,
+        claim_stale_seconds=args.claim_stale_seconds,
     )
-    report = runtime.run(instance_id=args.instance_id, dry_run=args.dry_run, force=args.force)
+    report = runtime.run(
+        instance_id=args.instance_id,
+        dry_run=args.dry_run,
+        force=args.force,
+        resume=args.resume,
+    )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["status"] in {"planned", "completed"} else 1
 

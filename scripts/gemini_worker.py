@@ -35,7 +35,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 from agy_call import agy_complete  # noqa: E402
 
 DEFAULT_MODEL = os.environ.get("AGY_MODEL", "Gemini 3.5 Flash (Low)")
-DEFAULT_TIMEOUT = int(os.environ.get("AGY_TIMEOUT", "180"))
+DEFAULT_TIMEOUT = int(os.environ.get("AGY_TIMEOUT", "600"))
 
 
 def gemini_complete(
@@ -43,6 +43,7 @@ def gemini_complete(
     *,
     model: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    cwd: str | Path | None = None,
     tools_policy: str = "none",
 ) -> str:
     """Call Gemini via agy and return the assistant text.
@@ -52,7 +53,8 @@ def gemini_complete(
     """
     kwargs = {"model": model, "timeout": timeout}
     if tools_policy == "full":
-        kwargs.update(skip_permissions=True, sandbox=False)
+        # SWARMS-004: La edición ocurre en el workspace objetivo explícito.
+        kwargs.update(skip_permissions=True, sandbox=False, cwd=cwd)
         return agy_complete(prompt, **kwargs)
 
     import tempfile
@@ -79,13 +81,22 @@ def main() -> int:
         help="agy model label, e.g. 'Gemini 3.5 Flash (Low)'",
     )
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--cwd", type=Path, default=None, help="Workspace used for full-tools execution")
     parser.add_argument("--tools-policy", default="none", choices=["none", "full"], help="Tools policy: none or full")
     args = parser.parse_args()
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
 
     try:
-        output = gemini_complete(prompt, model=args.model, timeout=args.timeout, tools_policy=args.tools_policy)
+        output = gemini_complete(
+            prompt,
+            model=args.model,
+            timeout=args.timeout,
+            cwd=args.cwd,
+            tools_policy=args.tools_policy,
+        )
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(output)
         if args.status:
             args.status.write_text(

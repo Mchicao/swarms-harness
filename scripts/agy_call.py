@@ -44,7 +44,7 @@ AGY_BRAIN_DIR = Path(os.path.expandvars(r"%USERPROFILE%\.gemini\antigravity-cli\
 
 # --print must point at an absolute path or be passed a literal string.
 AGY_BIN = os.environ.get("AGY_BIN", "agy")
-DEFAULT_TIMEOUT = int(os.environ.get("AGY_TIMEOUT", "180"))
+DEFAULT_TIMEOUT = int(os.environ.get("AGY_TIMEOUT", "600"))
 
 
 def _list_conv_dbs() -> list[Path]:
@@ -273,6 +273,9 @@ def agy_complete(
     before = {p.name: p.stat().st_mtime for p in _list_conv_dbs()}
 
     cmd: list[str] = [AGY_BIN]
+    if cwd is not None:
+        # SWARMS-005: bind agy's tool workspace to the declared worker workspace.
+        cmd += ["--add-dir", str(Path(cwd).resolve())]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if sandbox:

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "goal": "Cerrar la revisión adversarial de recuperación y construir el spike UI read-only de observabilidad SWARMS.",
+  "planner": {"route": "codex_orchestrator", "model": "GPT-5.6 Sol High"},
+  "review_policy": {"static_review_required": true, "critic_review_required": true, "premium_allowed": true},
+  "budget_policy": {"max_total_workers": 2, "global_max_concurrency": 2, "provider_concurrency": {"mock": 0, "gemini_flash": 1, "glm52": 1, "claude": 0}},
+  "default_timeout_seconds": 1800,
+  "default_max_attempts": 1,
+  "stages": [
+    {
+      "name": "Revisión y UI local",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "recovery_review_replay",
+          "role": "verifier",
+          "route": "gemini_flash",
+          "model": "Gemini 3.5 Flash",
+          "task": "Revisar adversarialmente el corte de recuperación existente en scripts/workflow_runtime.py, rust/src/main.rs y docs/LONG_RUNNING_TASKS.md. Ejecutar tests/test_workflow_runtime.py con --basetemp .cache/pytest-recovery-review y registrar sólo evidencia verificable de interrupción, reinicio, heartbeat, lease vencido y no repetición. Escribir exclusivamente docs/LONG_RUNNING_TASKS_REVIEW.md; no modificar código ni trackers.",
+          "artifacts": ["docs/LONG_RUNNING_TASKS_REVIEW.md"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["uv run pytest -q --basetemp .cache/pytest-recovery-review tests/test_workflow_runtime.py", "uv run ruff check scripts/workflow_runtime.py tests/test_workflow_runtime.py"]
+        },
+        {
+          "id": "operator_ui_spike",
+          "role": "programmer",
+          "route": "glm52",
+          "model": "GLM 5.2 High",
+          "task": "Construir el spike mínimo de UI nativa Rust y read-only como segundo binario feature-gated con egui/eframe, basado en docs/UI_RUNTIME_EVALUATION.md, docs/STATE_CONTRACT.md, docs/SWARM_UI_CONTRACT.md y scripts/run_observability.py. Debe leer snapshots/eventos sin reclamar jobs ni iniciar workers, mostrar run→stage→task→agent→subagents con modelo/estado/heartbeat, estados vacío/cargando/error/stale, detalle en la misma ventana, repaint bajo demanda y lista virtualizada. Ownership exclusivo: rust/Cargo.toml, rust/src/ui_main.rs, rust/tests/ui_state.rs, docs/SWARM_UI.md y archivos UI auxiliares bajo rust. No tocar Migrador ni rust/src/main.rs. Si el linker MSVC impide compilar, deja el spike coherente y registra el bloqueo exacto; no sustituirlo por mock.",
+          "artifacts": ["rust/src/ui_main.rs", "rust/tests/ui_state.rs", "docs/SWARM_UI.md"],
+          "tools_policy": "full",
+          "needs": [],
+          "verify": ["cargo fmt --manifest-path rust/Cargo.toml -- --check", "cargo test --manifest-path rust/Cargo.toml --features ui-egui", "cargo clippy --manifest-path rust/Cargo.toml --features ui-egui --all-targets -- -D warnings"]
+        }
+      ]
+    }
+  ]
+}

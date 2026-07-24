@@ -25,6 +25,8 @@ def test_agy_safe_mode_uses_sandbox_without_permission_bypass(monkeypatch, tmp_p
     assert answer == "SAFE"
     assert "--sandbox" in captured["command"]
     assert "--dangerously-skip-permissions" not in captured["command"]
+    assert "--add-dir" in captured["command"]
+    assert str(tmp_path.resolve()) in captured["command"]
     assert captured["cwd"] == tmp_path
 
 

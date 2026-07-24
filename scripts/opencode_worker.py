@@ -11,10 +11,9 @@ Security:
     (``~/.local/share/opencode/auth.json``, user-local, gitignored).
 
 Context:
-    OpenCode loads AGENTS.md from cwd by default. To keep context lean,
-    this worker sets ``--cwd`` to a temp directory and passes the prompt
-    via ``-f`` (file attachment), so no project rules leak into the worker
-    context unless explicitly desired.
+    OpenCode requires a stable project cwd for headless runs. The worker
+    therefore uses the workspace cwd and relies on ``--pure`` to prevent
+    tool execution for read-only calls.
 
 Usage:
     python scripts/opencode_worker.py --prompt /path/to/prompt.txt
@@ -26,10 +25,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
+import signal
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 try:
@@ -42,10 +40,50 @@ DEFAULT_TIMEOUT = int(os.environ.get("OPENCODE_TIMEOUT", "600"))
 OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 
 
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Termina el grupo del worker sin afectar procesos fuera de él."""
+    root_running = proc.poll() is None
+    if root_running:
+        try:
+            if os.name == "nt":
+                # CREATE_NEW_PROCESS_GROUP permite una señal cooperativa al árbol.
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            root_running = False
+
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+
+    if os.name == "nt":
+        # /T limita la terminación al árbol cuyo PID pertenece al worker,
+        # incluso si la raíz ya terminó pero dejó descendientes.
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            # El grupo aislado sigue siendo propiedad de este worker aunque
+            # su raíz haya terminado; sólo escalamos si aún existe.
+            os.killpg(proc.pid, 0)
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    if root_running or proc.poll() is None:
+        proc.wait()
+
+
 def opencode_complete(
     prompt: str,
     *,
     model: str = DEFAULT_MODEL,
+    variant: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     cwd: str | Path | None = None,
     tools_policy: str = "none",
@@ -54,49 +92,77 @@ def opencode_complete(
 
     If tools_policy is 'full', sets the cwd to PROJECT_ROOT so that OpenCode
     can load the workspace-level context (like AGENTS.md).
-    Otherwise, uses a clean temp directory to keep the context window lean.
+    Otherwise, uses the workspace cwd with ``--pure`` to keep the call
+    read-only while preserving OpenCode's project/session initialization.
     """
-    # Write prompt to temp file so we can pass it via -f
-    tmp_dir = Path(tempfile.mkdtemp(prefix="swarms_opencode_"))
-    prompt_file = tmp_dir / "prompt.md"
-    prompt_file.write_text(prompt, encoding="utf-8")
-
+    # Inline the bounded prompt: OpenCode 1.14 can hang when a headless run
+    # receives the task as a positional message plus a `-f` attachment.
+    message = "Complete the task described below. Write only the required code changes.\n\n" + prompt
     cmd = [
         OPENCODE_BIN,
         "run",
+        "--format",
+        "json",
         "-m",
         model,
-        "-f",
-        str(prompt_file),
-        "Complete the task described in the attached file. Write only the required code changes.",
     ]
+    if variant:
+        cmd.extend(["--variant", variant])
+    cmd.extend(
+        [
+            message,
+        ]
+    )
+    message_index = cmd.index(message)
     if tools_policy == "full":
-        cmd.insert(-1, "--auto")
+        # SWARMS-001: OpenCode 1.14 reemplazó --auto por esta bandera explícita.
+        cmd.insert(message_index, "--dangerously-skip-permissions")
     else:
-        cmd.insert(-1, "--pure")
+        cmd.insert(message_index, "--pure")
 
-    target_cwd = cwd
-    if tools_policy == "full" and not target_cwd:
-        target_cwd = WORKSPACE_ROOT
+    target_cwd = cwd or WORKSPACE_ROOT
+    popen_kwargs: dict[str, object] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        # OpenCode emits UTF-8 even when the parent PowerShell locale is
+        # cp1252; replacement keeps a completed response parseable.
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "cwd": str(target_cwd),
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
 
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(target_cwd) if target_cwd else str(tmp_dir),
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(f"OpenCode exited {proc.returncode}. stderr={stderr[:500]!r}")
+
+        output = (stdout or "").strip()
+        if not output:
+            raise RuntimeError(f"OpenCode produced no stdout. returncode={proc.returncode} stderr={stderr[:300]!r}")
+        text_events: list[str] = []
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "error":
+                # SWARMS-002: Algunas fallas API terminan con exit code 0.
+                error = event.get("error", {})
+                message = error.get("data", {}).get("message") or error.get("message") or "OpenCode API error"
+                raise RuntimeError(str(message))
+            if event.get("type") == "text":
+                text = event.get("part", {}).get("text")
+                if isinstance(text, str):
+                    text_events.append(text)
+        return "".join(text_events) if text_events else output
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"OpenCode exited {proc.returncode}. stderr={proc.stderr[:500]!r}")
-
-    output = (proc.stdout or "").strip()
-    if not output:
-        raise RuntimeError(f"OpenCode produced no stdout. returncode={proc.returncode} stderr={proc.stderr[:300]!r}")
-    return output
+        _terminate_process_tree(proc)
 
 
 def main() -> int:
@@ -104,14 +170,25 @@ def main() -> int:
     parser.add_argument("--prompt", type=Path, required=True, help="Path to prompt file.")
     parser.add_argument("--status", type=Path, default=None, help="Optional status output path.")
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--variant", default=None, help="Model variant, e.g. high")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--cwd", type=Path, default=None, help="Workspace used for full-tools execution")
     parser.add_argument("--tools-policy", default="none", choices=["none", "full"], help="Tools policy: none or full")
     args = parser.parse_args()
 
     prompt = args.prompt.read_text(encoding="utf-8", errors="replace")
 
     try:
-        output = opencode_complete(prompt, model=args.model, timeout=args.timeout, tools_policy=args.tools_policy)
+        output = opencode_complete(
+            prompt,
+            model=args.model,
+            variant=args.variant,
+            timeout=args.timeout,
+            cwd=args.cwd,
+            tools_policy=args.tools_policy,
+        )
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         print(output)
         if args.status:
             args.status.write_text(

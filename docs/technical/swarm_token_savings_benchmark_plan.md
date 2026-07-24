@@ -50,7 +50,11 @@ We will record telemetry into a central append-only JSONL file (`.agent/traces/t
 3. **Z.AI Coding Plan (`glm-5.2`):** Handle dict-like vs object-like usage objects safely:
     ```python
     details = getattr(usage, "prompt_tokens_details", None)
-    cached = details.get("cached_tokens", 0) if isinstance(details, dict) else (getattr(details, "cached_tokens", 0) if details else 0)
+    cached = (
+        details.get("cached_tokens", 0)
+        if isinstance(details, dict)
+        else (getattr(details, "cached_tokens", 0) if details else 0)
+    )
     ```
 4. **Kilo Models & Swarm Overhead:** Capture tokens consumed by `kilo` runs, Watcher AI Review, Paramedic Retries, and Goal Evaluators, classifying them as `overhead`.
 

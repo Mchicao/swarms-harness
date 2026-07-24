@@ -1,11 +1,19 @@
 import json
+import os
 import time
 from pathlib import Path
 
 import pytest
 
 from scripts import workflow_runtime
-from scripts.workflow_runtime import ClaimStore, WorkflowRuntime, WorkflowTask, parse_provider_caps
+from scripts.workflow_runtime import (
+    ClaimStore,
+    WorkflowRuntime,
+    WorkflowTask,
+    checkpoint_key,
+    parse_provider_caps,
+    write_json_atomic,
+)
 
 
 def test_workflow_plan_is_deterministic(tmp_path):
@@ -19,6 +27,23 @@ def test_workflow_plan_is_deterministic(tmp_path):
     assert len(tasks_a) == 5
     assert tasks_a[0]["needs"] == []
     assert any("reshard_plan" in dep for dep in tasks_a[1]["needs"])
+
+
+def test_nested_agent_fields_are_persisted_for_read_only_views(tmp_path):
+    plan = json.loads(Path("docs/workflow_plan_example.json").read_text(encoding="utf-8"))
+    plan["stages"][1]["tasks"][0]["parent_task_id"] = "reshard_plan"
+    plan_path = tmp_path / "nested-plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="nested", run_root=tmp_path / "runs")
+    tasks = runtime.build_tasks_from_plan(plan_path)
+
+    assert tasks[0].subagents == ["compress"]
+    assert tasks[1].agent_id == "compress"
+    assert tasks[1].parent_task_id == "reshard_plan"
+    assert tasks[1].provider_subagent_visibility == "not_reported"
+    assert tasks[1].provider_subagents == []
+    assert tasks[1].to_dict()["heartbeat_unix_ms"] is None
 
 
 def test_claim_store_prevents_double_claim_and_recovers_stale_claim(tmp_path):
@@ -35,6 +60,20 @@ def test_claim_store_prevents_double_claim_and_recovers_stale_claim(tmp_path):
     assert claims.try_claim("task-1", "worker-b")
     claims.release("task-1", "worker-b")
     assert claims.try_claim("task-1", "worker-c")
+
+
+def test_task_heartbeat_updates_read_only_state_contract(tmp_path):
+    runtime = WorkflowRuntime(run_id="heartbeat", run_root=tmp_path)
+    task = runtime.initialize("micro-reshard-roundtrip", force=True)[0]
+    owner = "worker-a"
+    assert runtime.claim_store.try_claim(task.task_id, owner)
+
+    runtime._record_task_heartbeat(task, owner)
+
+    saved = json.loads((runtime.tasks_dir / f"{task.task_id}.json").read_text(encoding="utf-8"))
+    claim = json.loads(runtime.claim_store.claim_path(task.task_id).read_text(encoding="utf-8"))
+    assert saved["heartbeat_unix_ms"] > 0
+    assert claim["heartbeat_at"]
 
 
 def test_workflow_dry_run_writes_planned_report(tmp_path):
@@ -164,6 +203,39 @@ def test_interrupted_tasks_become_blocked_instead_of_spinning(tmp_path):
     report = resumed.run("micro-reshard-roundtrip", dry_run=True)
 
     assert report["task_counts"]["blocked"] == 1
+
+
+def test_resume_preserves_completed_tasks_and_requeues_unfinished_tasks(tmp_path):
+    runtime = WorkflowRuntime(run_id="resume-explicit", run_root=tmp_path)
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+    tasks[0].status = "completed"
+    tasks[0].attempts = 1
+    tasks[1].status = "in_progress"
+    tasks[1].attempts = 1
+    runtime.save_task(tasks[0])
+    runtime.save_task(tasks[1])
+
+    resumed = WorkflowRuntime(run_id="resume-explicit", run_root=tmp_path)
+    loaded = resumed.initialize("micro-reshard-roundtrip", resume=True)
+
+    assert loaded[0].status == "completed"
+    assert loaded[0].attempts == 1
+    assert loaded[1].status == "pending"
+    assert loaded[1].attempts == 1
+
+
+def test_resume_requires_an_existing_run(tmp_path):
+    runtime = WorkflowRuntime(run_id="missing", run_root=tmp_path)
+
+    with pytest.raises(ValueError, match="Cannot resume missing run"):
+        runtime.initialize("micro-reshard-roundtrip", resume=True)
+
+
+def test_force_and_resume_are_mutually_exclusive(tmp_path):
+    runtime = WorkflowRuntime(run_id="exclusive", run_root=tmp_path)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        runtime.initialize("micro-reshard-roundtrip", force=True, resume=True)
 
 
 def test_future_exception_is_persisted_as_failed_result(tmp_path, monkeypatch):
@@ -334,14 +406,23 @@ def test_glm52_route_uses_installed_opencode_model_identifier(tmp_path):
         ),
         encoding="utf-8",
     )
-    runtime = WorkflowRuntime(workflow_plan=plan_path, run_id="glm52", run_root=tmp_path)
+    workspace = tmp_path / "workspace"
+    runtime = WorkflowRuntime(
+        workflow_plan=plan_path,
+        run_id="glm52",
+        run_root=tmp_path,
+        workspace_root=workspace,
+    )
     task = runtime.build_tasks_from_plan(plan_path)[0]
     command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
 
     assert task.provider == "opencode"
     assert task.model == "zai-coding-plan/glm-5.2"
+    assert task.variant == "high"
     assert command[1:3] == ["-m", "scripts.opencode_worker"]
     assert command[command.index("--model") + 1] == "zai-coding-plan/glm-5.2"
+    assert command[command.index("--variant") + 1] == "high"
+    assert Path(command[command.index("--cwd") + 1]) == workspace
 
 
 def test_dependency_outputs_are_included_in_downstream_prompt(tmp_path):
@@ -677,3 +758,233 @@ def test_hy3_hermes_route_forces_free_model_and_nous_provider(tmp_path):
     # free tier (tencent/hy3:free is $0 there), not its paid glm-5.2 default.
     assert "--provider" in command
     assert command[command.index("--provider") + 1] == "nous"
+
+
+# ---------------------------------------------------------------------------
+# Long-running task support: idempotent checkpoints, leases, resume, recovery.
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_key_is_stable_and_invalidates_on_definition_change(tmp_path):
+    runtime = WorkflowRuntime(run_id="ckpt-stable", run_root=tmp_path)
+    task = runtime.initialize("micro-reshard-roundtrip", force=True)[0]
+
+    first = checkpoint_key(task)
+    second = checkpoint_key(task)
+    assert first == second
+    assert len(first) == 16  # 64-bit FNV-1a hex digest
+
+    task.text = "[planner] Different requirements"
+    assert checkpoint_key(task) != first
+
+
+def test_completed_checkpoint_is_reused_without_rerunning_worker(tmp_path, monkeypatch):
+    runtime = WorkflowRuntime(
+        run_id="ckpt-reuse",
+        run_root=tmp_path,
+        global_max_concurrency=1,
+        provider_max_concurrency={"mock": 1},
+    )
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+    task = tasks[0]
+    key = checkpoint_key(task)
+
+    # Simulate: worker finished and wrote result.json, but the runtime crashed
+    # before persisting ``completed`` task state.
+    work_dir = runtime.results_dir / task.task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    cached = {
+        "task_id": task.task_id,
+        "success": True,
+        "status": "completed",
+        "returncode": 0,
+        "duration_seconds": 0.001,
+        "provider": task.provider,
+        "model": task.model,
+        "output_log": str(work_dir / "worker.log"),
+        "checkpoint_key": key,
+        "attempts": 1,
+        "ended_at": "2024-01-01T00:00:00+00:00",
+    }
+    write_json_atomic(work_dir / "result.json", cached)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("worker must not run when a valid checkpoint exists")
+
+    monkeypatch.setattr(runtime, "worker_command", fail_if_called)
+
+    result = runtime.run_task(task, tasks)
+
+    assert result["checkpoint_key"] == key
+    assert task.status == "completed"
+
+
+def test_stale_checkpoint_is_ignored_when_definition_changed(tmp_path, monkeypatch):
+    runtime = WorkflowRuntime(
+        run_id="ckpt-stale",
+        run_root=tmp_path,
+        global_max_concurrency=1,
+        provider_max_concurrency={"mock": 1},
+    )
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+    task = tasks[0]
+
+    work_dir = runtime.results_dir / task.task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    stale_result = {
+        "task_id": task.task_id,
+        "success": True,
+        "status": "completed",
+        "returncode": 0,
+        "checkpoint_key": checkpoint_key(task),
+        "provider": task.provider,
+        "model": task.model,
+        "output_log": "",
+        "attempts": 1,
+        "ended_at": "2024-01-01T00:00:00+00:00",
+    }
+    write_json_atomic(work_dir / "result.json", stale_result)
+
+    # Change the definition so the checkpoint no longer matches.
+    task.text = "[planner] Revised requirements"
+
+    worker_called = {"yes": False}
+    real_worker_command = runtime.worker_command
+
+    def tracking_command(t, prompt, status):
+        worker_called["yes"] = True
+        return real_worker_command(t, prompt, status)
+
+    monkeypatch.setattr(runtime, "worker_command", tracking_command)
+
+    runtime.run_task(task, tasks)
+
+    assert worker_called["yes"] is True
+
+
+def test_claim_store_recover_expired_sweeps_stale_claims(tmp_path):
+    claims = ClaimStore(tmp_path, stale_seconds=1)
+    claims.try_claim("task-1", "worker-a")
+
+    stale_path = claims.claim_path("task-1")
+    old_time = time.time() - 100
+    os.utime(stale_path, (old_time, old_time))
+
+    recovered = claims.recover_expired()
+
+    assert recovered == 1
+    assert not stale_path.exists()
+    assert claims.try_claim("task-1", "worker-b")
+
+
+def test_claim_store_recover_expired_leaves_fresh_claims(tmp_path):
+    claims = ClaimStore(tmp_path, stale_seconds=900)
+    claims.try_claim("task-1", "worker-a")
+
+    recovered = claims.recover_expired()
+
+    assert recovered == 0
+    assert claims.claim_path("task-1").exists()
+
+
+def test_resume_force_releases_orphaned_claims_for_requeued_tasks(tmp_path):
+    runtime = WorkflowRuntime(run_id="orphan", run_root=tmp_path)
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+
+    # Simulate a crash: task in_progress with a live (not-yet-stale) claim.
+    tasks[0].status = "in_progress"
+    runtime.save_task(tasks[0])
+    assert runtime.claim_store.try_claim(tasks[0].task_id, "dead-worker")
+    claim_path = runtime.claim_store.claim_path(tasks[0].task_id)
+    assert claim_path.exists()
+
+    resumed = WorkflowRuntime(run_id="orphan", run_root=tmp_path)
+    loaded = resumed.initialize("micro-reshard-roundtrip", resume=True)
+
+    assert not claim_path.exists()
+    assert loaded[0].status == "pending"
+    # The requeued task can be claimed by a fresh worker immediately.
+    assert resumed.claim_store.try_claim(tasks[0].task_id, "new-worker")
+
+
+def test_run_with_resume_completes_after_interruption(tmp_path):
+    runtime = WorkflowRuntime(
+        run_id="restart",
+        run_root=tmp_path,
+        global_max_concurrency=2,
+        provider_max_concurrency={"mock": 2},
+    )
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+
+    # Simulate partial progress: task[0] done, task[1] crashed mid-flight.
+    tasks[0].status = "completed"
+    tasks[0].attempts = 1
+    runtime.save_task(tasks[0])
+    runtime.claim_store.try_claim(tasks[1].task_id, "dead-worker")
+    tasks[1].status = "in_progress"
+    runtime.save_task(tasks[1])
+
+    resumed = WorkflowRuntime(
+        run_id="restart",
+        run_root=tmp_path,
+        global_max_concurrency=2,
+        provider_max_concurrency={"mock": 2},
+    )
+    report = resumed.run("micro-reshard-roundtrip", resume=True)
+
+    assert report["status"] == "completed"
+    assert report["task_counts"] == {"completed": 5}
+
+
+def test_resume_emits_claims_recovered_event(tmp_path):
+    runtime = WorkflowRuntime(run_id="recovery-event", run_root=tmp_path, claim_stale_seconds=1)
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+
+    # Leave an expired claim from a dead worker.
+    runtime.claim_store.try_claim(tasks[2].task_id, "dead-worker")
+    stale_path = runtime.claim_store.claim_path(tasks[2].task_id)
+    old_time = time.time() - 100
+    os.utime(stale_path, (old_time, old_time))
+
+    resumed = WorkflowRuntime(run_id="recovery-event", run_root=tmp_path, claim_stale_seconds=1)
+    resumed.initialize("micro-reshard-roundtrip", resume=True)
+
+    events = (resumed.run_dir / "events.jsonl").read_text(encoding="utf-8")
+    resumed_event = [json.loads(line) for line in events.splitlines() if '"workflow_resumed"' in line][0]
+    assert resumed_event["claims_recovered"] == 1
+
+
+def test_checkpoint_hit_does_not_consume_a_provider_concurrency_slot(tmp_path, monkeypatch):
+    runtime = WorkflowRuntime(
+        run_id="ckpt-concurrency",
+        run_root=tmp_path,
+        global_max_concurrency=1,
+        provider_max_concurrency={"mock": 1},
+    )
+    tasks = runtime.initialize("micro-reshard-roundtrip", force=True)
+    task = tasks[0]
+    key = checkpoint_key(task)
+
+    work_dir = runtime.results_dir / task.task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(
+        work_dir / "result.json",
+        {
+            "task_id": task.task_id,
+            "success": True,
+            "status": "completed",
+            "returncode": 0,
+            "checkpoint_key": key,
+            "provider": task.provider,
+            "model": task.model,
+            "output_log": "",
+            "attempts": 1,
+            "ended_at": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(runtime, "worker_command", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no worker")))
+
+    runtime.run_task(task, tasks)
+
+    # The checkpoint path returns before the claim, so no route slot is held.
+    assert runtime.route_active.get("mock", 0) == 0
