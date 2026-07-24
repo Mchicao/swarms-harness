@@ -2279,23 +2279,24 @@ pub mod ui_egui {
             // egui 0.32 TextEdit layouter signature: (Ui, &dyn TextBuffer, wrap_width).
             // The buffer is the read-only `herd_output` we already pass to the widget;
             // we ignore it here because the visible colours come from `runs`.
-            let mut layouter = move |ui: &egui::Ui, _buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                let mut job = egui::text::LayoutJob::default();
-                job.wrap.max_width = wrap_width;
-                job.wrap.max_rows = 40;
-                for (text, color) in &runs {
-                    job.append(
-                        text,
-                        0.0,
-                        egui::TextFormat {
-                            font_id: font_id.clone(),
-                            color: *color,
-                            ..Default::default()
-                        },
-                    );
-                }
-                ui.fonts(|f| f.layout_job(job))
-            };
+            let mut layouter =
+                move |ui: &egui::Ui, _buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.wrap.max_width = wrap_width;
+                    job.wrap.max_rows = 40;
+                    for (text, color) in &runs {
+                        job.append(
+                            text,
+                            0.0,
+                            egui::TextFormat {
+                                font_id: font_id.clone(),
+                                color: *color,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    ui.fonts(|f| f.layout_job(job))
+                };
             let available = egui::Vec2::new(ui.available_width(), ui.available_height());
             ui.allocate_ui(available, |ui| {
                 ui.add(
