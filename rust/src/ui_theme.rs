@@ -193,12 +193,12 @@ impl Theme {
         visuals.extreme_bg_color = self.palette.bg_elevated;
         visuals.faint_bg_color = self.palette.bg_elevated;
         visuals.selection.bg_fill = self.palette.accent_dim;
-        visuals.selection.stroke = Stroke::new(1.0, self.palette.accent);
+        visuals.selection.stroke = Stroke::new(1.0_f32, self.palette.accent);
         visuals.hyperlink_color = self.palette.accent;
         visuals.widgets.inactive.weak_bg_fill = self.palette.bg_elevated;
         visuals.widgets.hovered.weak_bg_fill = self.palette.accent_dim;
-        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, self.palette.text_dim);
-        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.palette.text);
+        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, self.palette.text_dim);
+        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, self.palette.text);
         style.visuals = visuals;
         ctx.set_style(style);
     }
