@@ -2107,8 +2107,12 @@ pub mod ui_egui {
         }
 
         fn refresh_herd(&mut self) {
+            // ponytail: stamp the interval up front so a failed/early-return Herd
+            // call does NOT re-fire on the next frame (every ~16ms). Without this,
+            // a missing Herd session spun up dozens of console windows per second.
+            self.last_herd_refresh = Some(Instant::now());
             let session = herdr_session();
-            let output = std::process::Command::new(herdr_program())
+            let output = herdr_command(&herdr_program())
                 .args(["--session", &session, "workspace", "list"])
                 .output();
             let output = match output {
@@ -2167,7 +2171,7 @@ pub mod ui_egui {
                 self.herd_feedback = Some("No Herd workspaces are open.".to_string());
                 return;
             };
-            let panes = std::process::Command::new(herdr_program())
+            let panes = herdr_command(&herdr_program())
                 .args([
                     "--session",
                     &session,
@@ -2191,7 +2195,7 @@ pub mod ui_egui {
                     Some("The selected Herd workspace has no readable pane.".to_string());
                 return;
             };
-            match std::process::Command::new(herdr_program())
+            match herdr_command(&herdr_program())
                 .args([
                     "--session",
                     &session,
@@ -2224,7 +2228,6 @@ pub mod ui_egui {
                     self.herd_feedback = Some(format!("Could not read Herd pane: {error}"))
                 }
             }
-            self.last_herd_refresh = Some(Instant::now());
         }
 
         fn refresh_herd_if_due(&mut self) {
@@ -4171,6 +4174,21 @@ pub mod ui_egui {
         runs
     }
 
+    /// Build a Herdr `Command` with the console window suppressed on Windows.
+    /// Without `CREATE_NO_WINDOW`, every poll of the Herd panel (up to 3 spawns
+    /// every 2s) flashes a black console window, which looked like a runaway
+    /// loop and disrupted the desktop.
+    fn herdr_command(program: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new(program);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW = 0x08000000
+            cmd.creation_flags(0x08000000);
+        }
+        cmd
+    }
+
     fn herdr_program() -> String {
         if let Ok(path) = std::env::var("SWARMS_HERDR_BIN") {
             return path;
@@ -4193,7 +4211,7 @@ pub mod ui_egui {
     }
 
     fn focus_herdr_workspace(session: &str, workspace: &str) -> String {
-        match std::process::Command::new(herdr_program())
+        match herdr_command(&herdr_program())
             .args(["--session", session, "workspace", "focus", workspace])
             .status()
         {
