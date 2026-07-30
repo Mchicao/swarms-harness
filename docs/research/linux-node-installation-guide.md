@@ -220,8 +220,9 @@ cp config/swarm_router.local.example.json config/swarm_router.local.json
 **[NEEDS CONFIRMATION]** Enabling any real route requires provider credentials you
 own (API key, CLI login, or plan quota). The repo ships none. Do not enable a
 provider on the node until you have confirmed the account, cost, and data-handling
-implications. HY3 provider routes and their requirements are documented in
-`README.md:15-43` and `docs/CONFIG.md:36-49`.
+implications. Provider routes and their requirements are documented in
+`docs/CONFIG.md:36-49`; promotional free access should always be verified
+directly with the provider before use.
 
 ---
 

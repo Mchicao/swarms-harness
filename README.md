@@ -12,35 +12,17 @@ I have used versions of this workflow personally since January-February 2026. Th
 
 Español: [README.es.md](README.es.md)
 
-## HY3 Provider Routes
+## Free Provider Opportunities
 
-SWARMS includes several configurable HY3 routes. Provider pricing, promotions,
-and account requirements can change; verify them with the provider before a
-real run.
+With this harness, you can take advantage of free usage offered by AI providers
+such as TokenRouter_US, Modal, or other providers that offer promotional access
+from time to time. For example, a provider may advertise free tokens for models
+such as Kimi K3 or GLM 5.2.
 
-| Route | Provider | Model ID | Free? |
-|---|---|---|---|
-| `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Free tier |
-| `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Free promo |
-| `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Free variant |
-| `hy3_kilo` | Kilo CLI | `kilo/tencent/hy3:free` | Free tier |
-| `hy3_hermes` | Hermes / Nous Portal | `tencent/hy3:free` | Free tier |
-| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | Paid |
-
-The bundled example plan is intentionally mock-only. For a private plan whose
-tasks explicitly use `hy3_gitlawb`, the execution shape is:
-
-```bash
-python scripts/swarm.py run --plan path/to/hy3-plan.json --force \
-  --global-max-concurrency 3 --provider-cap hy3_gitlawb=3
-```
-
-The **Hermes Agent** adapter can run a tool-calling subagent only after local
-configuration pins an explicit model. An unpinned route is rejected.
-
-All HY3 routes are **disabled by default** (mock stays the safe open-source
-default). Enable the ones you want in `config/swarm_router.local.json` and set
-the matching API keys in your environment.
+Availability, quotas, eligibility, pricing, and terms can change at any time.
+Always verify the current offer directly with the provider before running a
+workload. SWARMS does not guarantee free access; it routes only to the
+providers and models you configure locally.
 
 ## Claude Code and GPT-5.6 Ultra-Style Workflows
 

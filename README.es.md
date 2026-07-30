@@ -12,37 +12,18 @@ Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La id
 
 English: [README.md](README.md)
 
-## Rutas de proveedores HY3
+## Oportunidades con proveedores gratuitos
 
-SWARMS incluye varias rutas HY3 configurables. Los precios, promociones y
-requisitos de cuenta pueden cambiar; compruébalos con el proveedor antes de
-una ejecución real.
+Con este harness puedes aprovechar el uso gratuito que ofrezcan proveedores de
+IA como TokenRouter_US, Modal u otros proveedores que publiquen promociones de
+vez en cuando. Por ejemplo, un proveedor puede anunciar tokens gratuitos para
+modelos como Kimi K3 o GLM 5.2.
 
-| Ruta | Proveedor | Model ID | ¿Gratis? |
-|---|---|---|---|
-| `hy3_opencode` | OpenCode Zen | `opencode/hy3-free` | Tier gratis |
-| `hy3_gitlawb` | GitLawb OpenGateway | `tencent/hy3` | Promo gratis |
-| `hy3_openrouter` | OpenRouter | `tencent/hy3:free` | Variante gratis |
-| `hy3_kilo` | Kilo CLI | `kilo/tencent/hy3:free` | Tier gratis |
-| `hy3_hermes` | Hermes / Nous Portal | `tencent/hy3:free` | Tier gratis |
-| `hy3_siliconflow` | SiliconFlow | `tencent/Hy3` | De pago |
-
-El plan de ejemplo incluido usa solo `mock`. Para un plan privado cuyas tareas
-usen explícitamente `hy3_gitlawb`, la forma de ejecución es:
-
-```bash
-python scripts/swarm.py run --plan path/to/hy3-plan.json --force \
-  --global-max-concurrency 3 --provider-cap hy3_gitlawb=3
-```
-
-El adaptador **Hermes Agent** puede ejecutar un subagente con herramientas solo
-cuando la configuración local fija un modelo explícito. Una ruta sin modelo se
-rechaza.
-
-Todas las rutas HY3 están **desactivadas por defecto** (mock sigue siendo el
-default seguro de open-source). Habilitá las que quieras en
-`config/swarm_router.local.json` y configurá las API keys correspondientes en
-tu entorno.
+La disponibilidad, las cuotas, la elegibilidad, los precios y las condiciones
+pueden cambiar en cualquier momento. Verifica siempre la oferta vigente
+directamente con el proveedor antes de ejecutar una carga de trabajo. SWARMS no
+garantiza el acceso gratuito: solo enruta hacia los proveedores y modelos que
+configures localmente.
 
 ## Flujos Estilo Ultra de Claude Code y GPT-5.6
 
