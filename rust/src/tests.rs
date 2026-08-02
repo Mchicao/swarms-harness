@@ -8,7 +8,7 @@ use crate::review::{detect_cycles, review_plan, validate_artifact_path, Severity
 use crate::runtime::{self, check_artifacts};
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::telemetry::{TaskState, TaskStatus};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1398,5 +1398,73 @@ fn artifacts_must_exist() {
     task.spec.artifacts = vec!["exists.txt".to_string()];
     assert!(check_artifacts(&dir, &task).is_ok());
 
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Event envelope contract (issue #5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn event_envelope_has_canonical_top_level_fields() {
+    // The UI reads time_unix_ms and task_id at the top level of each
+    // events.jsonl record. append_event must emit both so the contract is
+    // a single stable shape, not a field the runtime omits.
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_started",
+        json!({"task_id": "0001-build", "model": "mock"}),
+    );
+    runtime::append_event(&dir, "workflow_initialized", json!({}));
+
+    let lines: Vec<String> = fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 2);
+
+    let first: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(first["event"], "task_started");
+    assert!(
+        first.get("time").and_then(Value::as_str).is_some(),
+        "envelope must carry an ISO time string"
+    );
+    assert!(
+        first.get("time_unix_ms").and_then(Value::as_u64).is_some(),
+        "envelope must carry time_unix_ms at the top level (UI contract)"
+    );
+    assert_eq!(first["task_id"], "0001-build");
+    assert_eq!(first["payload"]["model"], "mock");
+
+    // Workflow-level events legitimately have no task_id; it should simply be
+    // absent, not serialized as null.
+    let second: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(second["event"], "workflow_initialized");
+    assert!(second.get("task_id").is_none());
+    assert!(
+        second.get("time_unix_ms").and_then(Value::as_u64).is_some(),
+        "workflow events also carry time_unix_ms"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn event_envelope_task_id_is_hoisted_from_payload() {
+    // When task_id lives inside the payload, the envelope hoists it to the top
+    // level so consumers read it from one place instead of two.
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_completed",
+        json!({"task_id": "0042-verify", "status": "completed"}),
+    );
+    let line = fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    let v: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["task_id"], "0042-verify");
+    // The payload still carries its own copy for back-compat.
+    assert_eq!(v["payload"]["task_id"], "0042-verify");
     fs::remove_dir_all(&dir).ok();
 }
