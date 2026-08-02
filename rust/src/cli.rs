@@ -17,13 +17,15 @@ pub struct Args {
     pub global_cap: Option<usize>,
     pub caps: HashMap<String, usize>,
     pub router_config: Option<PathBuf>,
+    /// `singularity` only: number of bounded coordinator cycles to run.
+    pub max_cycles: u32,
 }
 
 pub fn parse_args() -> Result<Args> {
     let mut values = std::env::args().skip(1);
     let command = values
         .next()
-        .ok_or("usage: swarms-rs <doctor|review|dry-run|run> --plan <file>")?;
+        .ok_or("usage: swarms-rs <doctor|review|dry-run|run|singularity> --plan <file>")?;
 
     if command == "doctor" {
         return Ok(Args {
@@ -36,6 +38,7 @@ pub fn parse_args() -> Result<Args> {
             global_cap: None,
             caps: HashMap::new(),
             router_config: None,
+            max_cycles: 0,
         });
     }
 
@@ -47,6 +50,7 @@ pub fn parse_args() -> Result<Args> {
     let mut global_cap = None;
     let mut caps = HashMap::new();
     let mut router_config = None;
+    let mut max_cycles = if command == "singularity" { 5 } else { 0 };
 
     while let Some(arg) = values.next() {
         match arg.as_str() {
@@ -86,6 +90,14 @@ pub fn parse_args() -> Result<Args> {
                         .ok_or("--router-config needs a path".to_string())?,
                 ))
             }
+            "--max-cycles" => {
+                max_cycles = parse_cycle_count(
+                    values
+                        .next()
+                        .ok_or("--max-cycles needs a value".to_string())?
+                        .as_str(),
+                )?;
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -109,7 +121,20 @@ pub fn parse_args() -> Result<Args> {
         global_cap,
         caps,
         router_config,
+        max_cycles,
     })
+}
+
+/// Parse the `--max-cycles` value for `singularity`. Bounded to [1, 1000] so
+/// an autonomous loop can never run unbounded by accident.
+pub(crate) fn parse_cycle_count(value: &str) -> Result<u32> {
+    let n = value
+        .parse::<u32>()
+        .map_err(|_| "max-cycles must be a positive integer".to_string())?;
+    if !(1..=1000).contains(&n) {
+        return Err("max-cycles must be between 1 and 1000".to_string());
+    }
+    Ok(n)
 }
 
 fn parse_positive(value: &str) -> Result<usize> {
