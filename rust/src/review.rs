@@ -209,19 +209,34 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             });
         }
 
-        // Tools policy
-        if !matches!(task.spec.tools_policy.as_str(), "none" | "full") {
+        // Tools policy: none | read-only | workspace-write | full.
+        // Legacy "full" is accepted as workspace-write (bounded to the
+        // workspace); truly unrestricted access is not granted by policy alone.
+        if !matches!(
+            task.spec.tools_policy.as_str(),
+            "none" | "read-only" | "workspace-write" | "full"
+        ) {
             findings.push(Finding {
                 severity: Severity::Error,
                 code: "invalid_tools_policy".to_string(),
-                message: format!("invalid tools_policy '{}'", task.spec.tools_policy),
+                message: format!(
+                    "invalid tools_policy '{}' (expected none, read-only, workspace-write, or full)",
+                    task.spec.tools_policy
+                ),
                 task_id: Some(task.source_id.clone()),
             });
         }
 
-        // Premium routes
-        let route_lower = route.to_lowercase();
-        if !premium_allowed && PREMIUM_SUBSTRINGS.iter().any(|s| route_lower.contains(s)) {
+        // Premium routes: prefer the typed provider cost_class; fall back to the
+        // route-name substring heuristic only when no cost_class is declared.
+        let is_premium = match provider.cost_class {
+            Some(class) => class.is_premium(),
+            None => {
+                let route_lower = route.to_lowercase();
+                PREMIUM_SUBSTRINGS.iter().any(|s| route_lower.contains(s))
+            }
+        };
+        if is_premium && !premium_allowed {
             findings.push(Finding {
                 severity: Severity::Error,
                 code: "premium_route_blocked".to_string(),

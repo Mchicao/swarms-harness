@@ -92,6 +92,21 @@ impl OnMissing {
 // Router / Provider
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CostClass {
+    #[default]
+    Free,
+    Standard,
+    Premium,
+}
+
+impl CostClass {
+    pub fn is_premium(self) -> bool {
+        matches!(self, Self::Premium)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Provider {
     #[serde(default)]
@@ -104,6 +119,11 @@ pub struct Provider {
     pub canonical_model: Option<String>,
     #[serde(default)]
     pub wrapper: String,
+    /// Typed cost class. When set, this replaces the legacy route-name substring
+    /// heuristic for premium detection. When absent, the substring heuristic is
+    /// kept for backward compatibility.
+    #[serde(default)]
+    pub cost_class: Option<CostClass>,
     /// OpenAI-compat: env var holding the API key.
     #[serde(default)]
     pub key_env: Option<String>,

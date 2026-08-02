@@ -25,6 +25,7 @@ fn mock_provider() -> Provider {
         model: "mock-worker".to_string(),
         canonical_model: None,
         wrapper: "mock".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -58,6 +59,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             model: "gpt-5.5-codex".to_string(),
             canonical_model: None,
             wrapper: "codex".to_string(),
+            cost_class: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -74,6 +76,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             model: "zai-coding-plan/glm-5.2".to_string(),
             canonical_model: None,
             wrapper: "opencode".to_string(),
+            cost_class: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -245,6 +248,7 @@ fn hermes_no_thinking_flag() {
         model: "tencent/hy3:free".to_string(),
         canonical_model: None,
         wrapper: "hermes".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -1146,6 +1150,7 @@ fn review_rejects_thinking_on_hermes() {
         model: "tencent/hy3:free".to_string(),
         canonical_model: None,
         wrapper: "hermes".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -1890,4 +1895,104 @@ fn event_envelope_task_id_is_hoisted_from_payload() {
     assert_eq!(event["task_id"], "0042-verify");
     assert_eq!(event["payload"]["task_id"], "0042-verify");
     fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 19. Typed execution policy
+// ---------------------------------------------------------------------------
+
+fn router_with_provider(name: &str, provider: Provider) -> Router {
+    Router {
+        fallback_route: None,
+        aliases: HashMap::new(),
+        role_routes: HashMap::new(),
+        quota_policy: QuotaPolicy::default(),
+        providers: HashMap::from([(name.to_string(), provider)]),
+    }
+}
+
+fn provider_with_cost(route: &str, cost_class: model::CostClass) -> Provider {
+    Provider {
+        enabled: true,
+        provider: route.to_string(),
+        model: "test-model".to_string(),
+        canonical_model: None,
+        wrapper: "mock".to_string(),
+        cost_class: Some(cost_class),
+        key_env: None,
+        base_url: None,
+        base_url_env: None,
+        thinking_field: None,
+        quota_key: None,
+        fallback_routes: Vec::new(),
+    }
+}
+
+#[test]
+fn typed_cost_class_premium_requires_authorization() {
+    let router = router_with_provider(
+        "custom-pro",
+        provider_with_cost("custom-pro", model::CostClass::Premium),
+    );
+    for (premium_allowed, blocked) in [(false, true), (true, false)] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "premium check",
+            "review_policy": {"premium_allowed": premium_allowed},
+            "stages":[{"tasks":[{"id":"t","route":"custom-pro","task":"x"}]}]
+        }))
+        .unwrap();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.code == "premium_route_blocked"),
+            blocked
+        );
+    }
+}
+
+#[test]
+fn typed_cost_class_overrides_substring_heuristic() {
+    let router = router_with_provider("codex", provider_with_cost("codex", model::CostClass::Free));
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "codex but free",
+        "stages":[{"tasks":[{"id":"t","route":"codex","task":"x"}]}]
+    }))
+    .unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "premium_route_blocked"));
+}
+
+#[test]
+fn tools_policy_accepts_granular_capabilities() {
+    let router = mock_router();
+    for (policy, valid) in [
+        ("none", true),
+        ("read-only", true),
+        ("workspace-write", true),
+        ("full", true),
+        ("delete-everything", false),
+    ] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "tools check",
+            "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","tools_policy":policy}]}]
+        }))
+        .unwrap();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert_eq!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.code == "invalid_tools_policy"),
+            valid,
+            "unexpected result for tools_policy={policy}"
+        );
+    }
 }
