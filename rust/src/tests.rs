@@ -626,6 +626,127 @@ fn verify_failure_blocks_completion() {
 }
 
 #[test]
+fn feature_role_without_verify_cannot_complete() {
+    // A programmer task with no verify commands must not reach Completed, even
+    // when the worker itself succeeds and produces its artifact. `verified ==
+    // None` is not workflow success for feature-producing roles. The mock
+    // worker recognises the compress.py prompt and writes the declared
+    // artifact, so the only thing that can fail this task is the new
+    // verification-completion gate.
+    let dir = temp_dir();
+    let plan_json = json!({
+        "schema_version": 1,
+        "goal": "test verification requirement",
+        "stages": [{
+            "name": "S",
+            "tasks": [{
+                "id": "t",
+                "route": "mock",
+                "role": "programmer",
+                "task": "Implement bench_apps/reshard/compress.py so it shards files.",
+                "artifacts": ["bench_apps/reshard/compress.py"],
+                "verify": []
+            }]
+        }]
+    });
+
+    let plan_path = dir.join("plan.json");
+    fs::write(&plan_path, plan_json.to_string()).unwrap();
+
+    let cfg_path = dir.join("config/swarm_router.json");
+    fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    fs::write(&cfg_path, json!({"providers":{"mock":{"enabled":true,"provider":"mock","model":"mock-worker","wrapper":"mock"}}}).to_string()).unwrap();
+
+    let plan = crate::config::load_plan(&plan_path).unwrap();
+    let router = crate::config::load_router(&dir).unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+
+    let caps = HashMap::from([("mock".to_string(), 1)]);
+    let report = runtime::execute(
+        &dir,
+        &dir,
+        &tasks,
+        &plan,
+        &router,
+        1,
+        &caps,
+        "verify-required",
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.status, "failed");
+    let task_state = &report.results[0];
+    assert_eq!(task_state.status, TaskStatus::Failed);
+    assert_eq!(task_state.verified, None);
+    assert!(task_state
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("requires verification"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn feature_role_with_passing_verify_completes() {
+    // The same programmer task, but with a passing verify command, completes
+    // and records verification evidence. This proves the gate does not
+    // over-block tasks that carry real verification.
+    let dir = temp_dir();
+    let passing = if cfg!(windows) { "exit /b 0" } else { "true" };
+    let plan_json = json!({
+        "schema_version": 1,
+        "goal": "test verification pass",
+        "stages": [{
+            "name": "S",
+            "tasks": [{
+                "id": "t",
+                "route": "mock",
+                "role": "programmer",
+                "task": "Implement bench_apps/reshard/compress.py so it shards files.",
+                "artifacts": ["bench_apps/reshard/compress.py"],
+                "verify": [passing]
+            }]
+        }]
+    });
+
+    let plan_path = dir.join("plan.json");
+    fs::write(&plan_path, plan_json.to_string()).unwrap();
+
+    let cfg_path = dir.join("config/swarm_router.json");
+    fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    fs::write(&cfg_path, json!({"providers":{"mock":{"enabled":true,"provider":"mock","model":"mock-worker","wrapper":"mock"}}}).to_string()).unwrap();
+
+    let plan = crate::config::load_plan(&plan_path).unwrap();
+    let router = crate::config::load_router(&dir).unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+
+    let caps = HashMap::from([("mock".to_string(), 1)]);
+    let report = runtime::execute(
+        &dir,
+        &dir,
+        &tasks,
+        &plan,
+        &router,
+        1,
+        &caps,
+        "verify-pass",
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.status, "completed");
+    let task_state = &report.results[0];
+    assert_eq!(task_state.status, TaskStatus::Completed);
+    assert_eq!(task_state.verified, Some(true));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn quoted_verify_command_survives_platform_shell_parsing() {
     let dir = temp_dir();
     let command = if cfg!(windows) {
@@ -1399,4 +1520,86 @@ fn artifacts_must_exist() {
     assert!(check_artifacts(&dir, &task).is_ok());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Verification completion invariant (issue #1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn review_errors_when_feature_role_lacks_verification() {
+    // Feature-producing roles (programmer/backend/qa/verifier) must declare a
+    // verify command. This used to be a warning scoped to verifier only; it is
+    // now an error for every feature role so the plan cannot run without gates.
+    for role in ["programmer", "backend", "qa", "verifier"] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "gated feature",
+            "stages":[{"tasks":[{
+                "id":"t","route":"mock","role":role,"task":"build it",
+                "artifacts":["out.py"],"verify":[]
+            }]}]
+        }))
+        .unwrap();
+        let router = mock_router();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.code == "missing_verification" && f.severity == Severity::Error),
+            "role {role} should produce a missing_verification error"
+        );
+        assert!(
+            !result.ok,
+            "review should not pass for {role} without verify"
+        );
+    }
+}
+
+#[test]
+fn review_accepts_feature_role_with_verification() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "gated feature",
+        "stages":[{"tasks":[{
+            "id":"t","route":"mock","role":"programmer","task":"build it",
+            "artifacts":["out.py"],"verify":["true"]
+        }]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.code == "missing_verification"),
+        "programmer with a verify command should not trigger missing_verification"
+    );
+}
+
+#[test]
+fn review_does_not_require_verification_for_planning_roles() {
+    // Planning, critic, docs, and general roles do not produce features and
+    // may omit verification.
+    for role in ["planner", "critic", "docs", "general"] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "planning",
+            "stages":[{"tasks":[{
+                "id":"t","route":"mock","role":role,"task":"plan it","verify":[]
+            }]}]
+        }))
+        .unwrap();
+        let router = mock_router();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.code == "missing_verification"),
+            "role {role} should not require verification"
+        );
+    }
 }

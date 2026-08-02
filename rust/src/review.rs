@@ -303,12 +303,17 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             _ => {}
         }
 
-        // Warnings for verifier tasks
-        if task.spec.role == "verifier" && task.spec.verify.is_empty() {
+        // Feature-producing roles must declare independent verification. A task
+        // that reaches `Completed` without verification is treated as workflow
+        // success today, so a missing gate is an error, not a warning.
+        if task.spec.requires_verification() && !task.spec.has_verification() {
             findings.push(Finding {
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 code: "missing_verification".to_string(),
-                message: "verifier task should include a deterministic verify command".to_string(),
+                message: format!(
+                    "role '{}' must declare at least one deterministic verify command",
+                    task.spec.role
+                ),
                 task_id: Some(task.source_id.clone()),
             });
         }
