@@ -1521,6 +1521,50 @@ pub(crate) fn check_artifacts(root: &Path, task: &Task) -> Result<()> {
 // Verify commands
 // ---------------------------------------------------------------------------
 
+/// Default deadline for deterministic verification commands. These are meant
+/// to be fast (compilers, test runners, linters); a command that does not
+/// finish in this window is stuck, not doing productive work, and holding a
+/// completion gate open indefinitely.
+const VERIFY_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Poll a child process until it exits or `deadline` elapses. On timeout the
+/// child is killed and reaped so no descendant lingers holding the gate open.
+/// Returns `Ok(status)` on exit, or `Err` with a timeout message.
+///
+/// This is the single bounded-wait primitive shared by every short-lived
+/// deterministic command the coordinator runs (currently verification). It
+/// replaces open-ended `try_wait` loops that could block a task forever if a
+/// verifier hangs.
+pub(crate) fn wait_bounded(
+    program: &str,
+    child: &mut std::process::Child,
+    deadline: Duration,
+    on_still_running: Option<&dyn Fn()>,
+) -> Result<std::process::ExitStatus> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "process '{}' exceeded the {}s deadline and was killed",
+                        program,
+                        deadline.as_secs()
+                    ));
+                }
+                if let Some(callback) = on_still_running {
+                    callback();
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("wait '{}': {e}", program)),
+        }
+    }
+}
+
 fn run_verify_commands(
     task: &Task,
     root: &Path,
@@ -1540,6 +1584,18 @@ fn run_verify_commands(
 }
 
 pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Result<()> {
+    execute_shell_bounded(cmd_str, cwd, log_path, VERIFY_DEADLINE)
+}
+
+/// Run a shell command under an explicit deadline. Split from `execute_shell`
+/// so tests can exercise the timeout path with a short deadline instead of
+/// waiting for the full production `VERIFY_DEADLINE`.
+pub(crate) fn execute_shell_bounded(
+    cmd_str: &str,
+    cwd: &Path,
+    log_path: &Path,
+    deadline: Duration,
+) -> Result<()> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1565,22 +1621,13 @@ pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Resul
         .stderr(Stdio::from(err));
 
     let mut child = command.spawn().map_err(|e| format!("spawn verify: {e}"))?;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                }
-                let log_content = fs::read_to_string(log_path).unwrap_or_default();
-                let tail = tail_chars(&log_content, 2000);
-                return Err(format!("verify failed (exit {:?}): {tail}", status.code()));
-            }
-            Ok(None) => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("wait verify: {e}")),
-        }
+    let status = wait_bounded("verify", &mut child, deadline, None)?;
+    if status.success() {
+        return Ok(());
     }
+    let log_content = fs::read_to_string(log_path).unwrap_or_default();
+    let tail = tail_chars(&log_content, 2000);
+    Err(format!("verify failed (exit {:?}): {tail}", status.code()))
 }
 
 // ---------------------------------------------------------------------------
