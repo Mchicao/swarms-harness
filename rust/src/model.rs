@@ -320,6 +320,11 @@ pub struct TaskSpec {
     pub artifacts: Vec<String>,
     #[serde(default)]
     pub verify: Vec<String>,
+    /// Repository-relative paths this task must not modify (for example, the
+    /// fixtures or golden files a verifier task evaluates). The coordinator
+    /// rejects a completed task that touched any of them.
+    #[serde(default)]
+    pub protected: Vec<String>,
     /// Per-task thinking level (overrides plan default).
     #[serde(default)]
     pub thinking: Option<ThinkingLevel>,

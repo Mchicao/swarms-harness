@@ -3,7 +3,7 @@
 use crate::adapter::AdapterKind;
 use crate::model::{find_dependency_task, Plan, Router, Task};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Review result types
@@ -245,6 +245,18 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             }
         }
 
+        // Protected paths safe (same containment rules as artifacts)
+        for path in &task.spec.protected {
+            if let Err(msg) = validate_artifact_path(path) {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "unsafe_protected_path".to_string(),
+                    message: msg,
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+        }
+
         // Thinking compatibility (mock silently accepts any level)
         let thinking = task.spec.effective_thinking(plan);
         if !thinking.is_default() && !kind.supports_thinking() && kind != AdapterKind::Mock {
@@ -357,6 +369,35 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             message: format!("cyclic dependency: {}", cycle.join(" -> ")),
             task_id: None,
         });
+    }
+
+    // --- Parallel write-set overlap ---
+    // Two tasks that run concurrently (same parallel stage) and declare the
+    // same artifact race on the same path. Each task's declared artifacts are
+    // its write set, so an overlap is a static correctness error.
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (idx, task) in tasks.iter().enumerate() {
+        for art in &task.spec.artifacts {
+            if let Some(prev) = seen.get(art.as_str()) {
+                let prev_task = &tasks[*prev];
+                let concurrent = task.stage_parallel
+                    && prev_task.stage == task.stage
+                    && prev_task.stage_parallel;
+                if concurrent {
+                    findings.push(Finding {
+                        severity: Severity::Error,
+                        code: "overlapping_write_set".to_string(),
+                        message: format!(
+                            "tasks '{}' and '{}' both declare artifact '{}' in the same parallel stage",
+                            prev_task.source_id, task.source_id, art
+                        ),
+                        task_id: Some(task.source_id.clone()),
+                    });
+                }
+            } else {
+                seen.insert(art.as_str(), idx);
+            }
+        }
     }
 
     // --- Provider concurrency > 0 for used routes ---

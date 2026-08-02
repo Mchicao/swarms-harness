@@ -5,12 +5,13 @@ use crate::model::{
     SessionMode, Task, TaskSpec, ThinkingLevel,
 };
 use crate::review::{detect_cycles, review_plan, validate_artifact_path, Severity};
-use crate::runtime::{self, check_artifacts};
+use crate::runtime::{self, check_artifacts_with_snapshot};
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::telemetry::{TaskState, TaskStatus};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         tools_policy: "none".to_string(),
         artifacts: Vec::new(),
         verify: Vec::new(),
+        protected: Vec::new(),
         thinking: None,
         session: None,
         timeout_seconds: None,
@@ -1043,6 +1045,7 @@ fn review_rejects_thinking_on_hermes() {
             tools_policy: "none".to_string(),
             artifacts: Vec::new(),
             verify: Vec::new(),
+            protected: Vec::new(),
             thinking: Some(ThinkingLevel::High),
             session: None,
             timeout_seconds: None,
@@ -1512,25 +1515,22 @@ fn artifacts_must_exist() {
     let dir = temp_dir();
     let mut task = make_task("t", &[], "mock");
     task.spec.artifacts = vec!["nonexistent_file.xyz".to_string()];
-    assert!(check_artifacts(&dir, &task).is_err());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_err());
 
     let file = dir.join("exists.txt");
     fs::write(&file, "ok").unwrap();
     task.spec.artifacts = vec!["exists.txt".to_string()];
-    assert!(check_artifacts(&dir, &task).is_ok());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_ok());
 
     fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------
-// 16. Verification completion invariant (issue #1)
+// 16. Verification completion invariant
 // ---------------------------------------------------------------------------
 
 #[test]
 fn review_errors_when_feature_role_lacks_verification() {
-    // Feature-producing roles (programmer/backend/qa/verifier) must declare a
-    // verify command. This used to be a warning scoped to verifier only; it is
-    // now an error for every feature role so the plan cannot run without gates.
     for role in ["programmer", "backend", "qa", "verifier"] {
         let plan = serde_json::from_value::<model::Plan>(json!({
             "goal": "gated feature",
@@ -1543,17 +1543,11 @@ fn review_errors_when_feature_role_lacks_verification() {
         let router = mock_router();
         let tasks = crate::config::build_tasks(&plan, &router).unwrap();
         let result = review_plan(&plan, &router, &tasks);
-        assert!(
-            result
-                .findings
-                .iter()
-                .any(|f| f.code == "missing_verification" && f.severity == Severity::Error),
-            "role {role} should produce a missing_verification error"
-        );
-        assert!(
-            !result.ok,
-            "review should not pass for {role} without verify"
-        );
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| { f.code == "missing_verification" && f.severity == Severity::Error }));
+        assert!(!result.ok);
     }
 }
 
@@ -1570,19 +1564,14 @@ fn review_accepts_feature_role_with_verification() {
     let router = mock_router();
     let tasks = crate::config::build_tasks(&plan, &router).unwrap();
     let result = review_plan(&plan, &router, &tasks);
-    assert!(
-        !result
-            .findings
-            .iter()
-            .any(|f| f.code == "missing_verification"),
-        "programmer with a verify command should not trigger missing_verification"
-    );
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "missing_verification"));
 }
 
 #[test]
 fn review_does_not_require_verification_for_planning_roles() {
-    // Planning, critic, docs, and general roles do not produce features and
-    // may omit verification.
     for role in ["planner", "critic", "docs", "general"] {
         let plan = serde_json::from_value::<model::Plan>(json!({
             "goal": "planning",
@@ -1594,12 +1583,136 @@ fn review_does_not_require_verification_for_planning_roles() {
         let router = mock_router();
         let tasks = crate::config::build_tasks(&plan, &router).unwrap();
         let result = review_plan(&plan, &router, &tasks);
-        assert!(
-            !result
-                .findings
-                .iter()
-                .any(|f| f.code == "missing_verification"),
-            "role {role} should not require verification"
-        );
+        assert!(!result
+            .findings
+            .iter()
+            .any(|f| f.code == "missing_verification"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 17. Artifact freshness and protected-path enforcement
+// ---------------------------------------------------------------------------
+
+fn set_old_mtime(path: &Path) {
+    use std::fs::FileTimes;
+    let old = SystemTime::UNIX_EPOCH;
+    let times = FileTimes::new().set_modified(old).set_accessed(old);
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_times(times).unwrap();
+}
+
+#[test]
+fn pre_existing_artifact_not_touched_by_task_is_rejected() {
+    let dir = temp_dir();
+    let artifact = dir.join("stale.txt");
+    fs::write(&artifact, "old").unwrap();
+    set_old_mtime(&artifact);
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["stale.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("was not modified by task"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn artifact_created_or_modified_by_task_passes_freshness() {
+    let dir = temp_dir();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["new.txt".to_string()];
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("new.txt"), "fresh").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).is_ok());
+
+    let existing = dir.join("existing.txt");
+    fs::write(&existing, "v1").unwrap();
+    set_old_mtime(&existing);
+    task.spec.artifacts = vec!["existing.txt".to_string()];
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(&existing, "v2").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).is_ok());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_modifies_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let golden = dir.join("golden.json");
+    fs::write(&golden, "v1").unwrap();
+    set_old_mtime(&golden);
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["golden.json".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(&golden, "tampered").unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_creates_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["should_not_exist.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(dir.join("should_not_exist.txt"), "appeared").unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn review_rejects_overlapping_write_sets_in_parallel_stage() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "parallel writers",
+        "stages": [{
+            "name": "S", "parallel": true,
+            "tasks": [
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]},
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}
+            ]
+        }]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| { f.code == "overlapping_write_set" && f.severity == Severity::Error }));
+    assert!(!result.ok);
+}
+
+#[test]
+fn review_allows_same_artifact_across_separate_stages() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "sequential writers",
+        "stages": [
+            {"name":"S1","parallel":false,"tasks":[
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]}]},
+            {"name":"S2","parallel":false,"tasks":[
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set"));
 }
