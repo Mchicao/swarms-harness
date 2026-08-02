@@ -62,8 +62,28 @@ fn write_json_value(path: &Path, value: &Value) -> Result<()> {
     write_json_atomic(path, &text)
 }
 
-fn append_event(run_dir: &Path, event_type: &str, payload: Value) {
-    let item = json!({"time": now_iso(), "event": event_type, "payload": payload});
+/// Append a versioned event envelope to `events.jsonl`.
+///
+/// The canonical top-level shape is:
+/// ```jsonc
+/// {"time": "<iso8601>", "time_unix_ms": 0, "event": "<type>", "task_id": null, "payload": {}}
+/// ```
+/// `task_id` is hoisted out of the payload when present so consumers (the UI)
+/// can read it at one stable location instead of scanning both levels.
+pub(crate) fn append_event(run_dir: &Path, event_type: &str, payload: Value) {
+    let task_id = payload
+        .get("task_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut item = json!({
+        "time": now_iso(),
+        "time_unix_ms": unix_ms(),
+        "event": event_type,
+        "payload": payload,
+    });
+    if let Some(id) = task_id {
+        item["task_id"] = Value::String(id);
+    }
     let path = run_dir.join("events.jsonl");
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{item}");

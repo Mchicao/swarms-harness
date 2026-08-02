@@ -8,7 +8,7 @@ use crate::review::{detect_cycles, review_plan, validate_artifact_path, Severity
 use crate::runtime::{self, check_artifacts_with_snapshot};
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::telemetry::{TaskState, TaskStatus};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -1814,4 +1814,60 @@ fn review_allows_same_artifact_across_separate_stages() {
         .findings
         .iter()
         .any(|f| f.code == "overlapping_write_set"));
+}
+
+// ---------------------------------------------------------------------------
+// 18. Event envelope contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn event_envelope_has_canonical_top_level_fields() {
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_started",
+        json!({"task_id": "0001-build", "model": "mock"}),
+    );
+    runtime::append_event(&dir, "workflow_initialized", json!({}));
+
+    let lines: Vec<_> = fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 2);
+
+    let task_event: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(task_event["event"], "task_started");
+    assert!(task_event.get("time").and_then(Value::as_str).is_some());
+    assert!(task_event
+        .get("time_unix_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert_eq!(task_event["task_id"], "0001-build");
+    assert_eq!(task_event["payload"]["model"], "mock");
+
+    let workflow_event: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(workflow_event["event"], "workflow_initialized");
+    assert!(workflow_event.get("task_id").is_none());
+    assert!(workflow_event
+        .get("time_unix_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn event_envelope_task_id_is_hoisted_from_payload() {
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_completed",
+        json!({"task_id": "0042-verify", "status": "completed"}),
+    );
+    let event: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("events.jsonl")).unwrap()).unwrap();
+    assert_eq!(event["task_id"], "0042-verify");
+    assert_eq!(event["payload"]["task_id"], "0042-verify");
+    fs::remove_dir_all(&dir).ok();
 }
