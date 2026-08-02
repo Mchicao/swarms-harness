@@ -490,8 +490,16 @@ pub fn execute(
     }
 
     let session_store = Arc::new(SessionStore::open(&run_dir)?);
+    let (sender, receiver) = mpsc::channel::<(String, TaskState)>();
+    let mut active_ids: HashSet<String> = HashSet::new();
+    let heartbeat_interval = Duration::from_secs(heartbeat_seconds);
+    let mut last_heartbeat = Instant::now();
+
+    // Continuous permit scheduling: launch work whenever capacity is free,
+    // instead of waiting for a whole wave to drain. Each time a task finishes
+    // we re-evaluate readiness and launch whatever newly fits, so a fast task's
+    // freed permit is reused immediately while unrelated slow tasks continue.
     loop {
-        // Reload each wave so long runs see the monitor's latest atomic snapshot.
         let quotas = QuotaGuard::load(root, &router.quota_policy);
         let ready = find_ready(tasks, &states, global_cap, caps, plan, router, &quotas);
 
@@ -509,12 +517,6 @@ pub fn execute(
             );
         }
 
-        if ready.selected.is_empty() {
-            break;
-        }
-
-        let (sender, receiver) = mpsc::channel::<(String, TaskState)>();
-        let mut active_ids = HashSet::new();
         for task in &ready.selected {
             let prompt = build_task_prompt(&run_dir, workspace_root, task, tasks, &states);
             let work_dir = run_dir.join("results").join(&task.id);
@@ -559,71 +561,77 @@ pub fn execute(
                 let _ = sender.send((task.id.clone(), state));
             });
         }
-        drop(sender);
 
-        let heartbeat_interval = Duration::from_secs(heartbeat_seconds);
-        let mut last_heartbeat = Instant::now();
-        while !active_ids.is_empty() {
-            let wait = heartbeat_interval.saturating_sub(last_heartbeat.elapsed());
-            match receiver.recv_timeout(wait) {
-                Ok((task_id, mut state)) => {
-                    active_ids.remove(&task_id);
-                    if let Some(previous) = states.get(&task_id) {
-                        state.started_at.clone_from(&previous.started_at);
-                        state.checkpoint_key.clone_from(&previous.checkpoint_key);
-                        state
-                            .terminal_backend
-                            .clone_from(&previous.terminal_backend);
-                        state
-                            .terminal_session
-                            .clone_from(&previous.terminal_session);
-                        state
-                            .terminal_workspace_id
-                            .clone_from(&previous.terminal_workspace_id);
-                        state
-                            .terminal_pane_id
-                            .clone_from(&previous.terminal_pane_id);
-                    }
-                    refresh_worker_progress(&run_dir, &mut state, unix_ms());
-                    states.insert(task_id.clone(), state.clone());
-                    save_task_state(&run_dir, &states[&task_id])?;
-                    append_event(
-                        &run_dir,
-                        "task_finished",
-                        json!({"task_id": task_id, "status": format!("{:?}", state.status).to_lowercase()}),
-                    );
+        if active_ids.is_empty() {
+            // Nothing running and nothing newly ready: the run is done.
+            break;
+        }
+
+        let wait = heartbeat_interval.saturating_sub(last_heartbeat.elapsed());
+        match receiver.recv_timeout(wait) {
+            Ok((task_id, mut state)) => {
+                active_ids.remove(&task_id);
+                if let Some(previous) = states.get(&task_id) {
+                    state.started_at.clone_from(&previous.started_at);
+                    state.checkpoint_key.clone_from(&previous.checkpoint_key);
+                    state
+                        .terminal_backend
+                        .clone_from(&previous.terminal_backend);
+                    state
+                        .terminal_session
+                        .clone_from(&previous.terminal_session);
+                    state
+                        .terminal_workspace_id
+                        .clone_from(&previous.terminal_workspace_id);
+                    state
+                        .terminal_pane_id
+                        .clone_from(&previous.terminal_pane_id);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    for task_id in &active_ids {
-                        if let Some(state) = states.get_mut(task_id) {
-                            state.status = TaskStatus::Failed;
-                            state.error = Some("worker channel disconnected".to_string());
-                            state.ended_at = Some(now_iso());
-                            save_task_state(&run_dir, state)?;
-                        }
-                    }
-                    break;
-                }
+                refresh_worker_progress(&run_dir, &mut state, unix_ms());
+                states.insert(task_id.clone(), state.clone());
+                save_task_state(&run_dir, &states[&task_id])?;
+                append_event(
+                    &run_dir,
+                    "task_finished",
+                    json!({"task_id": task_id, "status": format!("{:?}", state.status).to_lowercase()}),
+                );
+                // Loop back: find_ready runs again and launches whatever now
+                // fits in the freed permit, without waiting for the rest.
+                continue;
             }
-            if !active_ids.is_empty() && last_heartbeat.elapsed() >= heartbeat_interval {
-                let heartbeat = unix_ms();
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 for task_id in &active_ids {
                     if let Some(state) = states.get_mut(task_id) {
-                        state.heartbeat_unix_ms = Some(heartbeat);
-                        refresh_worker_progress(&run_dir, state, heartbeat);
+                        state.status = TaskStatus::Failed;
+                        state.error = Some("worker channel disconnected".to_string());
+                        state.ended_at = Some(now_iso());
                         save_task_state(&run_dir, state)?;
                     }
                 }
-                append_event(
-                    &run_dir,
-                    "tasks_heartbeat",
-                    json!({"task_ids": active_ids, "heartbeat_unix_ms": heartbeat}),
-                );
-                last_heartbeat = Instant::now();
+                break;
             }
         }
+
+        if !active_ids.is_empty() && last_heartbeat.elapsed() >= heartbeat_interval {
+            let heartbeat = unix_ms();
+            for task_id in &active_ids {
+                if let Some(state) = states.get_mut(task_id) {
+                    state.heartbeat_unix_ms = Some(heartbeat);
+                    refresh_worker_progress(&run_dir, state, heartbeat);
+                    save_task_state(&run_dir, state)?;
+                }
+            }
+            append_event(
+                &run_dir,
+                "tasks_heartbeat",
+                json!({"task_ids": active_ids, "heartbeat_unix_ms": heartbeat}),
+            );
+            last_heartbeat = Instant::now();
+        }
     }
+    drop(sender);
+    drop(receiver);
 
     let all_states: Vec<TaskState> = tasks
         .iter()

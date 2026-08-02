@@ -425,21 +425,15 @@ pub fn slug(value: &str) -> String {
 }
 
 /// Resolve a dependency reference against a set of tasks.
-/// A dependency matches by source_id, task id, or slugified id suffix.
+///
+/// A dependency matches only by its declared `source_id` or its canonical
+/// compiled task id (`{index:04}-{slug}`). Suffix-based matching was removed
+/// because it was ambiguous: two tasks sharing a slug suffix (e.g. `build` and
+/// `rebuild`) could both match the same `needs` entry, silently binding a
+/// dependency to the wrong predecessor. Authors must reference the exact id
+/// they declared.
 pub fn find_dependency_task<'a>(tasks: &'a [Task], dep: &str) -> Option<&'a Task> {
-    tasks
-        .iter()
-        .find(|t| t.source_id == dep || t.id == dep)
-        .or_else(|| {
-            let key = slug(dep).to_lowercase();
-            tasks.iter().find(|t| {
-                if let Some(suffix) = t.id.split_once('-').map(|(_, s)| s) {
-                    slug(suffix).to_lowercase() == key
-                } else {
-                    false
-                }
-            })
-        })
+    tasks.iter().find(|t| t.source_id == dep || t.id == dep)
 }
 
 pub fn task_index_to_id(index: usize, source_id: &str) -> String {
