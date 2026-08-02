@@ -892,6 +892,26 @@ fn find_dep_by_source_id() {
     assert!(find_dependency_task(&tasks, "nonexistent").is_none());
 }
 
+#[test]
+fn dependency_resolution_rejects_suffix_matching() {
+    // Suffix matching was ambiguous (build vs rebuild could both match a bare
+    // suffix via slug heuristics). Dependencies must now resolve to exact
+    // source_id or compiled id only.
+    let tasks = vec![
+        make_task("build", &[], "mock"),
+        make_task("rebuild", &[], "mock"),
+    ];
+    // Exact source_id matches work.
+    assert!(find_dependency_task(&tasks, "build").is_some());
+    assert!(find_dependency_task(&tasks, "rebuild").is_some());
+    // A bare slug suffix that is no task's source_id must not bind to a task
+    // whose compiled id merely shares that suffix.
+    assert!(find_dependency_task(&tasks, "ild").is_none());
+    assert!(find_dependency_task(&tasks, "ebuild").is_none());
+    // A non-existent id resolves to nothing.
+    assert!(find_dependency_task(&tasks, "does-not-exist").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // 13. Review catches unsupported thinking
 // ---------------------------------------------------------------------------
