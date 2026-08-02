@@ -325,6 +325,16 @@ fn default_true() -> bool {
 // Task specification (from plan JSON)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskKind {
+    #[default]
+    Unset,
+    Feature,
+    Process,
+    Documentation,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TaskSpec {
     pub id: String,
@@ -345,6 +355,19 @@ pub struct TaskSpec {
     /// rejects a completed task that touched any of them.
     #[serde(default)]
     pub protected: Vec<String>,
+    /// Declares whether this task produces a feature, unblocks one (process),
+    /// or documents work. When set, review enforces that process tasks name
+    /// the feature gate they unblock and feature tasks carry acceptance notes.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Feature tasks: human-readable assertions that define done. Consumed by
+    /// reports so a worker cannot self-assert acceptance without evidence.
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    /// Process tasks: the feature task ids this process work unblocks. Keeps
+    /// process work anchored to a feature gate instead of becoming a proxy goal.
+    #[serde(default)]
+    pub gates: Vec<String>,
     /// Per-task thinking level (overrides plan default).
     #[serde(default)]
     pub thinking: Option<ThinkingLevel>,

@@ -95,6 +95,9 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         artifacts: Vec::new(),
         verify: Vec::new(),
         protected: Vec::new(),
+        kind: model::TaskKind::default(),
+        acceptance: Vec::new(),
+        gates: Vec::new(),
         thinking: None,
         session: None,
         timeout_seconds: None,
@@ -1170,6 +1173,9 @@ fn review_rejects_thinking_on_hermes() {
             artifacts: Vec::new(),
             verify: Vec::new(),
             protected: Vec::new(),
+            kind: model::TaskKind::default(),
+            acceptance: Vec::new(),
+            gates: Vec::new(),
             thinking: Some(ThinkingLevel::High),
             session: None,
             timeout_seconds: None,
@@ -1995,4 +2001,84 @@ fn tools_policy_accepts_granular_capabilities() {
             "unexpected result for tools_policy={policy}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 20. Feature evidence and process-work safeguards
+// ---------------------------------------------------------------------------
+
+fn review_json(value: Value) -> crate::review::ReviewResult {
+    let plan = serde_json::from_value::<model::Plan>(value).unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    review_plan(&plan, &router, &tasks)
+}
+
+#[test]
+fn process_task_without_gate_is_rejected() {
+    let result = review_json(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"process"}]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| { f.code == "process_task_without_gate" && f.severity == Severity::Error }));
+    assert!(!result.ok);
+}
+
+#[test]
+fn process_task_with_gate_passes() {
+    let result = review_json(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[
+            {"id":"feat","route":"mock","role":"planner","task":"build feature",
+             "kind":"feature","acceptance":["it works"]},
+            {"id":"t","route":"mock","role":"general","task":"scaffold",
+             "kind":"process","gates":["feat"]}
+        ]}]
+    }));
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_task_without_gate"));
+}
+
+#[test]
+fn feature_task_without_acceptance_warns() {
+    let result = review_json(json!({
+        "goal": "feature check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"feature"}]}]
+    }));
+    assert!(result.findings.iter().any(|f| {
+        f.code == "feature_task_without_acceptance" && f.severity == Severity::Warning
+    }));
+}
+
+#[test]
+fn process_only_plan_warns() {
+    let result = review_json(json!({
+        "goal": "process only",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x",
+            "kind":"process","gates":["future-feature"]}]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_only_plan"));
+}
+
+#[test]
+fn unset_kind_tasks_are_not_flagged() {
+    let result = review_json(json!({
+        "goal": "plain plan",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x"}]}]
+    }));
+    assert!(!result.findings.iter().any(|f| matches!(
+        f.code.as_str(),
+        "process_task_without_gate"
+            | "feature_task_without_acceptance"
+            | "process_only_plan"
+            | "high_process_ratio"
+    )));
 }
