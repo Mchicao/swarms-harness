@@ -5,12 +5,13 @@ use crate::model::{
     SessionMode, Task, TaskSpec, ThinkingLevel,
 };
 use crate::review::{detect_cycles, review_plan, validate_artifact_path, Severity};
-use crate::runtime::{self, check_artifacts};
+use crate::runtime::{self, check_artifacts_with_snapshot};
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::telemetry::{TaskState, TaskStatus};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         tools_policy: "none".to_string(),
         artifacts: Vec::new(),
         verify: Vec::new(),
+        protected: Vec::new(),
         thinking: None,
         session: None,
         timeout_seconds: None,
@@ -922,6 +924,7 @@ fn review_rejects_thinking_on_hermes() {
             tools_policy: "none".to_string(),
             artifacts: Vec::new(),
             verify: Vec::new(),
+            protected: Vec::new(),
             thinking: Some(ThinkingLevel::High),
             session: None,
             timeout_seconds: None,
@@ -1391,12 +1394,170 @@ fn artifacts_must_exist() {
     let dir = temp_dir();
     let mut task = make_task("t", &[], "mock");
     task.spec.artifacts = vec!["nonexistent_file.xyz".to_string()];
-    assert!(check_artifacts(&dir, &task).is_err());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_err());
 
     let file = dir.join("exists.txt");
     fs::write(&file, "ok").unwrap();
     task.spec.artifacts = vec!["exists.txt".to_string()];
-    assert!(check_artifacts(&dir, &task).is_ok());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_ok());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Artifact freshness and protected-path enforcement (issue #2)
+// ---------------------------------------------------------------------------
+
+/// Set a file's mtime to a fixed point in the past so freshness checks can be
+/// tested deterministically without racing the clock.
+fn set_old_mtime(path: &Path) {
+    use std::fs::FileTimes;
+    let old = SystemTime::UNIX_EPOCH;
+    let times = FileTimes::new().set_modified(old).set_accessed(old);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open for set_times: {e}"))
+        .unwrap();
+    let _ = f.set_times(times);
+}
+
+#[test]
+fn pre_existing_artifact_not_touched_by_task_is_rejected() {
+    // A file that existed before the task and was not modified by it must not
+    // satisfy the artifact gate. This closes the "stale file passes" hole.
+    let dir = temp_dir();
+    let artifact = dir.join("stale.txt");
+    fs::write(&artifact, "old").unwrap();
+    set_old_mtime(&artifact);
+
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["stale.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    // The file's mtime is still the old one: no task touched it.
+    let result = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("was not modified by task"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn artifact_created_or_modified_by_task_passes_freshness() {
+    let dir = temp_dir();
+
+    // Case 1: brand-new artifact created after the snapshot.
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["new.txt".to_string()];
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("new.txt"), "fresh").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).is_ok());
+
+    // Case 2: pre-existing artifact rewritten after the snapshot.
+    let existing = dir.join("existing.txt");
+    fs::write(&existing, "v1").unwrap();
+    set_old_mtime(&existing);
+    let mut task2 = make_task("t2", &[], "mock");
+    task2.spec.artifacts = vec!["existing.txt".to_string()];
+    let snapshot2 = runtime::capture_artifact_snapshot(&dir, &task2);
+    fs::write(&existing, "v2").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task2, Some(&snapshot2)).is_ok());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_modifies_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let golden = dir.join("golden.json");
+    fs::write(&golden, "v1").unwrap();
+    set_old_mtime(&golden);
+
+    // The task produces its own artifact but also tampers with the golden file
+    // it is supposed to be evaluated against.
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["golden.json".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(&golden, "tampered").unwrap(); // worker weakened the fixture
+
+    let result = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("protected path"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_creates_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["should_not_exist.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(dir.join("should_not_exist.txt"), "appeared").unwrap();
+
+    let result = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("protected path"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn review_rejects_overlapping_write_sets_in_parallel_stage() {
+    // Two tasks in the same parallel stage that both claim the same artifact
+    // race on one path; review must flag this before any worker runs.
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "parallel writers",
+        "stages": [{
+            "name": "S", "parallel": true,
+            "tasks": [
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]},
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}
+            ]
+        }]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set" && f.severity == Severity::Error));
+    assert!(!result.ok);
+}
+
+#[test]
+fn review_allows_same_artifact_across_separate_stages() {
+    // Sequential stages may legitimately produce the same artifact on
+    // different runs; only *concurrent* overlap is an error.
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "sequential writers",
+        "stages": [
+            {"name":"S1","parallel":false,"tasks":[
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ,
+            {"name":"S2","parallel":false,"tasks":[
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set"));
 }

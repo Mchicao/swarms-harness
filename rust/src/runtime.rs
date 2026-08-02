@@ -771,6 +771,11 @@ pub(crate) fn run_task(
         AdapterKind::from_wrapper(&task.provider.wrapper).unwrap_or(AdapterKind::Mock);
     let mut session_resume_count = u32::from(session_reused);
 
+    // Snapshot artifact/protected mtimes before the worker runs, so the
+    // completion gate can prove the worker actually produced each declared
+    // artifact and did not modify a protected path.
+    let artifact_snapshot = capture_artifact_snapshot(root, task);
+
     let mut attempt = 0_u32;
 
     let last_error = loop {
@@ -920,7 +925,8 @@ pub(crate) fn run_task(
                     }
                 }
 
-                if let Err(e) = check_artifacts(root, task) {
+                if let Err(e) = check_artifacts_with_snapshot(root, task, Some(&artifact_snapshot))
+                {
                     return failed_state(task, thinking, started, attempt, &e, &exec.usage);
                 }
 
@@ -1495,10 +1501,66 @@ fn tail_chars(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Artifact check
+// Artifact check, freshness, and protected-path enforcement
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check_artifacts(root: &Path, task: &Task) -> Result<()> {
+/// Mtime snapshot of the paths a task cares about, captured before the worker
+/// runs so the coordinator can prove the worker actually produced (or at least
+/// touched) each declared artifact and did not weaken a protected path.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ArtifactSnapshot {
+    /// `(relative_path, mtime_unix_ms)` for each declared artifact or protected
+    /// path that existed before the task. Missing files are simply absent.
+    entries: Vec<(String, u64)>,
+}
+
+impl ArtifactSnapshot {
+    fn mtime_of(&self, rel: &str) -> Option<u64> {
+        self.entries
+            .iter()
+            .find(|(path, _)| path == rel)
+            .map(|(_, mtime)| *mtime)
+    }
+}
+
+/// Capture mtimes for the task's declared artifacts and protected paths.
+/// Cheap: only `stat`s the explicitly declared set, never a workspace walk.
+pub(crate) fn capture_artifact_snapshot(root: &Path, task: &Task) -> ArtifactSnapshot {
+    let mut entries = Vec::new();
+    for rel in task.spec.artifacts.iter().chain(task.spec.protected.iter()) {
+        if let Some(mtime) = read_mtime_unix_ms(&root.join(rel)) {
+            entries.push((rel.clone(), mtime));
+        }
+    }
+    ArtifactSnapshot { entries }
+}
+
+fn read_mtime_unix_ms(path: &Path) -> Option<u64> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(duration_to_unix_ms(dur))
+}
+
+fn duration_to_unix_ms(dur: std::time::Duration) -> u64 {
+    dur.as_secs()
+        .saturating_mul(1000)
+        .saturating_add(dur.subsec_millis() as u64)
+}
+
+/// Validate declared artifacts and, when a pre-task snapshot is available,
+/// enforce freshness (the worker touched each artifact) and protected-path
+/// integrity (the worker did not modify any protected path).
+pub(crate) fn check_artifacts_with_snapshot(
+    root: &Path,
+    task: &Task,
+    pre: Option<&ArtifactSnapshot>,
+) -> Result<()> {
+    let root_canonical = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root: {e}"))?;
+
+    // Existence + containment for every declared artifact.
     for art in &task.spec.artifacts {
         let path = root.join(art);
         if !path.exists() {
@@ -1507,13 +1569,44 @@ pub(crate) fn check_artifacts(root: &Path, task: &Task) -> Result<()> {
         let canonical = path
             .canonicalize()
             .map_err(|e| format!("canonicalize {art}: {e}"))?;
-        let root_canonical = root
-            .canonicalize()
-            .map_err(|e| format!("canonicalize root: {e}"))?;
         if !canonical.starts_with(&root_canonical) {
             return Err(format!("artifact escapes workspace: {art}"));
         }
     }
+
+    // Freshness: each declared artifact must have been created or modified by
+    // this task. A pre-existing file that the worker never touched used to
+    // satisfy the existence check above; the snapshot closes that hole.
+    if let Some(snapshot) = pre {
+        for art in &task.spec.artifacts {
+            let now = read_mtime_unix_ms(&root.join(art));
+            let before = snapshot.mtime_of(art);
+            match (now, before) {
+                (Some(now_m), Some(before_m)) if now_m <= before_m => {
+                    return Err(format!("declared artifact was not modified by task: {art}"));
+                }
+                _ => {}
+            }
+        }
+
+        // Protected paths: if the task lists any (e.g. golden files it is
+        // evaluated against), the worker must not have touched them.
+        for rel in &task.spec.protected {
+            let now = read_mtime_unix_ms(&root.join(rel));
+            let before = snapshot.mtime_of(rel);
+            if let (Some(now_m), Some(before_m)) = (now, before) {
+                if now_m > before_m {
+                    return Err(format!("task modified a protected path: {rel}"));
+                }
+            }
+            // A protected path that did not exist before and appeared now is
+            // also a violation: the task created something it must not own.
+            if now.is_some() && before.is_none() {
+                return Err(format!("task created a protected path: {rel}"));
+            }
+        }
+    }
+
     Ok(())
 }
 
