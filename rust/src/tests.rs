@@ -823,6 +823,22 @@ fn run_id_safety() {
 }
 
 // ---------------------------------------------------------------------------
+// 9b. Singularity cycle bounds (issue #4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn singularity_cycle_count_is_bounded() {
+    use crate::cli::parse_cycle_count;
+    assert_eq!(parse_cycle_count("1").unwrap(), 1);
+    assert_eq!(parse_cycle_count("1000").unwrap(), 1000);
+    // An autonomous loop must never run unbounded by accident.
+    assert!(parse_cycle_count("0").is_err());
+    assert!(parse_cycle_count("1001").is_err());
+    assert!(parse_cycle_count("-5").is_err());
+    assert!(parse_cycle_count("not-a-number").is_err());
+}
+
+// ---------------------------------------------------------------------------
 // 10. Prompt generation
 // ---------------------------------------------------------------------------
 
