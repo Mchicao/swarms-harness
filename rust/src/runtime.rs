@@ -937,6 +937,25 @@ pub(crate) fn run_task(
                     return state;
                 }
 
+                // Feature-producing roles must reach `Completed` with successful
+                // verification evidence. `verified == None` means no verify
+                // command ran (static review should have caught this, but the
+                // coordinator enforces the invariant independently so that a
+                // plan loaded with `--force` or an edited plan cannot bypass it).
+                if task.spec.requires_verification() && verified != Some(true) {
+                    let mut state = failed_state(
+                        task,
+                        thinking,
+                        started,
+                        attempt,
+                        "role requires verification but none passed",
+                        &exec.usage,
+                    );
+                    state.verified = verified;
+                    state.verify_error = verify_error;
+                    return state;
+                }
+
                 return success_state(
                     task,
                     thinking,

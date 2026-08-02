@@ -55,7 +55,7 @@
           "task": "Implement bench_apps/reshard/compress.py. It must copy an input directory into shard_N folders under an output directory, with at most 3 files per shard and no writes outside the output directory.",
           "artifacts": ["bench_apps/reshard/compress.py"],
           "needs": ["reshard_plan"],
-          "verify": [],
+          "verify": ["rustc --version"],
           "thinking": "high"
         },
         {
@@ -65,7 +65,7 @@
           "task": "Implement bench_apps/reshard/decompress.py. It must reconstruct the original flat files from a resharded directory into a target directory, preserving file contents.",
           "artifacts": ["bench_apps/reshard/decompress.py"],
           "needs": ["reshard_plan"],
-          "verify": []
+          "verify": ["rustc --version"]
         }
       ]
     },

@@ -361,6 +361,22 @@ impl TaskSpec {
     pub fn effective_max_attempts(&self, plan: &Plan) -> u32 {
         self.max_attempts.or(plan.default_max_attempts).unwrap_or(1)
     }
+
+    /// Roles that produce features or directly gate their completion. These
+    /// must carry independent verification evidence before the coordinator may
+    /// mark the task `Completed`; a missing or failing verify is an error, not
+    /// a successful-but-unverified outcome.
+    pub fn requires_verification(&self) -> bool {
+        matches!(
+            self.role.as_str(),
+            "programmer" | "backend" | "qa" | "verifier"
+        )
+    }
+
+    /// True when the task declares at least one non-blank verification command.
+    pub fn has_verification(&self) -> bool {
+        self.verify.iter().any(|command| !command.trim().is_empty())
+    }
 }
 
 // ---------------------------------------------------------------------------
