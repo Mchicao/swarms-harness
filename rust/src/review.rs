@@ -1,7 +1,7 @@
 //! Static plan validation: schema, DAG, routes, thinking, session compatibility.
 
 use crate::adapter::AdapterKind;
-use crate::model::{find_dependency_task, Plan, Router, Task};
+use crate::model::{find_dependency_task, Plan, Router, Task, TaskKind};
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -209,6 +209,38 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             });
         }
 
+        // Feature evidence: process tasks must name the feature gate they
+        // unblock, and feature tasks should carry acceptance assertions. This
+        // keeps process work (counts, commits, fixtures) anchored to a feature
+        // instead of becoming a proxy goal.
+        match task.spec.kind {
+            TaskKind::Process => {
+                if task.spec.gates.iter().all(|gate| gate.trim().is_empty()) {
+                    findings.push(Finding {
+                        severity: Severity::Error,
+                        code: "process_task_without_gate".to_string(),
+                        message: format!(
+                            "task '{}' is kind: process but declares no gates; process work must identify the feature it unblocks",
+                            task.source_id
+                        ),
+                        task_id: Some(task.source_id.clone()),
+                    });
+                }
+            }
+            TaskKind::Feature if task.spec.acceptance.iter().all(|a| a.trim().is_empty()) => {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "feature_task_without_acceptance".to_string(),
+                    message: format!(
+                        "task '{}' is kind: feature but declares no acceptance assertions",
+                        task.source_id
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            TaskKind::Feature | TaskKind::Documentation | TaskKind::Unset => {}
+        }
+
         // Tools policy
         if !matches!(task.spec.tools_policy.as_str(), "none" | "full") {
             findings.push(Finding {
@@ -372,6 +404,47 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
                 ),
                 task_id: None,
             });
+        }
+    }
+
+    // --- Process-only plan and process ratio ---
+    // A plan made entirely of process tasks (no feature work) or with a high
+    // process ratio is a smell: process work (counts, commits, scaffolding) is
+    // a means, not an end. Warn so authors anchor process work to features.
+    let classified: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| t.spec.kind != TaskKind::Unset)
+        .collect();
+    if !classified.is_empty() {
+        let process_count = classified
+            .iter()
+            .filter(|t| t.spec.kind == TaskKind::Process)
+            .count();
+        let feature_count = classified
+            .iter()
+            .filter(|t| t.spec.kind == TaskKind::Feature)
+            .count();
+        if feature_count == 0 && process_count > 0 {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "process_only_plan".to_string(),
+                message: "plan declares process tasks but no feature tasks; process work should unblock a feature"
+                    .to_string(),
+                task_id: None,
+            });
+        } else if feature_count > 0 {
+            let ratio = process_count as f64 / classified.len() as f64;
+            if ratio > 0.5 {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "high_process_ratio".to_string(),
+                    message: format!(
+                        "process tasks are {:.0}% of classified work; verify each unblocks a feature",
+                        ratio * 100.0
+                    ),
+                    task_id: None,
+                });
+            }
         }
     }
 

@@ -90,6 +90,9 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         tools_policy: "none".to_string(),
         artifacts: Vec::new(),
         verify: Vec::new(),
+        kind: model::TaskKind::default(),
+        acceptance: Vec::new(),
+        gates: Vec::new(),
         thinking: None,
         session: None,
         timeout_seconds: None,
@@ -922,6 +925,9 @@ fn review_rejects_thinking_on_hermes() {
             tools_policy: "none".to_string(),
             artifacts: Vec::new(),
             verify: Vec::new(),
+            kind: model::TaskKind::default(),
+            acceptance: Vec::new(),
+            gates: Vec::new(),
             thinking: Some(ThinkingLevel::High),
             session: None,
             timeout_seconds: None,
@@ -1399,4 +1405,103 @@ fn artifacts_must_exist() {
     assert!(check_artifacts(&dir, &task).is_ok());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 17. Feature evidence and process-work safeguards (issue #8)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn process_task_without_gate_is_rejected() {
+    // Process work must identify the feature it unblocks, otherwise task
+    // counts and commits become proxy goals disconnected from features.
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"process"}]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_task_without_gate" && f.severity == Severity::Error));
+    assert!(!result.ok);
+}
+
+#[test]
+fn process_task_with_gate_passes() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[
+            {"id":"feat","route":"mock","role":"planner","task":"build feature","kind":"feature","acceptance":["it works"],"verify":[]},
+            {"id":"t","route":"mock","role":"general","task":"scaffold","kind":"process","gates":["feat"]}
+        ]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_task_without_gate"));
+}
+
+#[test]
+fn feature_task_without_acceptance_warns() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "feature check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"feature"}]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "feature_task_without_acceptance" && f.severity == Severity::Warning));
+}
+
+#[test]
+fn process_only_plan_warns() {
+    // A plan with only process tasks and no feature work is a smell.
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "only process",
+        "stages":[{"tasks":[
+            {"id":"a","route":"mock","task":"x","kind":"process","gates":["b"]},
+            {"id":"b","route":"mock","task":"y","kind":"process","gates":["a"]}
+        ]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_only_plan"));
+}
+
+#[test]
+fn unset_kind_tasks_are_not_flagged() {
+    // Plans that don't classify tasks (the common case) must not produce
+    // evidence findings — the feature-evidence policy is opt-in.
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "plain plan",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x"}]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_task_without_gate"
+            || f.code == "feature_task_without_acceptance"
+            || f.code == "process_only_plan"
+            || f.code == "high_process_ratio"));
 }
