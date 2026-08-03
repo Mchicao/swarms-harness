@@ -91,6 +91,9 @@ pub fn parse_args() -> Result<Args> {
                 ))
             }
             "--max-cycles" => {
+                if command != "singularity" {
+                    return Err("--max-cycles is only valid for singularity".to_string());
+                }
                 max_cycles = parse_cycle_count(
                     values
                         .next()
@@ -109,6 +112,11 @@ pub fn parse_args() -> Result<Args> {
     }
     if force && resume {
         return Err("--force and --resume are mutually exclusive".to_string());
+    }
+    if command == "singularity" && (force || resume) {
+        return Err(
+            "singularity creates fresh cycle runs; --force/--resume are not valid".to_string(),
+        );
     }
 
     Ok(Args {

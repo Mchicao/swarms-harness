@@ -62,7 +62,7 @@ fn write_json_value(path: &Path, value: &Value) -> Result<()> {
     write_json_atomic(path, &text)
 }
 
-/// Append a versioned event envelope to `events.jsonl`.
+/// Append the canonical event envelope to `events.jsonl`.
 ///
 /// The canonical top-level shape is:
 /// ```jsonc
@@ -556,7 +556,19 @@ pub fn execute(
             );
 
             thread::spawn(move || {
-                let state = run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store);
+                let state = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store)
+                }))
+                .unwrap_or_else(|_| {
+                    failed_state(
+                        &task,
+                        task.spec.effective_thinking(&plan),
+                        Instant::now(),
+                        1,
+                        "worker thread panicked",
+                        &Usage::missing(),
+                    )
+                });
                 signal_worker_console_finished(&console_log);
                 let _ = sender.send((task.id.clone(), state));
             });
@@ -1551,48 +1563,50 @@ fn tail_chars(s: &str, max: usize) -> String {
 // Artifact check, freshness, and protected-path enforcement
 // ---------------------------------------------------------------------------
 
-/// Mtime snapshot of the paths a task cares about, captured before the worker
-/// runs so the coordinator can prove the worker actually produced (or at least
-/// touched) each declared artifact and did not weaken a protected path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    is_dir: bool,
+}
+
+/// Metadata snapshot of the paths a task cares about, captured before the
+/// worker runs. Full `SystemTime` precision plus length avoids the false
+/// equality caused by truncating mtimes to milliseconds.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ArtifactSnapshot {
-    /// `(relative_path, mtime_unix_ms)` for each declared artifact or protected
-    /// path that existed before the task. Missing files are simply absent.
-    entries: Vec<(String, u64)>,
+    entries: Vec<(String, Option<FileStamp>)>,
 }
 
 impl ArtifactSnapshot {
-    fn mtime_of(&self, rel: &str) -> Option<u64> {
+    fn stamp_of(&self, rel: &str) -> Option<FileStamp> {
         self.entries
             .iter()
             .find(|(path, _)| path == rel)
-            .map(|(_, mtime)| *mtime)
+            .and_then(|(_, stamp)| stamp.clone())
     }
 }
 
-/// Capture mtimes for the task's declared artifacts and protected paths.
+/// Capture metadata for the task's declared artifacts and protected paths.
 /// Cheap: only `stat`s the explicitly declared set, never a workspace walk.
 pub(crate) fn capture_artifact_snapshot(root: &Path, task: &Task) -> ArtifactSnapshot {
-    let mut entries = Vec::new();
-    for rel in task.spec.artifacts.iter().chain(task.spec.protected.iter()) {
-        if let Some(mtime) = read_mtime_unix_ms(&root.join(rel)) {
-            entries.push((rel.clone(), mtime));
-        }
-    }
+    let entries = task
+        .spec
+        .artifacts
+        .iter()
+        .chain(task.spec.protected.iter())
+        .map(|rel| (rel.clone(), read_file_stamp(&root.join(rel))))
+        .collect();
     ArtifactSnapshot { entries }
 }
 
-fn read_mtime_unix_ms(path: &Path) -> Option<u64> {
+fn read_file_stamp(path: &Path) -> Option<FileStamp> {
     let meta = fs::metadata(path).ok()?;
-    let mtime = meta.modified().ok()?;
-    let dur = mtime.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some(duration_to_unix_ms(dur))
-}
-
-fn duration_to_unix_ms(dur: std::time::Duration) -> u64 {
-    dur.as_secs()
-        .saturating_mul(1000)
-        .saturating_add(dur.subsec_millis() as u64)
+    Some(FileStamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+        is_dir: meta.is_dir(),
+    })
 }
 
 /// Validate declared artifacts and, when a pre-task snapshot is available,
@@ -1626,30 +1640,20 @@ pub(crate) fn check_artifacts_with_snapshot(
     // satisfy the existence check above; the snapshot closes that hole.
     if let Some(snapshot) = pre {
         for art in &task.spec.artifacts {
-            let now = read_mtime_unix_ms(&root.join(art));
-            let before = snapshot.mtime_of(art);
-            match (now, before) {
-                (Some(now_m), Some(before_m)) if now_m <= before_m => {
-                    return Err(format!("declared artifact was not modified by task: {art}"));
-                }
-                _ => {}
+            let now = read_file_stamp(&root.join(art));
+            let before = snapshot.stamp_of(art);
+            if before.is_some() && now == before {
+                return Err(format!("declared artifact was not modified by task: {art}"));
             }
         }
 
         // Protected paths: if the task lists any (e.g. golden files it is
         // evaluated against), the worker must not have touched them.
         for rel in &task.spec.protected {
-            let now = read_mtime_unix_ms(&root.join(rel));
-            let before = snapshot.mtime_of(rel);
-            if let (Some(now_m), Some(before_m)) = (now, before) {
-                if now_m > before_m {
-                    return Err(format!("task modified a protected path: {rel}"));
-                }
-            }
-            // A protected path that did not exist before and appeared now is
-            // also a violation: the task created something it must not own.
-            if now.is_some() && before.is_none() {
-                return Err(format!("task created a protected path: {rel}"));
+            let now = read_file_stamp(&root.join(rel));
+            let before = snapshot.stamp_of(rel);
+            if now != before {
+                return Err(format!("task modified a protected path: {rel}"));
             }
         }
     }
@@ -1665,7 +1669,7 @@ pub(crate) fn check_artifacts_with_snapshot(
 /// to be fast (compilers, test runners, linters); a command that does not
 /// finish in this window is stuck, not doing productive work, and holding a
 /// completion gate open indefinitely.
-const VERIFY_DEADLINE: Duration = Duration::from_secs(120);
+const VERIFY_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
 /// Poll a child process until it exits or `deadline` elapses. On timeout the
 /// child is killed and reaped so no descendant lingers holding the gate open.

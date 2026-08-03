@@ -205,6 +205,36 @@ fn codex_command_maps_thinking_and_resume() {
 }
 
 #[test]
+fn workspace_write_policy_reaches_cli_adapters() {
+    let mut codex = make_task("codex-write", &[], "codex");
+    codex.spec.tools_policy = "workspace-write".to_string();
+    let codex_spec = adapter::build_cli_command(
+        AdapterKind::Codex,
+        &codex,
+        "write",
+        ThinkingLevel::default(),
+        None,
+        "codex_cli",
+    )
+    .unwrap();
+    assert!(codex_spec.args.contains(&"workspace-write".to_string()));
+
+    let mut opencode = make_task("oc-write", &[], "oc");
+    opencode.spec.tools_policy = "workspace-write".to_string();
+    let opencode_spec = adapter::build_cli_command(
+        AdapterKind::OpenCode,
+        &opencode,
+        "write",
+        ThinkingLevel::default(),
+        None,
+        "opencode",
+    )
+    .unwrap();
+    assert!(opencode_spec.args.contains(&"--auto".to_string()));
+    assert!(!opencode_spec.args.contains(&"--pure".to_string()));
+}
+
+#[test]
 fn codex_max_maps_to_verified_ultra_effort() {
     let task = make_task("t1", &[], "codex");
     let spec = adapter::build_cli_command(
@@ -1800,6 +1830,23 @@ fn task_that_creates_a_protected_path_is_rejected() {
 }
 
 #[test]
+fn task_that_deletes_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let protected = dir.join("golden.json");
+    fs::write(&protected, "keep").unwrap();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["golden.json".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::remove_file(protected).unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn review_rejects_overlapping_write_sets_in_parallel_stage() {
     let plan = serde_json::from_value::<model::Plan>(json!({
         "goal": "parallel writers",
@@ -1842,6 +1889,27 @@ fn review_allows_same_artifact_across_separate_stages() {
     let tasks = crate::config::build_tasks(&plan, &router).unwrap();
     let result = review_plan(&plan, &router, &tasks);
     assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set"));
+}
+
+#[test]
+fn review_detects_parallel_overlap_after_sequential_writer() {
+    let result = review_json(json!({
+        "goal": "mixed writers",
+        "stages": [
+            {"name":"seed","parallel":false,"tasks":[
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]}]},
+            {"name":"parallel","parallel":true,"tasks":[
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]},
+                {"id":"c","route":"mock","role":"programmer","task":"z",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ]
+    }));
+    assert!(result
         .findings
         .iter()
         .any(|f| f.code == "overlapping_write_set"));
@@ -2033,15 +2101,29 @@ fn process_task_with_gate_passes() {
         "goal": "process check",
         "stages":[{"tasks":[
             {"id":"feat","route":"mock","role":"planner","task":"build feature",
-             "kind":"feature","acceptance":["it works"]},
+             "kind":"feature","acceptance":["it works"],"verify":["true"]},
             {"id":"t","route":"mock","role":"general","task":"scaffold",
              "kind":"process","gates":["feat"]}
         ]}]
     }));
-    assert!(!result
-        .findings
-        .iter()
-        .any(|f| f.code == "process_task_without_gate"));
+    assert!(result.ok, "unexpected findings: {:?}", result.findings);
+}
+
+#[test]
+fn process_gate_must_reference_a_feature() {
+    for (gate, expected) in [
+        ("missing", "missing_process_gate"),
+        ("docs", "process_gate_not_feature"),
+    ] {
+        let result = review_json(json!({
+            "goal": "process gate check",
+            "stages":[{"tasks":[
+                {"id":"docs","route":"mock","task":"document","kind":"documentation"},
+                {"id":"process","route":"mock","task":"scaffold","kind":"process","gates":[gate]}
+            ]}]
+        }));
+        assert!(result.findings.iter().any(|f| f.code == expected));
+    }
 }
 
 #[test]
@@ -2053,6 +2135,10 @@ fn feature_task_without_acceptance_warns() {
     assert!(result.findings.iter().any(|f| {
         f.code == "feature_task_without_acceptance" && f.severity == Severity::Warning
     }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "missing_verification"));
 }
 
 #[test]

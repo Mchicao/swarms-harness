@@ -335,6 +335,10 @@ pub enum TaskKind {
     Documentation,
 }
 
+pub fn is_valid_tools_policy(value: &str) -> bool {
+    matches!(value, "none" | "read-only" | "workspace-write" | "full")
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TaskSpec {
     pub id: String,
@@ -360,8 +364,7 @@ pub struct TaskSpec {
     /// the feature gate they unblock and feature tasks carry acceptance notes.
     #[serde(default)]
     pub kind: TaskKind,
-    /// Feature tasks: human-readable assertions that define done. Consumed by
-    /// reports so a worker cannot self-assert acceptance without evidence.
+    /// Feature tasks: human-readable assertions that define done.
     #[serde(default)]
     pub acceptance: Vec<String>,
     /// Process tasks: the feature task ids this process work unblocks. Keeps
@@ -415,15 +418,20 @@ impl TaskSpec {
     /// mark the task `Completed`; a missing or failing verify is an error, not
     /// a successful-but-unverified outcome.
     pub fn requires_verification(&self) -> bool {
-        matches!(
-            self.role.as_str(),
-            "programmer" | "backend" | "qa" | "verifier"
-        )
+        self.kind == TaskKind::Feature
+            || matches!(
+                self.role.as_str(),
+                "programmer" | "backend" | "qa" | "verifier"
+            )
     }
 
     /// True when the task declares at least one non-blank verification command.
     pub fn has_verification(&self) -> bool {
         self.verify.iter().any(|command| !command.trim().is_empty())
+    }
+
+    pub fn allows_workspace_write(&self) -> bool {
+        matches!(self.tools_policy.as_str(), "workspace-write" | "full")
     }
 }
 

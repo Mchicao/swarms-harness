@@ -243,10 +243,7 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
 
         // Legacy "full" remains bounded to the workspace; policy alone never
         // grants unrestricted host access.
-        if !matches!(
-            task.spec.tools_policy.as_str(),
-            "none" | "read-only" | "workspace-write" | "full"
-        ) {
+        if !crate::model::is_valid_tools_policy(&task.spec.tools_policy) {
             findings.push(Finding {
                 severity: Severity::Error,
                 code: "invalid_tools_policy".to_string(),
@@ -406,6 +403,42 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
         }
     }
 
+    // Process gates must point at declared feature tasks; a non-empty string
+    // alone is not evidence that the process work unblocks a real feature.
+    for task in tasks
+        .iter()
+        .filter(|task| task.spec.kind == TaskKind::Process)
+    {
+        for gate in task
+            .spec
+            .gates
+            .iter()
+            .filter(|gate| !gate.trim().is_empty())
+        {
+            match find_dependency_task(tasks, gate) {
+                Some(feature) if feature.spec.kind == TaskKind::Feature => {}
+                Some(_) => findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "process_gate_not_feature".to_string(),
+                    message: format!(
+                        "task '{}' gates '{}' but that task is not kind: feature",
+                        task.source_id, gate
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                }),
+                None => findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "missing_process_gate".to_string(),
+                    message: format!(
+                        "task '{}' gates '{}' but no such feature task exists",
+                        task.source_id, gate
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                }),
+            }
+        }
+    }
+
     // --- Dependencies: cycle detection (DFS) ---
     let cycles = detect_cycles(tasks);
     for cycle in &cycles {
@@ -421,27 +454,26 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
     // Two tasks that run concurrently (same parallel stage) and declare the
     // same artifact race on the same path. Each task's declared artifacts are
     // its write set, so an overlap is a static correctness error.
-    let mut seen: HashMap<&str, usize> = HashMap::new();
+    let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
     for (idx, task) in tasks.iter().enumerate() {
+        if !task.stage_parallel {
+            continue;
+        }
         for art in &task.spec.artifacts {
-            if let Some(prev) = seen.get(art.as_str()) {
+            let key = (task.stage.as_str(), art.as_str());
+            if let Some(prev) = seen.get(&key) {
                 let prev_task = &tasks[*prev];
-                let concurrent = task.stage_parallel
-                    && prev_task.stage == task.stage
-                    && prev_task.stage_parallel;
-                if concurrent {
-                    findings.push(Finding {
-                        severity: Severity::Error,
-                        code: "overlapping_write_set".to_string(),
-                        message: format!(
-                            "tasks '{}' and '{}' both declare artifact '{}' in the same parallel stage",
-                            prev_task.source_id, task.source_id, art
-                        ),
-                        task_id: Some(task.source_id.clone()),
-                    });
-                }
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "overlapping_write_set".to_string(),
+                    message: format!(
+                        "tasks '{}' and '{}' both declare artifact '{}' in the same parallel stage",
+                        prev_task.source_id, task.source_id, art
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
             } else {
-                seen.insert(art.as_str(), idx);
+                seen.insert(key, idx);
             }
         }
     }

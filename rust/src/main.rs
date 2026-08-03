@@ -88,7 +88,7 @@ fn run() -> Result<()> {
             global_cap,
             &caps,
             &args.run_id,
-            args.max_cycles.max(1),
+            args.max_cycles,
         );
     }
 
@@ -138,13 +138,16 @@ fn run_singularity_loop(
     base_run_id: &str,
     max_cycles: u32,
 ) -> Result<()> {
-    let stop_file = root.join("STOP_SINGULARITY");
+    let stop_file = workspace_root.join("STOP_SINGULARITY");
+    let mut cycles_run = 0;
+    let mut failed = false;
     for cycle in 1..=max_cycles {
         if stop_file.exists() {
             println!("[singularity-rs] STOP_SINGULARITY detected; halting before cycle {cycle}.");
             break;
         }
 
+        cycles_run = cycle;
         let run_id = format!("{base_run_id}-c{cycle:03}");
         println!("[singularity-rs] Cycle {cycle}/{max_cycles}: {run_id} (via Rust coordinator)");
 
@@ -164,11 +167,13 @@ fn run_singularity_loop(
                 let status = if report.is_completed() {
                     "completed"
                 } else {
+                    failed = true;
                     "incomplete"
                 };
                 println!("[singularity-rs] Cycle {cycle} {status} ({run_id}).");
             }
             Err(e) => {
+                failed = true;
                 // A cycle failure is reported but does not abort the loop; the
                 // next cycle may self-correct. Only the coordinator-aborting
                 // errors (returned as Err) reach here.
@@ -176,8 +181,12 @@ fn run_singularity_loop(
             }
         }
     }
-    println!("[singularity-rs] Loop finished after {max_cycles} cycle(s).");
-    Ok(())
+    println!("[singularity-rs] Loop finished after {cycles_run} cycle(s).");
+    if failed {
+        Err("one or more singularity cycles failed".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn print_doctor(root: &Path, router: &Router) -> Result<()> {
