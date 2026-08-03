@@ -74,8 +74,22 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    if args.command != "run" {
+    if args.command != "run" && args.command != "singularity" {
         return Err(format!("unsupported command: {}", args.command));
+    }
+
+    if args.command == "singularity" {
+        return run_singularity_loop(
+            &root,
+            &workspace_root,
+            &plan,
+            &router,
+            &tasks,
+            global_cap,
+            &caps,
+            &args.run_id,
+            args.max_cycles,
+        );
     }
 
     let report = runtime::execute(
@@ -100,6 +114,79 @@ fn run() -> Result<()> {
         return Err("one or more workers failed".to_string());
     }
     Ok(())
+}
+
+/// Run a bounded autonomous loop where every cycle executes exclusively
+/// through the Rust coordinator. This is the native replacement for the legacy
+/// `scripts/start_singularity*.ps1` + `scripts/architect.py` path, which
+/// bypassed the scheduler, quotas, state contract, verification, and resume.
+///
+/// Each cycle reuses normal plan review, routing, state, verification, and
+/// reporting. Create a `STOP_SINGULARITY` file in the workspace root to stop
+/// before the next cycle. A failed cycle does not abort the loop: it reports
+/// the failure and continues to the next cycle so the loop can self-correct,
+/// mirroring the legacy "continue to next cycle to fix" behavior.
+#[allow(clippy::too_many_arguments)]
+fn run_singularity_loop(
+    root: &Path,
+    workspace_root: &Path,
+    plan: &swarms_runtime::model::Plan,
+    router: &Router,
+    tasks: &[swarms_runtime::model::Task],
+    global_cap: usize,
+    caps: &std::collections::HashMap<String, usize>,
+    base_run_id: &str,
+    max_cycles: u32,
+) -> Result<()> {
+    let stop_file = workspace_root.join("STOP_SINGULARITY");
+    let mut cycles_run = 0;
+    let mut failed = false;
+    for cycle in 1..=max_cycles {
+        if stop_file.exists() {
+            println!("[singularity-rs] STOP_SINGULARITY detected; halting before cycle {cycle}.");
+            break;
+        }
+
+        cycles_run = cycle;
+        let run_id = format!("{base_run_id}-c{cycle:03}");
+        println!("[singularity-rs] Cycle {cycle}/{max_cycles}: {run_id} (via Rust coordinator)");
+
+        match runtime::execute(
+            root,
+            workspace_root,
+            tasks,
+            plan,
+            router,
+            global_cap,
+            caps,
+            &run_id,
+            true, // each cycle is a fresh run
+            false,
+        ) {
+            Ok(report) => {
+                let status = if report.is_completed() {
+                    "completed"
+                } else {
+                    failed = true;
+                    "incomplete"
+                };
+                println!("[singularity-rs] Cycle {cycle} {status} ({run_id}).");
+            }
+            Err(e) => {
+                failed = true;
+                // A cycle failure is reported but does not abort the loop; the
+                // next cycle may self-correct. Only the coordinator-aborting
+                // errors (returned as Err) reach here.
+                println!("[singularity-rs] Cycle {cycle} failed ({run_id}): {e}");
+            }
+        }
+    }
+    println!("[singularity-rs] Loop finished after {cycles_run} cycle(s).");
+    if failed {
+        Err("one or more singularity cycles failed".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn print_doctor(root: &Path, router: &Router) -> Result<()> {

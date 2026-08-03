@@ -62,8 +62,28 @@ fn write_json_value(path: &Path, value: &Value) -> Result<()> {
     write_json_atomic(path, &text)
 }
 
-fn append_event(run_dir: &Path, event_type: &str, payload: Value) {
-    let item = json!({"time": now_iso(), "event": event_type, "payload": payload});
+/// Append the canonical event envelope to `events.jsonl`.
+///
+/// The canonical top-level shape is:
+/// ```jsonc
+/// {"time": "<iso8601>", "time_unix_ms": 0, "event": "<type>", "task_id": null, "payload": {}}
+/// ```
+/// `task_id` is hoisted out of the payload when present so consumers (the UI)
+/// can read it at one stable location instead of scanning both levels.
+pub(crate) fn append_event(run_dir: &Path, event_type: &str, payload: Value) {
+    let task_id = payload
+        .get("task_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut item = json!({
+        "time": now_iso(),
+        "time_unix_ms": unix_ms(),
+        "event": event_type,
+        "payload": payload,
+    });
+    if let Some(id) = task_id {
+        item["task_id"] = Value::String(id);
+    }
     let path = run_dir.join("events.jsonl");
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{item}");
@@ -470,8 +490,16 @@ pub fn execute(
     }
 
     let session_store = Arc::new(SessionStore::open(&run_dir)?);
+    let (sender, receiver) = mpsc::channel::<(String, TaskState)>();
+    let mut active_ids: HashSet<String> = HashSet::new();
+    let heartbeat_interval = Duration::from_secs(heartbeat_seconds);
+    let mut last_heartbeat = Instant::now();
+
+    // Continuous permit scheduling: launch work whenever capacity is free,
+    // instead of waiting for a whole wave to drain. Each time a task finishes
+    // we re-evaluate readiness and launch whatever newly fits, so a fast task's
+    // freed permit is reused immediately while unrelated slow tasks continue.
     loop {
-        // Reload each wave so long runs see the monitor's latest atomic snapshot.
         let quotas = QuotaGuard::load(root, &router.quota_policy);
         let ready = find_ready(tasks, &states, global_cap, caps, plan, router, &quotas);
 
@@ -489,12 +517,6 @@ pub fn execute(
             );
         }
 
-        if ready.selected.is_empty() {
-            break;
-        }
-
-        let (sender, receiver) = mpsc::channel::<(String, TaskState)>();
-        let mut active_ids = HashSet::new();
         for task in &ready.selected {
             let prompt = build_task_prompt(&run_dir, workspace_root, task, tasks, &states);
             let work_dir = run_dir.join("results").join(&task.id);
@@ -534,76 +556,94 @@ pub fn execute(
             );
 
             thread::spawn(move || {
-                let state = run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store);
+                let state = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store)
+                }))
+                .unwrap_or_else(|_| {
+                    failed_state(
+                        &task,
+                        task.spec.effective_thinking(&plan),
+                        Instant::now(),
+                        1,
+                        "worker thread panicked",
+                        &Usage::missing(),
+                    )
+                });
                 signal_worker_console_finished(&console_log);
                 let _ = sender.send((task.id.clone(), state));
             });
         }
-        drop(sender);
 
-        let heartbeat_interval = Duration::from_secs(heartbeat_seconds);
-        let mut last_heartbeat = Instant::now();
-        while !active_ids.is_empty() {
-            let wait = heartbeat_interval.saturating_sub(last_heartbeat.elapsed());
-            match receiver.recv_timeout(wait) {
-                Ok((task_id, mut state)) => {
-                    active_ids.remove(&task_id);
-                    if let Some(previous) = states.get(&task_id) {
-                        state.started_at.clone_from(&previous.started_at);
-                        state.checkpoint_key.clone_from(&previous.checkpoint_key);
-                        state
-                            .terminal_backend
-                            .clone_from(&previous.terminal_backend);
-                        state
-                            .terminal_session
-                            .clone_from(&previous.terminal_session);
-                        state
-                            .terminal_workspace_id
-                            .clone_from(&previous.terminal_workspace_id);
-                        state
-                            .terminal_pane_id
-                            .clone_from(&previous.terminal_pane_id);
-                    }
-                    refresh_worker_progress(&run_dir, &mut state, unix_ms());
-                    states.insert(task_id.clone(), state.clone());
-                    save_task_state(&run_dir, &states[&task_id])?;
-                    append_event(
-                        &run_dir,
-                        "task_finished",
-                        json!({"task_id": task_id, "status": format!("{:?}", state.status).to_lowercase()}),
-                    );
+        if active_ids.is_empty() {
+            // Nothing running and nothing newly ready: the run is done.
+            break;
+        }
+
+        let wait = heartbeat_interval.saturating_sub(last_heartbeat.elapsed());
+        match receiver.recv_timeout(wait) {
+            Ok((task_id, mut state)) => {
+                active_ids.remove(&task_id);
+                if let Some(previous) = states.get(&task_id) {
+                    state.started_at.clone_from(&previous.started_at);
+                    state.checkpoint_key.clone_from(&previous.checkpoint_key);
+                    state
+                        .terminal_backend
+                        .clone_from(&previous.terminal_backend);
+                    state
+                        .terminal_session
+                        .clone_from(&previous.terminal_session);
+                    state
+                        .terminal_workspace_id
+                        .clone_from(&previous.terminal_workspace_id);
+                    state
+                        .terminal_pane_id
+                        .clone_from(&previous.terminal_pane_id);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    for task_id in &active_ids {
-                        if let Some(state) = states.get_mut(task_id) {
-                            state.status = TaskStatus::Failed;
-                            state.error = Some("worker channel disconnected".to_string());
-                            state.ended_at = Some(now_iso());
-                            save_task_state(&run_dir, state)?;
-                        }
-                    }
-                    break;
-                }
+                refresh_worker_progress(&run_dir, &mut state, unix_ms());
+                states.insert(task_id.clone(), state.clone());
+                save_task_state(&run_dir, &states[&task_id])?;
+                append_event(
+                    &run_dir,
+                    "task_finished",
+                    json!({"task_id": task_id, "status": format!("{:?}", state.status).to_lowercase()}),
+                );
+                // Loop back: find_ready runs again and launches whatever now
+                // fits in the freed permit, without waiting for the rest.
+                continue;
             }
-            if !active_ids.is_empty() && last_heartbeat.elapsed() >= heartbeat_interval {
-                let heartbeat = unix_ms();
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 for task_id in &active_ids {
                     if let Some(state) = states.get_mut(task_id) {
-                        state.heartbeat_unix_ms = Some(heartbeat);
-                        refresh_worker_progress(&run_dir, state, heartbeat);
+                        state.status = TaskStatus::Failed;
+                        state.error = Some("worker channel disconnected".to_string());
+                        state.ended_at = Some(now_iso());
                         save_task_state(&run_dir, state)?;
                     }
                 }
-                append_event(
-                    &run_dir,
-                    "tasks_heartbeat",
-                    json!({"task_ids": active_ids, "heartbeat_unix_ms": heartbeat}),
-                );
-                last_heartbeat = Instant::now();
+                break;
             }
         }
+
+        if !active_ids.is_empty() && last_heartbeat.elapsed() >= heartbeat_interval {
+            let heartbeat = unix_ms();
+            for task_id in &active_ids {
+                if let Some(state) = states.get_mut(task_id) {
+                    state.heartbeat_unix_ms = Some(heartbeat);
+                    refresh_worker_progress(&run_dir, state, heartbeat);
+                    save_task_state(&run_dir, state)?;
+                }
+            }
+            append_event(
+                &run_dir,
+                "tasks_heartbeat",
+                json!({"task_ids": active_ids, "heartbeat_unix_ms": heartbeat}),
+            );
+            last_heartbeat = Instant::now();
+        }
     }
+    drop(sender);
+    drop(receiver);
 
     let all_states: Vec<TaskState> = tasks
         .iter()
@@ -771,6 +811,11 @@ pub(crate) fn run_task(
         AdapterKind::from_wrapper(&task.provider.wrapper).unwrap_or(AdapterKind::Mock);
     let mut session_resume_count = u32::from(session_reused);
 
+    // Snapshot artifact/protected mtimes before the worker runs, so the
+    // completion gate can prove the worker actually produced each declared
+    // artifact and did not modify a protected path.
+    let artifact_snapshot = capture_artifact_snapshot(root, task);
+
     let mut attempt = 0_u32;
 
     let last_error = loop {
@@ -920,7 +965,8 @@ pub(crate) fn run_task(
                     }
                 }
 
-                if let Err(e) = check_artifacts(root, task) {
+                if let Err(e) = check_artifacts_with_snapshot(root, task, Some(&artifact_snapshot))
+                {
                     return failed_state(task, thinking, started, attempt, &e, &exec.usage);
                 }
 
@@ -933,6 +979,25 @@ pub(crate) fn run_task(
                     let mut state =
                         failed_state(task, thinking, started, attempt, err, &exec.usage);
                     state.verified = Some(false);
+                    state.verify_error = verify_error;
+                    return state;
+                }
+
+                // Feature-producing roles must reach `Completed` with successful
+                // verification evidence. `verified == None` means no verify
+                // command ran (static review should have caught this, but the
+                // coordinator enforces the invariant independently so that a
+                // plan loaded with `--force` or an edited plan cannot bypass it).
+                if task.spec.requires_verification() && verified != Some(true) {
+                    let mut state = failed_state(
+                        task,
+                        thinking,
+                        started,
+                        attempt,
+                        "role requires verification but none passed",
+                        &exec.usage,
+                    );
+                    state.verified = verified;
                     state.verify_error = verify_error;
                     return state;
                 }
@@ -1495,10 +1560,68 @@ fn tail_chars(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Artifact check
+// Artifact check, freshness, and protected-path enforcement
 // ---------------------------------------------------------------------------
 
-pub(crate) fn check_artifacts(root: &Path, task: &Task) -> Result<()> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    is_dir: bool,
+}
+
+/// Metadata snapshot of the paths a task cares about, captured before the
+/// worker runs. Full `SystemTime` precision plus length avoids the false
+/// equality caused by truncating mtimes to milliseconds.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ArtifactSnapshot {
+    entries: Vec<(String, Option<FileStamp>)>,
+}
+
+impl ArtifactSnapshot {
+    fn stamp_of(&self, rel: &str) -> Option<FileStamp> {
+        self.entries
+            .iter()
+            .find(|(path, _)| path == rel)
+            .and_then(|(_, stamp)| stamp.clone())
+    }
+}
+
+/// Capture metadata for the task's declared artifacts and protected paths.
+/// Cheap: only `stat`s the explicitly declared set, never a workspace walk.
+pub(crate) fn capture_artifact_snapshot(root: &Path, task: &Task) -> ArtifactSnapshot {
+    let entries = task
+        .spec
+        .artifacts
+        .iter()
+        .chain(task.spec.protected.iter())
+        .map(|rel| (rel.clone(), read_file_stamp(&root.join(rel))))
+        .collect();
+    ArtifactSnapshot { entries }
+}
+
+fn read_file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+        is_dir: meta.is_dir(),
+    })
+}
+
+/// Validate declared artifacts and, when a pre-task snapshot is available,
+/// enforce freshness (the worker touched each artifact) and protected-path
+/// integrity (the worker did not modify any protected path).
+pub(crate) fn check_artifacts_with_snapshot(
+    root: &Path,
+    task: &Task,
+    pre: Option<&ArtifactSnapshot>,
+) -> Result<()> {
+    let root_canonical = root
+        .canonicalize()
+        .map_err(|e| format!("canonicalize root: {e}"))?;
+
+    // Existence + containment for every declared artifact.
     for art in &task.spec.artifacts {
         let path = root.join(art);
         if !path.exists() {
@@ -1507,19 +1630,84 @@ pub(crate) fn check_artifacts(root: &Path, task: &Task) -> Result<()> {
         let canonical = path
             .canonicalize()
             .map_err(|e| format!("canonicalize {art}: {e}"))?;
-        let root_canonical = root
-            .canonicalize()
-            .map_err(|e| format!("canonicalize root: {e}"))?;
         if !canonical.starts_with(&root_canonical) {
             return Err(format!("artifact escapes workspace: {art}"));
         }
     }
+
+    // Freshness: each declared artifact must have been created or modified by
+    // this task. A pre-existing file that the worker never touched used to
+    // satisfy the existence check above; the snapshot closes that hole.
+    if let Some(snapshot) = pre {
+        for art in &task.spec.artifacts {
+            let now = read_file_stamp(&root.join(art));
+            let before = snapshot.stamp_of(art);
+            if before.is_some() && now == before {
+                return Err(format!("declared artifact was not modified by task: {art}"));
+            }
+        }
+
+        // Protected paths: if the task lists any (e.g. golden files it is
+        // evaluated against), the worker must not have touched them.
+        for rel in &task.spec.protected {
+            let now = read_file_stamp(&root.join(rel));
+            let before = snapshot.stamp_of(rel);
+            if now != before {
+                return Err(format!("task modified a protected path: {rel}"));
+            }
+        }
+    }
+
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Verify commands
 // ---------------------------------------------------------------------------
+
+/// Default deadline for deterministic verification commands. These are meant
+/// to be fast (compilers, test runners, linters); a command that does not
+/// finish in this window is stuck, not doing productive work, and holding a
+/// completion gate open indefinitely.
+const VERIFY_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
+/// Poll a child process until it exits or `deadline` elapses. On timeout the
+/// child is killed and reaped so no descendant lingers holding the gate open.
+/// Returns `Ok(status)` on exit, or `Err` with a timeout message.
+///
+/// This is the single bounded-wait primitive shared by every short-lived
+/// deterministic command the coordinator runs (currently verification). It
+/// replaces open-ended `try_wait` loops that could block a task forever if a
+/// verifier hangs.
+pub(crate) fn wait_bounded(
+    program: &str,
+    child: &mut std::process::Child,
+    deadline: Duration,
+    on_still_running: Option<&dyn Fn()>,
+) -> Result<std::process::ExitStatus> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "process '{}' exceeded the {}s deadline and was killed",
+                        program,
+                        deadline.as_secs()
+                    ));
+                }
+                if let Some(callback) = on_still_running {
+                    callback();
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("wait '{}': {e}", program)),
+        }
+    }
+}
 
 fn run_verify_commands(
     task: &Task,
@@ -1540,6 +1728,18 @@ fn run_verify_commands(
 }
 
 pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Result<()> {
+    execute_shell_bounded(cmd_str, cwd, log_path, VERIFY_DEADLINE)
+}
+
+/// Run a shell command under an explicit deadline. Split from `execute_shell`
+/// so tests can exercise the timeout path with a short deadline instead of
+/// waiting for the full production `VERIFY_DEADLINE`.
+pub(crate) fn execute_shell_bounded(
+    cmd_str: &str,
+    cwd: &Path,
+    log_path: &Path,
+    deadline: Duration,
+) -> Result<()> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1565,22 +1765,13 @@ pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Resul
         .stderr(Stdio::from(err));
 
     let mut child = command.spawn().map_err(|e| format!("spawn verify: {e}"))?;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                }
-                let log_content = fs::read_to_string(log_path).unwrap_or_default();
-                let tail = tail_chars(&log_content, 2000);
-                return Err(format!("verify failed (exit {:?}): {tail}", status.code()));
-            }
-            Ok(None) => {
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("wait verify: {e}")),
-        }
+    let status = wait_bounded("verify", &mut child, deadline, None)?;
+    if status.success() {
+        return Ok(());
     }
+    let log_content = fs::read_to_string(log_path).unwrap_or_default();
+    let tail = tail_chars(&log_content, 2000);
+    Err(format!("verify failed (exit {:?}): {tail}", status.code()))
 }
 
 // ---------------------------------------------------------------------------

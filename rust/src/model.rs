@@ -92,6 +92,21 @@ impl OnMissing {
 // Router / Provider
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CostClass {
+    #[default]
+    Free,
+    Standard,
+    Premium,
+}
+
+impl CostClass {
+    pub fn is_premium(self) -> bool {
+        matches!(self, Self::Premium)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Provider {
     #[serde(default)]
@@ -104,6 +119,11 @@ pub struct Provider {
     pub canonical_model: Option<String>,
     #[serde(default)]
     pub wrapper: String,
+    /// Typed cost class. When set, this replaces the legacy route-name substring
+    /// heuristic for premium detection. When absent, the substring heuristic is
+    /// kept for backward compatibility.
+    #[serde(default)]
+    pub cost_class: Option<CostClass>,
     /// OpenAI-compat: env var holding the API key.
     #[serde(default)]
     pub key_env: Option<String>,
@@ -305,6 +325,20 @@ fn default_true() -> bool {
 // Task specification (from plan JSON)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskKind {
+    #[default]
+    Unset,
+    Feature,
+    Process,
+    Documentation,
+}
+
+pub fn is_valid_tools_policy(value: &str) -> bool {
+    matches!(value, "none" | "read-only" | "workspace-write" | "full")
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TaskSpec {
     pub id: String,
@@ -320,6 +354,23 @@ pub struct TaskSpec {
     pub artifacts: Vec<String>,
     #[serde(default)]
     pub verify: Vec<String>,
+    /// Repository-relative paths this task must not modify (for example, the
+    /// fixtures or golden files a verifier task evaluates). The coordinator
+    /// rejects a completed task that touched any of them.
+    #[serde(default)]
+    pub protected: Vec<String>,
+    /// Declares whether this task produces a feature, unblocks one (process),
+    /// or documents work. When set, review enforces that process tasks name
+    /// the feature gate they unblock and feature tasks carry acceptance notes.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Feature tasks: human-readable assertions that define done.
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+    /// Process tasks: the feature task ids this process work unblocks. Keeps
+    /// process work anchored to a feature gate instead of becoming a proxy goal.
+    #[serde(default)]
+    pub gates: Vec<String>,
     /// Per-task thinking level (overrides plan default).
     #[serde(default)]
     pub thinking: Option<ThinkingLevel>,
@@ -360,6 +411,27 @@ impl TaskSpec {
 
     pub fn effective_max_attempts(&self, plan: &Plan) -> u32 {
         self.max_attempts.or(plan.default_max_attempts).unwrap_or(1)
+    }
+
+    /// Roles that produce features or directly gate their completion. These
+    /// must carry independent verification evidence before the coordinator may
+    /// mark the task `Completed`; a missing or failing verify is an error, not
+    /// a successful-but-unverified outcome.
+    pub fn requires_verification(&self) -> bool {
+        self.kind == TaskKind::Feature
+            || matches!(
+                self.role.as_str(),
+                "programmer" | "backend" | "qa" | "verifier"
+            )
+    }
+
+    /// True when the task declares at least one non-blank verification command.
+    pub fn has_verification(&self) -> bool {
+        self.verify.iter().any(|command| !command.trim().is_empty())
+    }
+
+    pub fn allows_workspace_write(&self) -> bool {
+        matches!(self.tools_policy.as_str(), "workspace-write" | "full")
     }
 }
 
@@ -404,21 +476,15 @@ pub fn slug(value: &str) -> String {
 }
 
 /// Resolve a dependency reference against a set of tasks.
-/// A dependency matches by source_id, task id, or slugified id suffix.
+///
+/// A dependency matches only by its declared `source_id` or its canonical
+/// compiled task id (`{index:04}-{slug}`). Suffix-based matching was removed
+/// because it was ambiguous: two tasks sharing a slug suffix (e.g. `build` and
+/// `rebuild`) could both match the same `needs` entry, silently binding a
+/// dependency to the wrong predecessor. Authors must reference the exact id
+/// they declared.
 pub fn find_dependency_task<'a>(tasks: &'a [Task], dep: &str) -> Option<&'a Task> {
-    tasks
-        .iter()
-        .find(|t| t.source_id == dep || t.id == dep)
-        .or_else(|| {
-            let key = slug(dep).to_lowercase();
-            tasks.iter().find(|t| {
-                if let Some(suffix) = t.id.split_once('-').map(|(_, s)| s) {
-                    slug(suffix).to_lowercase() == key
-                } else {
-                    false
-                }
-            })
-        })
+    tasks.iter().find(|t| t.source_id == dep || t.id == dep)
 }
 
 pub fn task_index_to_id(index: usize, source_id: &str) -> String {

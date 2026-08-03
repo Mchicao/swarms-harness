@@ -130,7 +130,7 @@ fn build_codex(
     session_id: Option<&str>,
 ) -> Result<CliSpec> {
     let program = which("codex").unwrap_or_else(|| "codex".to_string());
-    let sandbox = if task.spec.tools_policy == "full" {
+    let sandbox = if task.spec.allows_workspace_write() {
         "workspace-write"
     } else {
         "read-only"
@@ -200,7 +200,7 @@ fn build_opencode_family(
         args.push("--variant".to_string());
         args.push(thinking.as_str().to_string());
     }
-    if task.spec.tools_policy == "full" {
+    if task.spec.allows_workspace_write() {
         args.push("--auto".to_string());
     } else {
         args.push("--pure".to_string());
@@ -238,7 +238,7 @@ fn build_hermes(task: &Task, prompt_text: &str, provider_name: &str) -> Result<C
         args.push("--provider".to_string());
         args.push(provider_name.to_string());
     }
-    if task.spec.tools_policy == "full" {
+    if task.spec.allows_workspace_write() {
         args.push("--yolo".to_string());
     }
     args.push("-q".to_string());
@@ -260,7 +260,7 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
         args.push("--model".to_string());
         args.push(task.provider.model.clone());
     }
-    if task.spec.tools_policy == "full" {
+    if task.spec.allows_workspace_write() {
         args.push("--mode".to_string());
         args.push("accept-edits".to_string());
         args.push("--dangerously-skip-permissions".to_string());

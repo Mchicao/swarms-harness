@@ -126,8 +126,10 @@ fn apply_default_tools_policy(plan: &mut Value) -> Result<()> {
         .and_then(Value::as_str)
         .unwrap_or("none")
         .to_string();
-    if !matches!(default.as_str(), "none" | "full") {
-        return Err("default_tools_policy must be 'none' or 'full'".to_string());
+    if !crate::model::is_valid_tools_policy(&default) {
+        return Err(
+            "default_tools_policy must be none, read-only, workspace-write, or full".to_string(),
+        );
     }
     let Some(stages) = plan.get_mut("stages").and_then(Value::as_array_mut) else {
         return Ok(());
@@ -625,14 +627,16 @@ mod tests {
 
     #[test]
     fn applies_explicit_default_tools_policy_to_flat_tasks() {
-        let plan = compile_plan(json!({
-            "schema_version": 1,
-            "goal": "Write an artifact",
-            "default_tools_policy": "full",
-            "stages": [{"tasks": [{"id": "write", "route": "mock", "task": "write"}]}]
-        }))
-        .unwrap();
-        assert_eq!(plan["stages"][0]["tasks"][0]["tools_policy"], "full");
+        for policy in ["none", "read-only", "workspace-write", "full"] {
+            let plan = compile_plan(json!({
+                "schema_version": 1,
+                "goal": "Write an artifact",
+                "default_tools_policy": policy,
+                "stages": [{"tasks": [{"id": "write", "route": "mock", "task": "write"}]}]
+            }))
+            .unwrap();
+            assert_eq!(plan["stages"][0]["tasks"][0]["tools_policy"], policy);
+        }
     }
 
     #[test]

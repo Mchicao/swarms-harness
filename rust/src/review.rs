@@ -1,9 +1,9 @@
 //! Static plan validation: schema, DAG, routes, thinking, session compatibility.
 
 use crate::adapter::AdapterKind;
-use crate::model::{find_dependency_task, Plan, Router, Task};
+use crate::model::{find_dependency_task, Plan, Router, Task, TaskKind};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Review result types
@@ -209,19 +209,62 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             });
         }
 
-        // Tools policy
-        if !matches!(task.spec.tools_policy.as_str(), "none" | "full") {
+        // Feature evidence: process tasks must name the feature gate they
+        // unblock, and feature tasks should carry acceptance assertions. This
+        // keeps process work (counts, commits, fixtures) anchored to a feature
+        // instead of becoming a proxy goal.
+        match task.spec.kind {
+            TaskKind::Process => {
+                if task.spec.gates.iter().all(|gate| gate.trim().is_empty()) {
+                    findings.push(Finding {
+                        severity: Severity::Error,
+                        code: "process_task_without_gate".to_string(),
+                        message: format!(
+                            "task '{}' is kind: process but declares no gates; process work must identify the feature it unblocks",
+                            task.source_id
+                        ),
+                        task_id: Some(task.source_id.clone()),
+                    });
+                }
+            }
+            TaskKind::Feature if task.spec.acceptance.iter().all(|a| a.trim().is_empty()) => {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "feature_task_without_acceptance".to_string(),
+                    message: format!(
+                        "task '{}' is kind: feature but declares no acceptance assertions",
+                        task.source_id
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            TaskKind::Feature | TaskKind::Documentation | TaskKind::Unset => {}
+        }
+
+        // Legacy "full" remains bounded to the workspace; policy alone never
+        // grants unrestricted host access.
+        if !crate::model::is_valid_tools_policy(&task.spec.tools_policy) {
             findings.push(Finding {
                 severity: Severity::Error,
                 code: "invalid_tools_policy".to_string(),
-                message: format!("invalid tools_policy '{}'", task.spec.tools_policy),
+                message: format!(
+                    "invalid tools_policy '{}' (expected none, read-only, workspace-write, or full)",
+                    task.spec.tools_policy
+                ),
                 task_id: Some(task.source_id.clone()),
             });
         }
 
-        // Premium routes
-        let route_lower = route.to_lowercase();
-        if !premium_allowed && PREMIUM_SUBSTRINGS.iter().any(|s| route_lower.contains(s)) {
+        // Premium routes: prefer the typed provider cost_class; fall back to the
+        // route-name substring heuristic only when no cost_class is declared.
+        let is_premium = match provider.cost_class {
+            Some(class) => class.is_premium(),
+            None => {
+                let route_lower = route.to_lowercase();
+                PREMIUM_SUBSTRINGS.iter().any(|s| route_lower.contains(s))
+            }
+        };
+        if is_premium && !premium_allowed {
             findings.push(Finding {
                 severity: Severity::Error,
                 code: "premium_route_blocked".to_string(),
@@ -239,6 +282,18 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
                 findings.push(Finding {
                     severity: Severity::Error,
                     code: "unsafe_artifact_path".to_string(),
+                    message: msg,
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+        }
+
+        // Protected paths safe (same containment rules as artifacts)
+        for path in &task.spec.protected {
+            if let Err(msg) = validate_artifact_path(path) {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "unsafe_protected_path".to_string(),
                     message: msg,
                     task_id: Some(task.source_id.clone()),
                 });
@@ -303,12 +358,17 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             _ => {}
         }
 
-        // Warnings for verifier tasks
-        if task.spec.role == "verifier" && task.spec.verify.is_empty() {
+        // Feature-producing roles must declare independent verification. A task
+        // that reaches `Completed` without verification is treated as workflow
+        // success today, so a missing gate is an error, not a warning.
+        if task.spec.requires_verification() && !task.spec.has_verification() {
             findings.push(Finding {
-                severity: Severity::Warning,
+                severity: Severity::Error,
                 code: "missing_verification".to_string(),
-                message: "verifier task should include a deterministic verify command".to_string(),
+                message: format!(
+                    "role '{}' must declare at least one deterministic verify command",
+                    task.spec.role
+                ),
                 task_id: Some(task.source_id.clone()),
             });
         }
@@ -343,6 +403,42 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
         }
     }
 
+    // Process gates must point at declared feature tasks; a non-empty string
+    // alone is not evidence that the process work unblocks a real feature.
+    for task in tasks
+        .iter()
+        .filter(|task| task.spec.kind == TaskKind::Process)
+    {
+        for gate in task
+            .spec
+            .gates
+            .iter()
+            .filter(|gate| !gate.trim().is_empty())
+        {
+            match find_dependency_task(tasks, gate) {
+                Some(feature) if feature.spec.kind == TaskKind::Feature => {}
+                Some(_) => findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "process_gate_not_feature".to_string(),
+                    message: format!(
+                        "task '{}' gates '{}' but that task is not kind: feature",
+                        task.source_id, gate
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                }),
+                None => findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "missing_process_gate".to_string(),
+                    message: format!(
+                        "task '{}' gates '{}' but no such feature task exists",
+                        task.source_id, gate
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                }),
+            }
+        }
+    }
+
     // --- Dependencies: cycle detection (DFS) ---
     let cycles = detect_cycles(tasks);
     for cycle in &cycles {
@@ -352,6 +448,34 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             message: format!("cyclic dependency: {}", cycle.join(" -> ")),
             task_id: None,
         });
+    }
+
+    // --- Parallel write-set overlap ---
+    // Two tasks that run concurrently (same parallel stage) and declare the
+    // same artifact race on the same path. Each task's declared artifacts are
+    // its write set, so an overlap is a static correctness error.
+    let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
+    for (idx, task) in tasks.iter().enumerate() {
+        if !task.stage_parallel {
+            continue;
+        }
+        for art in &task.spec.artifacts {
+            let key = (task.stage.as_str(), art.as_str());
+            if let Some(prev) = seen.get(&key) {
+                let prev_task = &tasks[*prev];
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "overlapping_write_set".to_string(),
+                    message: format!(
+                        "tasks '{}' and '{}' both declare artifact '{}' in the same parallel stage",
+                        prev_task.source_id, task.source_id, art
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            } else {
+                seen.insert(key, idx);
+            }
+        }
     }
 
     // --- Provider concurrency > 0 for used routes ---
@@ -372,6 +496,47 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
                 ),
                 task_id: None,
             });
+        }
+    }
+
+    // --- Process-only plan and process ratio ---
+    // A plan made entirely of process tasks (no feature work) or with a high
+    // process ratio is a smell: process work (counts, commits, scaffolding) is
+    // a means, not an end. Warn so authors anchor process work to features.
+    let classified: Vec<&Task> = tasks
+        .iter()
+        .filter(|t| t.spec.kind != TaskKind::Unset)
+        .collect();
+    if !classified.is_empty() {
+        let process_count = classified
+            .iter()
+            .filter(|t| t.spec.kind == TaskKind::Process)
+            .count();
+        let feature_count = classified
+            .iter()
+            .filter(|t| t.spec.kind == TaskKind::Feature)
+            .count();
+        if feature_count == 0 && process_count > 0 {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                code: "process_only_plan".to_string(),
+                message: "plan declares process tasks but no feature tasks; process work should unblock a feature"
+                    .to_string(),
+                task_id: None,
+            });
+        } else if feature_count > 0 {
+            let ratio = process_count as f64 / classified.len() as f64;
+            if ratio > 0.5 {
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    code: "high_process_ratio".to_string(),
+                    message: format!(
+                        "process tasks are {:.0}% of classified work; verify each unblocks a feature",
+                        ratio * 100.0
+                    ),
+                    task_id: None,
+                });
+            }
         }
     }
 

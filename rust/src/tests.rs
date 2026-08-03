@@ -5,13 +5,14 @@ use crate::model::{
     SessionMode, Task, TaskSpec, ThinkingLevel,
 };
 use crate::review::{detect_cycles, review_plan, validate_artifact_path, Severity};
-use crate::runtime::{self, check_artifacts};
+use crate::runtime::{self, check_artifacts_with_snapshot};
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::telemetry::{TaskState, TaskStatus};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,6 +25,7 @@ fn mock_provider() -> Provider {
         model: "mock-worker".to_string(),
         canonical_model: None,
         wrapper: "mock".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -57,6 +59,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             model: "gpt-5.5-codex".to_string(),
             canonical_model: None,
             wrapper: "codex".to_string(),
+            cost_class: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -73,6 +76,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             model: "zai-coding-plan/glm-5.2".to_string(),
             canonical_model: None,
             wrapper: "opencode".to_string(),
+            cost_class: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -90,6 +94,10 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         tools_policy: "none".to_string(),
         artifacts: Vec::new(),
         verify: Vec::new(),
+        protected: Vec::new(),
+        kind: model::TaskKind::default(),
+        acceptance: Vec::new(),
+        gates: Vec::new(),
         thinking: None,
         session: None,
         timeout_seconds: None,
@@ -197,6 +205,36 @@ fn codex_command_maps_thinking_and_resume() {
 }
 
 #[test]
+fn workspace_write_policy_reaches_cli_adapters() {
+    let mut codex = make_task("codex-write", &[], "codex");
+    codex.spec.tools_policy = "workspace-write".to_string();
+    let codex_spec = adapter::build_cli_command(
+        AdapterKind::Codex,
+        &codex,
+        "write",
+        ThinkingLevel::default(),
+        None,
+        "codex_cli",
+    )
+    .unwrap();
+    assert!(codex_spec.args.contains(&"workspace-write".to_string()));
+
+    let mut opencode = make_task("oc-write", &[], "oc");
+    opencode.spec.tools_policy = "workspace-write".to_string();
+    let opencode_spec = adapter::build_cli_command(
+        AdapterKind::OpenCode,
+        &opencode,
+        "write",
+        ThinkingLevel::default(),
+        None,
+        "opencode",
+    )
+    .unwrap();
+    assert!(opencode_spec.args.contains(&"--auto".to_string()));
+    assert!(!opencode_spec.args.contains(&"--pure".to_string()));
+}
+
+#[test]
 fn codex_max_maps_to_verified_ultra_effort() {
     let task = make_task("t1", &[], "codex");
     let spec = adapter::build_cli_command(
@@ -243,6 +281,7 @@ fn hermes_no_thinking_flag() {
         model: "tencent/hy3:free".to_string(),
         canonical_model: None,
         wrapper: "hermes".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -626,6 +665,127 @@ fn verify_failure_blocks_completion() {
 }
 
 #[test]
+fn feature_role_without_verify_cannot_complete() {
+    // A programmer task with no verify commands must not reach Completed, even
+    // when the worker itself succeeds and produces its artifact. `verified ==
+    // None` is not workflow success for feature-producing roles. The mock
+    // worker recognises the compress.py prompt and writes the declared
+    // artifact, so the only thing that can fail this task is the new
+    // verification-completion gate.
+    let dir = temp_dir();
+    let plan_json = json!({
+        "schema_version": 1,
+        "goal": "test verification requirement",
+        "stages": [{
+            "name": "S",
+            "tasks": [{
+                "id": "t",
+                "route": "mock",
+                "role": "programmer",
+                "task": "Implement bench_apps/reshard/compress.py so it shards files.",
+                "artifacts": ["bench_apps/reshard/compress.py"],
+                "verify": []
+            }]
+        }]
+    });
+
+    let plan_path = dir.join("plan.json");
+    fs::write(&plan_path, plan_json.to_string()).unwrap();
+
+    let cfg_path = dir.join("config/swarm_router.json");
+    fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    fs::write(&cfg_path, json!({"providers":{"mock":{"enabled":true,"provider":"mock","model":"mock-worker","wrapper":"mock"}}}).to_string()).unwrap();
+
+    let plan = crate::config::load_plan(&plan_path).unwrap();
+    let router = crate::config::load_router(&dir).unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+
+    let caps = HashMap::from([("mock".to_string(), 1)]);
+    let report = runtime::execute(
+        &dir,
+        &dir,
+        &tasks,
+        &plan,
+        &router,
+        1,
+        &caps,
+        "verify-required",
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.status, "failed");
+    let task_state = &report.results[0];
+    assert_eq!(task_state.status, TaskStatus::Failed);
+    assert_eq!(task_state.verified, None);
+    assert!(task_state
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("requires verification"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn feature_role_with_passing_verify_completes() {
+    // The same programmer task, but with a passing verify command, completes
+    // and records verification evidence. This proves the gate does not
+    // over-block tasks that carry real verification.
+    let dir = temp_dir();
+    let passing = if cfg!(windows) { "exit /b 0" } else { "true" };
+    let plan_json = json!({
+        "schema_version": 1,
+        "goal": "test verification pass",
+        "stages": [{
+            "name": "S",
+            "tasks": [{
+                "id": "t",
+                "route": "mock",
+                "role": "programmer",
+                "task": "Implement bench_apps/reshard/compress.py so it shards files.",
+                "artifacts": ["bench_apps/reshard/compress.py"],
+                "verify": [passing]
+            }]
+        }]
+    });
+
+    let plan_path = dir.join("plan.json");
+    fs::write(&plan_path, plan_json.to_string()).unwrap();
+
+    let cfg_path = dir.join("config/swarm_router.json");
+    fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    fs::write(&cfg_path, json!({"providers":{"mock":{"enabled":true,"provider":"mock","model":"mock-worker","wrapper":"mock"}}}).to_string()).unwrap();
+
+    let plan = crate::config::load_plan(&plan_path).unwrap();
+    let router = crate::config::load_router(&dir).unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+
+    let caps = HashMap::from([("mock".to_string(), 1)]);
+    let report = runtime::execute(
+        &dir,
+        &dir,
+        &tasks,
+        &plan,
+        &router,
+        1,
+        &caps,
+        "verify-pass",
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(report.status, "completed");
+    let task_state = &report.results[0];
+    assert_eq!(task_state.status, TaskStatus::Completed);
+    assert_eq!(task_state.verified, Some(true));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn quoted_verify_command_survives_platform_shell_parsing() {
     let dir = temp_dir();
     let command = if cfg!(windows) {
@@ -634,6 +794,89 @@ fn quoted_verify_command_survives_platform_shell_parsing() {
         r#"test "a" = "a""#
     };
     runtime::execute_shell(command, &dir, &dir.join("verify.log")).unwrap();
+    fs::remove_dir_all(dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Bounded process supervision (issue #3)
+// ---------------------------------------------------------------------------
+
+/// A child that exits quickly completes normally under a generous deadline.
+#[test]
+fn bounded_wait_returns_status_for_prompt_exit() {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "exit", "/B", "0"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = std::process::Command::new("true");
+    let mut child = cmd.spawn().expect("spawn fast child");
+    let status = runtime::wait_bounded("fast", &mut child, Duration::from_secs(30), None);
+    assert!(status.is_ok(), "should exit before deadline");
+    let _ = child.wait();
+}
+
+/// A child that runs past the deadline is killed and reported as a timeout,
+/// not left to block the coordinator forever.
+#[test]
+fn bounded_wait_kills_and_reports_on_timeout() {
+    // Cross-platform "sleep well past the deadline": ping with a large count
+    // on Windows, sleep on Unix. The deadline is 1s so the test stays fast.
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("ping");
+        c.args(["-n", "30", "127.0.0.1"]);
+        c.stdout(std::process::Stdio::null());
+        c.stderr(std::process::Stdio::null());
+        c
+    } else {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("30");
+        c
+    };
+    let mut child = cmd.spawn().expect("spawn slow child");
+    let result = runtime::wait_bounded("slow", &mut child, Duration::from_secs(1), None);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("deadline") && err.contains("killed"),
+        "timeout message should mention deadline and kill: {err}"
+    );
+    // The child must have been reaped, not orphaned.
+    match child.try_wait() {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child should be reaped after timeout, still running");
+        }
+        Err(e) => panic!("try_wait after kill failed: {e}"),
+    }
+}
+
+/// A verification command that hangs is rejected by execute_shell instead of
+/// blocking the completion gate indefinitely. Uses a short deadline so the
+/// test stays fast; production uses `VERIFY_DEADLINE` (120s).
+#[test]
+fn verify_command_that_hangs_is_rejected_with_timeout() {
+    let dir = temp_dir();
+    let hanging = if cfg!(windows) {
+        "ping -n 30 127.0.0.1 > nul"
+    } else {
+        "sleep 30"
+    };
+    let result = runtime::execute_shell_bounded(
+        hanging,
+        &dir,
+        &dir.join("verify.log"),
+        Duration::from_secs(1),
+    );
+    let err = result.expect_err("hanging verify should time out");
+    assert!(
+        err.contains("deadline"),
+        "hanging verify should report a deadline timeout: {err}"
+    );
     fs::remove_dir_all(dir).ok();
 }
 
@@ -823,6 +1066,22 @@ fn run_id_safety() {
 }
 
 // ---------------------------------------------------------------------------
+// 9b. Singularity cycle bounds (issue #4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn singularity_cycle_count_is_bounded() {
+    use crate::cli::parse_cycle_count;
+    assert_eq!(parse_cycle_count("1").unwrap(), 1);
+    assert_eq!(parse_cycle_count("1000").unwrap(), 1000);
+    // An autonomous loop must never run unbounded by accident.
+    assert!(parse_cycle_count("0").is_err());
+    assert!(parse_cycle_count("1001").is_err());
+    assert!(parse_cycle_count("-5").is_err());
+    assert!(parse_cycle_count("not-a-number").is_err());
+}
+
+// ---------------------------------------------------------------------------
 // 10. Prompt generation
 // ---------------------------------------------------------------------------
 
@@ -892,6 +1151,26 @@ fn find_dep_by_source_id() {
     assert!(find_dependency_task(&tasks, "nonexistent").is_none());
 }
 
+#[test]
+fn dependency_resolution_rejects_suffix_matching() {
+    // Suffix matching was ambiguous (build vs rebuild could both match a bare
+    // suffix via slug heuristics). Dependencies must now resolve to exact
+    // source_id or compiled id only.
+    let tasks = vec![
+        make_task("build", &[], "mock"),
+        make_task("rebuild", &[], "mock"),
+    ];
+    // Exact source_id matches work.
+    assert!(find_dependency_task(&tasks, "build").is_some());
+    assert!(find_dependency_task(&tasks, "rebuild").is_some());
+    // A bare slug suffix that is no task's source_id must not bind to a task
+    // whose compiled id merely shares that suffix.
+    assert!(find_dependency_task(&tasks, "ild").is_none());
+    assert!(find_dependency_task(&tasks, "ebuild").is_none());
+    // A non-existent id resolves to nothing.
+    assert!(find_dependency_task(&tasks, "does-not-exist").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // 13. Review catches unsupported thinking
 // ---------------------------------------------------------------------------
@@ -904,6 +1183,7 @@ fn review_rejects_thinking_on_hermes() {
         model: "tencent/hy3:free".to_string(),
         canonical_model: None,
         wrapper: "hermes".to_string(),
+        cost_class: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -922,6 +1202,10 @@ fn review_rejects_thinking_on_hermes() {
             tools_policy: "none".to_string(),
             artifacts: Vec::new(),
             verify: Vec::new(),
+            protected: Vec::new(),
+            kind: model::TaskKind::default(),
+            acceptance: Vec::new(),
+            gates: Vec::new(),
             thinking: Some(ThinkingLevel::High),
             session: None,
             timeout_seconds: None,
@@ -1391,12 +1675,496 @@ fn artifacts_must_exist() {
     let dir = temp_dir();
     let mut task = make_task("t", &[], "mock");
     task.spec.artifacts = vec!["nonexistent_file.xyz".to_string()];
-    assert!(check_artifacts(&dir, &task).is_err());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_err());
 
     let file = dir.join("exists.txt");
     fs::write(&file, "ok").unwrap();
     task.spec.artifacts = vec!["exists.txt".to_string()];
-    assert!(check_artifacts(&dir, &task).is_ok());
+    assert!(check_artifacts_with_snapshot(&dir, &task, None).is_ok());
 
     fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 16. Verification completion invariant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn review_errors_when_feature_role_lacks_verification() {
+    for role in ["programmer", "backend", "qa", "verifier"] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "gated feature",
+            "stages":[{"tasks":[{
+                "id":"t","route":"mock","role":role,"task":"build it",
+                "artifacts":["out.py"],"verify":[]
+            }]}]
+        }))
+        .unwrap();
+        let router = mock_router();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| { f.code == "missing_verification" && f.severity == Severity::Error }));
+        assert!(!result.ok);
+    }
+}
+
+#[test]
+fn review_accepts_feature_role_with_verification() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "gated feature",
+        "stages":[{"tasks":[{
+            "id":"t","route":"mock","role":"programmer","task":"build it",
+            "artifacts":["out.py"],"verify":["true"]
+        }]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "missing_verification"));
+}
+
+#[test]
+fn review_does_not_require_verification_for_planning_roles() {
+    for role in ["planner", "critic", "docs", "general"] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "planning",
+            "stages":[{"tasks":[{
+                "id":"t","route":"mock","role":role,"task":"plan it","verify":[]
+            }]}]
+        }))
+        .unwrap();
+        let router = mock_router();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert!(!result
+            .findings
+            .iter()
+            .any(|f| f.code == "missing_verification"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 17. Artifact freshness and protected-path enforcement
+// ---------------------------------------------------------------------------
+
+fn set_old_mtime(path: &Path) {
+    use std::fs::FileTimes;
+    let old = SystemTime::UNIX_EPOCH;
+    let times = FileTimes::new().set_modified(old).set_accessed(old);
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_times(times).unwrap();
+}
+
+#[test]
+fn pre_existing_artifact_not_touched_by_task_is_rejected() {
+    let dir = temp_dir();
+    let artifact = dir.join("stale.txt");
+    fs::write(&artifact, "old").unwrap();
+    set_old_mtime(&artifact);
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["stale.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("was not modified by task"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn artifact_created_or_modified_by_task_passes_freshness() {
+    let dir = temp_dir();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["new.txt".to_string()];
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("new.txt"), "fresh").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).is_ok());
+
+    let existing = dir.join("existing.txt");
+    fs::write(&existing, "v1").unwrap();
+    set_old_mtime(&existing);
+    task.spec.artifacts = vec!["existing.txt".to_string()];
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(&existing, "v2").unwrap();
+    assert!(check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).is_ok());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_modifies_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let golden = dir.join("golden.json");
+    fs::write(&golden, "v1").unwrap();
+    set_old_mtime(&golden);
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["golden.json".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(&golden, "tampered").unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_creates_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["should_not_exist.txt".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::write(dir.join("should_not_exist.txt"), "appeared").unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn task_that_deletes_a_protected_path_is_rejected() {
+    let dir = temp_dir();
+    let protected = dir.join("golden.json");
+    fs::write(&protected, "keep").unwrap();
+    let mut task = make_task("t", &[], "mock");
+    task.spec.artifacts = vec!["out.txt".to_string()];
+    task.spec.protected = vec!["golden.json".to_string()];
+
+    let snapshot = runtime::capture_artifact_snapshot(&dir, &task);
+    fs::write(dir.join("out.txt"), "done").unwrap();
+    fs::remove_file(protected).unwrap();
+    let error = check_artifacts_with_snapshot(&dir, &task, Some(&snapshot)).unwrap_err();
+    assert!(error.contains("protected path"));
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn review_rejects_overlapping_write_sets_in_parallel_stage() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "parallel writers",
+        "stages": [{
+            "name": "S", "parallel": true,
+            "tasks": [
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]},
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}
+            ]
+        }]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| { f.code == "overlapping_write_set" && f.severity == Severity::Error }));
+    assert!(!result.ok);
+}
+
+#[test]
+fn review_allows_same_artifact_across_separate_stages() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "sequential writers",
+        "stages": [
+            {"name":"S1","parallel":false,"tasks":[
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]}]},
+            {"name":"S2","parallel":false,"tasks":[
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set"));
+}
+
+#[test]
+fn review_detects_parallel_overlap_after_sequential_writer() {
+    let result = review_json(json!({
+        "goal": "mixed writers",
+        "stages": [
+            {"name":"seed","parallel":false,"tasks":[
+                {"id":"a","route":"mock","role":"programmer","task":"x",
+                 "artifacts":["shared.txt"],"verify":["true"]}]},
+            {"name":"parallel","parallel":true,"tasks":[
+                {"id":"b","route":"mock","role":"programmer","task":"y",
+                 "artifacts":["shared.txt"],"verify":["true"]},
+                {"id":"c","route":"mock","role":"programmer","task":"z",
+                 "artifacts":["shared.txt"],"verify":["true"]}]}
+        ]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "overlapping_write_set"));
+}
+
+// ---------------------------------------------------------------------------
+// 18. Event envelope contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn event_envelope_has_canonical_top_level_fields() {
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_started",
+        json!({"task_id": "0001-build", "model": "mock"}),
+    );
+    runtime::append_event(&dir, "workflow_initialized", json!({}));
+
+    let lines: Vec<_> = fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(lines.len(), 2);
+
+    let task_event: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(task_event["event"], "task_started");
+    assert!(task_event.get("time").and_then(Value::as_str).is_some());
+    assert!(task_event
+        .get("time_unix_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+    assert_eq!(task_event["task_id"], "0001-build");
+    assert_eq!(task_event["payload"]["model"], "mock");
+
+    let workflow_event: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(workflow_event["event"], "workflow_initialized");
+    assert!(workflow_event.get("task_id").is_none());
+    assert!(workflow_event
+        .get("time_unix_ms")
+        .and_then(Value::as_u64)
+        .is_some());
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn event_envelope_task_id_is_hoisted_from_payload() {
+    let dir = temp_dir();
+    runtime::append_event(
+        &dir,
+        "task_completed",
+        json!({"task_id": "0042-verify", "status": "completed"}),
+    );
+    let event: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("events.jsonl")).unwrap()).unwrap();
+    assert_eq!(event["task_id"], "0042-verify");
+    assert_eq!(event["payload"]["task_id"], "0042-verify");
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------------------------------------------------
+// 19. Typed execution policy
+// ---------------------------------------------------------------------------
+
+fn router_with_provider(name: &str, provider: Provider) -> Router {
+    Router {
+        fallback_route: None,
+        aliases: HashMap::new(),
+        role_routes: HashMap::new(),
+        quota_policy: QuotaPolicy::default(),
+        providers: HashMap::from([(name.to_string(), provider)]),
+    }
+}
+
+fn provider_with_cost(route: &str, cost_class: model::CostClass) -> Provider {
+    Provider {
+        enabled: true,
+        provider: route.to_string(),
+        model: "test-model".to_string(),
+        canonical_model: None,
+        wrapper: "mock".to_string(),
+        cost_class: Some(cost_class),
+        key_env: None,
+        base_url: None,
+        base_url_env: None,
+        thinking_field: None,
+        quota_key: None,
+        fallback_routes: Vec::new(),
+    }
+}
+
+#[test]
+fn typed_cost_class_premium_requires_authorization() {
+    let router = router_with_provider(
+        "custom-pro",
+        provider_with_cost("custom-pro", model::CostClass::Premium),
+    );
+    for (premium_allowed, blocked) in [(false, true), (true, false)] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "premium check",
+            "review_policy": {"premium_allowed": premium_allowed},
+            "stages":[{"tasks":[{"id":"t","route":"custom-pro","task":"x"}]}]
+        }))
+        .unwrap();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.code == "premium_route_blocked"),
+            blocked
+        );
+    }
+}
+
+#[test]
+fn typed_cost_class_overrides_substring_heuristic() {
+    let router = router_with_provider("codex", provider_with_cost("codex", model::CostClass::Free));
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "codex but free",
+        "stages":[{"tasks":[{"id":"t","route":"codex","task":"x"}]}]
+    }))
+    .unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(!result
+        .findings
+        .iter()
+        .any(|f| f.code == "premium_route_blocked"));
+}
+
+#[test]
+fn tools_policy_accepts_granular_capabilities() {
+    let router = mock_router();
+    for (policy, valid) in [
+        ("none", true),
+        ("read-only", true),
+        ("workspace-write", true),
+        ("full", true),
+        ("delete-everything", false),
+    ] {
+        let plan = serde_json::from_value::<model::Plan>(json!({
+            "goal": "tools check",
+            "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","tools_policy":policy}]}]
+        }))
+        .unwrap();
+        let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+        let result = review_plan(&plan, &router, &tasks);
+        assert_eq!(
+            !result
+                .findings
+                .iter()
+                .any(|f| f.code == "invalid_tools_policy"),
+            valid,
+            "unexpected result for tools_policy={policy}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 20. Feature evidence and process-work safeguards
+// ---------------------------------------------------------------------------
+
+fn review_json(value: Value) -> crate::review::ReviewResult {
+    let plan = serde_json::from_value::<model::Plan>(value).unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    review_plan(&plan, &router, &tasks)
+}
+
+#[test]
+fn process_task_without_gate_is_rejected() {
+    let result = review_json(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"process"}]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| { f.code == "process_task_without_gate" && f.severity == Severity::Error }));
+    assert!(!result.ok);
+}
+
+#[test]
+fn process_task_with_gate_passes() {
+    let result = review_json(json!({
+        "goal": "process check",
+        "stages":[{"tasks":[
+            {"id":"feat","route":"mock","role":"planner","task":"build feature",
+             "kind":"feature","acceptance":["it works"],"verify":["true"]},
+            {"id":"t","route":"mock","role":"general","task":"scaffold",
+             "kind":"process","gates":["feat"]}
+        ]}]
+    }));
+    assert!(result.ok, "unexpected findings: {:?}", result.findings);
+}
+
+#[test]
+fn process_gate_must_reference_a_feature() {
+    for (gate, expected) in [
+        ("missing", "missing_process_gate"),
+        ("docs", "process_gate_not_feature"),
+    ] {
+        let result = review_json(json!({
+            "goal": "process gate check",
+            "stages":[{"tasks":[
+                {"id":"docs","route":"mock","task":"document","kind":"documentation"},
+                {"id":"process","route":"mock","task":"scaffold","kind":"process","gates":[gate]}
+            ]}]
+        }));
+        assert!(result.findings.iter().any(|f| f.code == expected));
+    }
+}
+
+#[test]
+fn feature_task_without_acceptance_warns() {
+    let result = review_json(json!({
+        "goal": "feature check",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x","kind":"feature"}]}]
+    }));
+    assert!(result.findings.iter().any(|f| {
+        f.code == "feature_task_without_acceptance" && f.severity == Severity::Warning
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "missing_verification"));
+}
+
+#[test]
+fn process_only_plan_warns() {
+    let result = review_json(json!({
+        "goal": "process only",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x",
+            "kind":"process","gates":["future-feature"]}]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "process_only_plan"));
+}
+
+#[test]
+fn unset_kind_tasks_are_not_flagged() {
+    let result = review_json(json!({
+        "goal": "plain plan",
+        "stages":[{"tasks":[{"id":"t","route":"mock","task":"x"}]}]
+    }));
+    assert!(!result.findings.iter().any(|f| matches!(
+        f.code.as_str(),
+        "process_task_without_gate"
+            | "feature_task_without_acceptance"
+            | "process_only_plan"
+            | "high_process_ratio"
+    )));
 }
