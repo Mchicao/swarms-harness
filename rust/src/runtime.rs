@@ -1471,7 +1471,9 @@ fn start_herdr_worker_pane(
     let escaped_session = session.replace('\'', "''");
     let escaped_pane = pane_id.replace('\'', "''");
     let viewer = worker_console_script(title, log_path, prompt_path).replace(
-        &format!("if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ exit 0 }}"),
+        &format!(
+            "if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ Write-Host 'SWARMS worker finished. Press Enter to close.' -ForegroundColor Green; Read-Host | Out-Null; exit 0 }}"
+        ),
         &format!("if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ & '{escaped_herdr}' --session '{escaped_session}' pane close '{escaped_pane}'; exit 0 }}"),
     );
     let script_path = work_dir.join("herdr-viewer.ps1");
@@ -1519,7 +1521,7 @@ Write-Host '--- Assigned prompt ---' -ForegroundColor DarkCyan;
 Get-Content -LiteralPath '{prompt_path}' -TotalCount 40;
 Write-Host '--- Live agent activity ---' -ForegroundColor DarkCyan;
 function Show-SwarmsEvent([string]$line) {{
-    if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ exit 0 }}
+    if ($line -eq '{WORKER_CONSOLE_FINISHED_SENTINEL}') {{ Write-Host 'SWARMS worker finished. Press Enter to close.' -ForegroundColor Green; Read-Host | Out-Null; exit 0 }}
     try {{ $event = $line | ConvertFrom-Json -ErrorAction Stop }} catch {{ Write-Host $line; return }}
     $part = $event.part
     switch ($event.type) {{
@@ -2070,5 +2072,6 @@ mod auto_resume_tests {
         assert!(script.contains("AGENT>"));
         assert!(script.contains("TOOL"));
         assert!(script.contains(WORKER_CONSOLE_FINISHED_SENTINEL));
+        assert!(script.contains("Read-Host | Out-Null"));
     }
 }
