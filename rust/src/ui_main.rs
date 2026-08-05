@@ -2107,8 +2107,11 @@ pub mod ui_egui {
         }
 
         fn refresh_herd(&mut self) {
+            // Stamp the interval before any early return so an unavailable Herd
+            // session cannot trigger a process spawn on every UI frame.
+            self.last_herd_refresh = Some(Instant::now());
             let session = herdr_session();
-            let output = std::process::Command::new(herdr_program())
+            let output = herdr_command(&herdr_program())
                 .args(["--session", &session, "workspace", "list"])
                 .output();
             let output = match output {
@@ -2167,7 +2170,7 @@ pub mod ui_egui {
                 self.herd_feedback = Some("No Herd workspaces are open.".to_string());
                 return;
             };
-            let panes = std::process::Command::new(herdr_program())
+            let panes = herdr_command(&herdr_program())
                 .args([
                     "--session",
                     &session,
@@ -2191,7 +2194,7 @@ pub mod ui_egui {
                     Some("The selected Herd workspace has no readable pane.".to_string());
                 return;
             };
-            match std::process::Command::new(herdr_program())
+            match herdr_command(&herdr_program())
                 .args([
                     "--session",
                     &session,
@@ -2224,7 +2227,6 @@ pub mod ui_egui {
                     self.herd_feedback = Some(format!("Could not read Herd pane: {error}"))
                 }
             }
-            self.last_herd_refresh = Some(Instant::now());
         }
 
         fn refresh_herd_if_due(&mut self) {
@@ -4171,6 +4173,21 @@ pub mod ui_egui {
         runs
     }
 
+    fn herdr_command(program: &str) -> std::process::Command {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+
+            let mut command = std::process::Command::new(program);
+            command.creation_flags(0x08000000);
+            command
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new(program)
+        }
+    }
+
     fn herdr_program() -> String {
         if let Ok(path) = std::env::var("SWARMS_HERDR_BIN") {
             return path;
@@ -4193,7 +4210,7 @@ pub mod ui_egui {
     }
 
     fn focus_herdr_workspace(session: &str, workspace: &str) -> String {
-        match std::process::Command::new(herdr_program())
+        match herdr_command(&herdr_program())
             .args(["--session", session, "workspace", "focus", workspace])
             .status()
         {
