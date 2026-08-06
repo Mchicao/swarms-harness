@@ -2,10 +2,10 @@
 
 ## What this enables
 
-SWARMS can keep a provider session alive through ACP and accept steering from
-the existing UI mailbox while the agent is working. The runtime cancels the
-active ACP turn, sends the new direction in the same session, and records the
-request in the task history. Providers without ACP continue through the
+SWARMS can keep a provider session alive and accept steering from the existing
+UI mailbox while the agent is working. Generic ACP remains available, while
+optional live transports cover Codex App Server, OpenCode Server, and Claude's
+streaming CLI. Providers without a live transport continue through the
 existing CLI batch adapter.
 
 When Herdr is selected on Windows, one run owns one Herdr workspace. SWARMS
@@ -59,17 +59,46 @@ provider processes remain hidden, while the Herdr server is launched hidden as
 well.
 
 The UI's Send steer control writes a bounded request to
-steering/<task-id>/inbox.jsonl. An ACP worker drains it during streamed
-updates or its short polling interval. The applied/rejected/failed result is
-recorded in history.jsonl and surfaced in the task detail view.
+steering/<task-id>/inbox.jsonl. The selected delivery mode is persisted with
+the request:
+
+- `immediate` asks the live provider to steer at its earliest safe boundary.
+- `enqueue` lets the current turn finish and sends a continuation afterwards.
+- `cancel_and_restart` interrupts the active turn and restarts from the saved
+  task prompt plus the new direction.
+
+The runtime records `accepted` when a provider acknowledges an immediate or
+cancel request, and records `applied` only after queued work actually runs.
+Other terminal results are `rejected` or `failed`.
+
+## Optional live transports
+
+Plan configuration remains portable: these integrations are opt-in environment
+switches and only apply while `execution.transport` is `auto`.
+
+| Provider | Enable | Provider mechanism |
+| --- | --- | --- |
+| Codex | `SWARMS_CODEX_APP_SERVER=1` | `codex app-server --stdio` |
+| OpenCode | `SWARMS_OPENCODE_SERVER=1` | OpenCode HTTP server and event stream |
+| Claude | `SWARMS_CLAUDE_STREAMING=1` | `claude --input-format stream-json` |
+
+Codex uses `turn/steer` for immediate delivery and `turn/interrupt` before a
+cancel-and-restart. OpenCode sends asynchronous session prompts and aborts the
+active session for restart. Claude keeps its stream-json process alive and
+sends another input turn. All three preserve their provider session identifier.
+
+AGY remains on its stable CLI adapter. A local SDK bridge prototype was not
+retained because it did not match the currently published SDK interface and
+could not be validated as a reliable transport.
 
 ## Safety and limitations
 
-ACP cancellation is cooperative. The protocol does not guarantee that text
-can be injected into a generation already in progress, so SWARMS uses
-cancel-then-continue. If ACP fails before a prompt is sent, auto may use the
-configured CLI fallback. Once a prompt has started, SWARMS does not replay the
-task through CLI because the agent may already have modified files.
+ACP cancellation is cooperative. No transport guarantees that text is injected
+into a generation already in progress; `immediate` therefore means the
+earliest provider-safe boundary, not arbitrary mid-token injection. If ACP
+fails before a prompt is sent, auto may use the configured CLI fallback. Once
+a prompt has started, SWARMS does not replay the task through CLI because the
+agent may already have modified files.
 
 If Herdr is unavailable, the default is hidden execution. Use
 on_unavailable: native only when opening a separate Windows console is

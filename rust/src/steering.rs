@@ -10,12 +10,33 @@ type Result<T> = std::result::Result<T, String>;
 
 pub const MAX_STEER_PROMPT_CHARS: usize = 4_000;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringMode {
+    #[default]
+    Immediate,
+    Enqueue,
+    CancelAndRestart,
+}
+
+impl SteeringMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::Enqueue => "enqueue",
+            Self::CancelAndRestart => "cancel_and_restart",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct SteerMessage {
     pub id: String,
     pub created_at_epoch_ms: u128,
     pub prompt: String,
     pub source: String,
+    #[serde(default)]
+    pub mode: SteeringMode,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -27,6 +48,16 @@ pub struct AppliedSteer {
 }
 
 pub fn enqueue(run_dir: &Path, task_id: &str, prompt: &str, source: &str) -> Result<SteerMessage> {
+    enqueue_mode(run_dir, task_id, prompt, source, SteeringMode::Immediate)
+}
+
+pub fn enqueue_mode(
+    run_dir: &Path,
+    task_id: &str,
+    prompt: &str,
+    source: &str,
+    mode: SteeringMode,
+) -> Result<SteerMessage> {
     validate_component(task_id, "task_id")?;
     let prompt = prompt.trim();
     let count = prompt.chars().count();
@@ -41,6 +72,7 @@ pub fn enqueue(run_dir: &Path, task_id: &str, prompt: &str, source: &str) -> Res
         created_at_epoch_ms,
         prompt: prompt.to_string(),
         source: source.to_string(),
+        mode,
     };
     append_json_line(&inbox_path(run_dir, task_id), &message)?;
     Ok(message)
@@ -163,7 +195,14 @@ mod tests {
     #[test]
     fn steering_mailbox_is_persisted_drained_and_audited() {
         let dir = temp_dir();
-        let message = enqueue(&dir, "task-1", "Prefer the smaller API.", "test").unwrap();
+        let message = enqueue_mode(
+            &dir,
+            "task-1",
+            "Prefer the smaller API.",
+            "test",
+            SteeringMode::Enqueue,
+        )
+        .unwrap();
         let drained = drain(&dir, "task-1").unwrap();
         assert_eq!(drained, vec![message.clone()]);
         assert!(drain(&dir, "task-1").unwrap().is_empty());
@@ -178,7 +217,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(history(&dir, "task-1")[0].message, message);
+        assert_eq!(message.mode, SteeringMode::Enqueue);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_messages_default_to_immediate_delivery() {
+        let message: SteerMessage = serde_json::from_str(
+            r#"{"id":"1","created_at_epoch_ms":1,"prompt":"go","source":"legacy"}"#,
+        )
+        .unwrap();
+        assert_eq!(message.mode, SteeringMode::Immediate);
     }
 
     #[test]

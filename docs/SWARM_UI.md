@@ -36,6 +36,9 @@ and a restrained toasted-bread palette (`#EBDFC2`, `#9C6620`, `#A8351A`,
   activity stream, quotas, task details, verification evidence, and a read-only
   worker log. Active tasks have a real-progress stale indication; stale is an
   observation only and never terminates a worker.
+- **Operations** is a focused queue of active, queued, and stale workers. It
+  keeps steering controls and the selected worker's operational context in one
+  place without duplicating completed-task history.
 - **Sync** displays the global Rulesync rules used to generate agent
   configuration, not a duplicate Skillshare inventory. It has independent
   **Sync Skills**, **Sync MCP**, and **Sync AGENTS.md** actions. The source root
@@ -81,11 +84,13 @@ SWARMS run is selected.
 
 ## Steering
 
-For active Codex, OpenCode, Kilo, or mock tasks, **Steer agent** queues up to
-4,000 characters. CLI workers are turn-based: the request is consumed after
-the current turn, resumed through the provider session when available, then
-applied before artifact verification. History is persisted under
-`steering/<task-id>/history.jsonl` as `applied`, `rejected`, or `failed`.
+For active Codex, Claude, OpenCode, Kilo, Hermes, Gemini, or mock tasks,
+**Steer agent** accepts up to 4,000 characters. The user chooses immediate,
+enqueue, or cancel-and-restart delivery. CLI workers remain turn-based; live
+Codex App Server, OpenCode Server, Claude stream-json, and ACP workers can
+acknowledge steering during execution. History is persisted under
+`steering/<task-id>/history.jsonl` as `accepted`, `applied`, `rejected`, or
+`failed`.
 
 ## Validate
 
@@ -105,7 +110,8 @@ on Windows, Linux, and macOS.
 ## Deliberate limits
 
 - The UI does not start, stop, or resume workflows.
-- It does not inject text into a provider turn already generating tokens.
-- Hermes, Agy, OpenAI-compatible providers, and provider-internal subagents are
-  not presented as steerable without a resumable session.
+- Immediate steering means the earliest boundary supported by the provider; it
+  does not promise arbitrary mid-token injection.
+- AGY and OpenAI-compatible providers remain turn-based unless a verified live
+  transport is configured.
 - It does not keep complete logs in memory or add a WebView/WGPU frontend.

@@ -375,9 +375,10 @@ def test_gemini_route_dispatches_to_agy_low_worker(tmp_path):
     task = runtime.build_tasks_from_plan(plan_path)[0]
     command = runtime.worker_command(task, tmp_path / "prompt.txt", tmp_path / "status.json")
 
-    assert task.model == "Gemini 3.5 Flash (Low)"
+    expected_model = runtime.router_config["providers"]["gemini_flash"]["model"]
+    assert task.model == expected_model
     assert command[1:3] == ["-m", "scripts.gemini_worker"]
-    assert command[command.index("--model") + 1] == "Gemini 3.5 Flash (Low)"
+    assert command[command.index("--model") + 1] == expected_model
     assert command[command.index("--tools-policy") + 1] == "none"
 
 
