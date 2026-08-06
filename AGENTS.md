@@ -20,12 +20,12 @@ Python scripts are legacy benchmark/telemetry tools. No Rust code invokes Python
 - Normal SWARMS operation: work on `main` or the current branch without creating branches automatically.
 - Branches/worktrees: use them only when the user explicitly enables isolated or benchmark mode.
 
-## Ejecución bloqueante para agentes coordinadores
+## Blocking Execution for Coordinators
 
-- Trata cada `swarms run` como una única tool call bloqueante que devuelve control cuando el workflow termina.
-- Mientras el proceso siga activo, no hagas polling de procesos, diffs, logs, reportes ni artefactos y no emitas validaciones intermedias.
-- Espera el resultado final de la llamada. Inspecciona estado persistido sólo después de finalización, timeout, error o petición explícita del usuario.
-- No lances otra ejecución sobre el mismo workspace mientras la anterior siga activa.
+- Treat each `swarms run` as one blocking tool call that returns control when the workflow finishes.
+- While the process is active, do not poll processes, diffs, logs, reports, or artifacts, and do not emit intermediate validation updates.
+- Wait for the tool call's final result. Inspect persisted state only after completion, timeout, error, or an explicit user request.
+- Do not launch another execution in the same workspace while the previous one is still active.
 
 ## Goal
 
@@ -86,7 +86,7 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 - `rust/src/config.rs`: router/plan loading, overlay merge.
 - `rust/src/model.rs`: domain types (Plan, Task, Provider, ThinkingLevel, SessionConfig).
 - `rust/src/review.rs`: static plan validation (DAG, routes, thinking, session, artifacts).
-- `rust/src/runtime.rs`: scheduler (DAG waves, retries, progreso observable, resume, verify, artifacts).
+- `rust/src/runtime.rs`: scheduler (DAG waves, retries, observable progress, resume, verify, artifacts).
 - `rust/src/adapter.rs`: native adapters (mock, CLI builders, OpenAI-compat HTTP, session/usage parsing).
 - `rust/src/session.rs`: session affinity store.
 - `rust/src/telemetry.rs`: usage normalisation, task state, report generation.
