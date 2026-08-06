@@ -1357,6 +1357,7 @@ pub mod ui_egui {
         #[default]
         Overview,
         Tasks,
+        Operations,
         Activity,
         Resources,
     }
@@ -1514,6 +1515,7 @@ pub mod ui_egui {
         quota_plan_keys: Vec<String>,
         last_quota_poll: Option<Instant>,
         steer_prompt: String,
+        steer_mode: steering::SteeringMode,
         steer_feedback: Option<String>,
         center_view: CenterView,
         provider_icons: ProviderIcons,
@@ -1582,6 +1584,7 @@ pub mod ui_egui {
                 quota_plan_keys: Vec::new(),
                 last_quota_poll: None,
                 steer_prompt: String::new(),
+                steer_mode: steering::SteeringMode::Immediate,
                 steer_feedback: None,
                 center_view: CenterView::Swarms,
                 provider_icons: ProviderIcons,
@@ -2006,6 +2009,7 @@ pub mod ui_egui {
                 for (tab, label) in [
                     (SwarmTab::Overview, "Overview"),
                     (SwarmTab::Tasks, "Tasks"),
+                    (SwarmTab::Operations, "Operations"),
                     (SwarmTab::Activity, "Activity"),
                     (SwarmTab::Resources, "Resources"),
                 ] {
@@ -2023,6 +2027,7 @@ pub mod ui_egui {
             match self.swarm_tab {
                 SwarmTab::Overview => self.render_overview(ui),
                 SwarmTab::Tasks => self.render_tree(ui, now_ms),
+                SwarmTab::Operations => self.render_operations(ui),
                 SwarmTab::Activity => self.render_activity(ui),
                 SwarmTab::Resources => self.render_resources(ui),
             }
@@ -2030,6 +2035,50 @@ pub mod ui_egui {
 
         fn refresh_resources(&mut self) {
             self.resource_catalog = resources::discover(&self.resource_root);
+        }
+
+        fn render_operations(&mut self, ui: &mut egui::Ui) {
+            ui.heading("Operations");
+            ui.label(
+                egui::RichText::new(
+                    "Select an active worker to inspect its log and send a controlled steer.",
+                )
+                .color(muted()),
+            );
+            ui.separator();
+            let active = self
+                .rows
+                .iter()
+                .filter(|row| is_operations_status(&row.status))
+                .cloned()
+                .collect::<Vec<_>>();
+            if active.is_empty() {
+                empty_state(
+                    ui,
+                    "No active workers",
+                    "Operations appears when a run has active tasks.",
+                );
+                return;
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for row in active {
+                    let Some(task_id) = row.task_id.as_ref() else {
+                        continue;
+                    };
+                    let selected = self.selected_task.as_deref() == Some(task_id.as_str());
+                    let label = format!(
+                        "{}  {}  {}{}",
+                        if selected { "▸" } else { " " },
+                        row.status,
+                        row.label,
+                        if row.stale { "  [stale]" } else { "" }
+                    );
+                    if ui.selectable_label(selected, label).clicked() {
+                        self.selected_task = Some(task_id.clone());
+                        self.log_for = None;
+                    }
+                }
+            });
         }
 
         fn refresh_skillshare_status(&mut self) {
@@ -4106,6 +4155,28 @@ pub mod ui_egui {
             let steerable =
                 node.status == "in_progress" && node.wrapper.as_deref().is_some_and(steer_capable);
             if steerable {
+                ui.horizontal(|ui| {
+                    ui.label("Delivery:");
+                    egui::ComboBox::from_id_salt(ui.id().with("steer_mode"))
+                        .selected_text(self.steer_mode.as_str())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.steer_mode,
+                                steering::SteeringMode::Immediate,
+                                "immediate (next safe boundary)",
+                            );
+                            ui.selectable_value(
+                                &mut self.steer_mode,
+                                steering::SteeringMode::Enqueue,
+                                "enqueue (after current turn)",
+                            );
+                            ui.selectable_value(
+                                &mut self.steer_mode,
+                                steering::SteeringMode::CancelAndRestart,
+                                "cancel and restart",
+                            );
+                        });
+                });
                 ui.add(
                     egui::TextEdit::multiline(&mut self.steer_prompt)
                         .hint_text("Add direction for the agent's next turn…")
@@ -4132,15 +4203,16 @@ pub mod ui_egui {
                             .map(|run_id| self.run_root.join(run_id));
                         self.steer_feedback = run_dir.map_or_else(
                             || Some("no active run".to_string()),
-                            |run_dir| match steering::enqueue(
+                            |run_dir| match steering::enqueue_mode(
                                 &run_dir,
                                 &node.task_id,
                                 &self.steer_prompt,
                                 "swarms-ui",
+                                self.steer_mode,
                             ) {
                                 Ok(_) => {
                                     self.steer_prompt.clear();
-                                    Some("queued for the next agent turn".to_string())
+                                    Some(format!("steer {} queued", self.steer_mode.as_str()))
                                 }
                                 Err(error) => Some(error),
                             },
@@ -4570,7 +4642,14 @@ pub mod ui_egui {
     }
 
     fn steer_capable(wrapper: &str) -> bool {
-        matches!(wrapper, "codex" | "opencode" | "kilo" | "mock")
+        matches!(
+            wrapper,
+            "codex" | "claude" | "opencode" | "kilo" | "hermes" | "gemini" | "mock"
+        )
+    }
+
+    fn is_operations_status(status: &str) -> bool {
+        matches!(status, "in_progress" | "queued" | "stale")
     }
 
     /// Strip CSI/OSC ANSI escape sequences, returning plain text.
@@ -5222,6 +5301,16 @@ pub mod ui_egui {
             contract.run.status = RunStatus::Running;
             app.contract = Some(contract);
             assert_eq!(app.poll_interval(), POLL_ACTIVE);
+        }
+
+        #[test]
+        fn operations_only_lists_actionable_workers() {
+            for status in ["in_progress", "queued", "stale"] {
+                assert!(is_operations_status(status));
+            }
+            for status in ["completed", "failed", "blocked"] {
+                assert!(!is_operations_status(status));
+            }
         }
 
         #[test]

@@ -8,8 +8,9 @@ use crate::model::{
 };
 use crate::quota::QuotaGuard;
 use crate::session::{self, SessionDecision, SessionStore};
-use crate::steering::{self, AppliedSteer};
+use crate::steering::{self, AppliedSteer, SteeringMode};
 use crate::telemetry::{self, Report, TaskState, TaskStatus, Usage};
+use crate::{claude_stream, codex_app_server, opencode_server};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -927,7 +928,8 @@ pub(crate) fn run_task(
                             continue;
                         }
                         let steer_prompt = format!(
-                            "{prompt}\n\nUSER STEER PROMPT\n{}\n\nApply this new direction before finishing the task.",
+                            "{prompt}\n\nUSER STEER PROMPT ({})\n{}\n\nApply this direction before finishing the task. This provider accepted it at a safe session boundary; do not claim an in-flight tool call was interrupted.",
+                            message.mode.as_str(),
                             message.prompt
                         );
                         let previous_log =
@@ -945,6 +947,7 @@ pub(crate) fn run_task(
                         match steered {
                             Ok(next) => {
                                 let command_id = message.id.clone();
+                                let mode = message.mode;
                                 let next_session_id = next.session_id.clone().or_else(|| {
                                     adapter::parse_session_id(
                                         AdapterKind::from_wrapper(&task.provider.wrapper)
@@ -972,7 +975,7 @@ pub(crate) fn run_task(
                                 append_event(
                                     run_dir,
                                     "steer_applied",
-                                    json!({"task_id": task.id, "command_id": command_id}),
+                                    json!({"task_id": task.id, "command_id": command_id, "mode": mode.as_str()}),
                                 );
                             }
                             Err(error) => {
@@ -1249,6 +1252,42 @@ fn execute_adapter(
     let kind = AdapterKind::from_wrapper(&task.provider.wrapper)
         .ok_or_else(|| format!("unsupported wrapper: {}", task.provider.wrapper))?;
 
+    if matches!(execution.transport, ExecutionTransport::Auto) {
+        let log_path = work_dir.join("worker.log");
+        if kind == AdapterKind::Codex && codex_app_server::enabled() {
+            let result = codex_app_server::run(
+                task, prompt, thinking, session_id, root, &log_path, run_dir,
+            )?;
+            return Ok(AdapterExec {
+                output: result.output,
+                usage: Usage::missing(),
+                session_id: result.session_id,
+                transport: "codex_app_server".to_string(),
+            });
+        }
+        if kind == AdapterKind::OpenCode && opencode_server::enabled() {
+            let result =
+                opencode_server::run(task, prompt, thinking, session_id, root, &log_path, run_dir)?;
+            return Ok(AdapterExec {
+                output: result.output,
+                usage: Usage::missing(),
+                session_id: result.session_id,
+                transport: "opencode_server".to_string(),
+            });
+        }
+        if kind == AdapterKind::Claude && claude_stream::enabled() {
+            let result =
+                claude_stream::run(task, prompt, thinking, session_id, root, &log_path, run_dir)?;
+            let output = result.output;
+            return Ok(AdapterExec {
+                usage: adapter::parse_cli_usage(kind, &output),
+                output,
+                session_id: result.session_id,
+                transport: "claude_stream".to_string(),
+            });
+        }
+    }
+
     let acp_spec = adapter::build_acp_command(kind, &execution.acp);
     let use_acp =
         !matches!(execution.transport, ExecutionTransport::CliBatch) && acp_spec.is_some();
@@ -1385,6 +1424,7 @@ fn execute_acp(
     let mut pending_steers = Vec::new();
     let mut cancel_sent = false;
     let mut cancel_deadline = None;
+    let mut continuation_started = false;
 
     loop {
         if cancel_sent && cancel_deadline.is_some_and(|deadline| Instant::now() > deadline) {
@@ -1420,20 +1460,14 @@ fn execute_acp(
                             "ACP prompt failed: {error}"
                         )));
                     }
-                    if cancel_sent && !pending_steers.is_empty() {
-                        let steer = pending_steers
-                            .iter()
-                            .map(|message: &steering::SteerMessage| message.prompt.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        let continued = format!(
-                            "{prompt}\n\nUSER STEER PROMPT\n{steer}\n\nApply this new direction before finishing the task."
-                        );
+                    if !pending_steers.is_empty() && !continuation_started {
+                        let continued = steering_continuation(prompt, &pending_steers, cancel_sent);
                         request_id = client
                             .start_prompt(&continued)
                             .map_err(AcpFailure::unsafe_after_prompt)?;
                         cancel_sent = false;
                         cancel_deadline = None;
+                        continuation_started = true;
                         continue;
                     }
                     for message in pending_steers.drain(..) {
@@ -1472,20 +1506,24 @@ fn execute_acp(
             }
         }
 
-        if !cancel_sent {
+        if !cancel_sent && !continuation_started {
             let messages =
                 steering::drain(run_dir, &task.id).map_err(AcpFailure::unsafe_after_prompt)?;
             if !messages.is_empty() {
+                let mut should_cancel = false;
                 for message in messages {
                     append_acp_log(
                         &log_path,
-                        &json!({"type": "swarms_steer", "prompt": message.prompt}),
+                        &json!({"type": "swarms_steer", "mode": message.mode.as_str(), "prompt": message.prompt}),
                     );
+                    should_cancel |= message.mode != SteeringMode::Enqueue;
                     pending_steers.push(message);
                 }
-                client.cancel().map_err(AcpFailure::unsafe_after_prompt)?;
-                cancel_sent = true;
-                cancel_deadline = Some(Instant::now() + client.cancel_grace());
+                if should_cancel {
+                    client.cancel().map_err(AcpFailure::unsafe_after_prompt)?;
+                    cancel_sent = true;
+                    cancel_deadline = Some(Instant::now() + client.cancel_grace());
+                }
             }
         }
     }
@@ -1494,6 +1532,32 @@ fn execute_acp(
 fn append_acp_log(path: &Path, value: &Value) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{value}");
+    }
+}
+
+fn steering_continuation(
+    prompt: &str,
+    messages: &[steering::SteerMessage],
+    cancelled: bool,
+) -> String {
+    let steer = messages
+        .iter()
+        .map(|message| message.prompt.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let modes = messages
+        .iter()
+        .map(|message| message.mode.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    if cancelled {
+        format!(
+            "{prompt}\n\nUSER STEER PROMPT ({modes})\n{steer}\n\nRestart from the persisted task prompt and apply this direction before finishing."
+        )
+    } else {
+        format!(
+            "USER STEER PROMPT ({modes})\n{steer}\n\nThe previous turn completed. Apply this queued direction before finalizing the task."
+        )
     }
 }
 
@@ -2552,6 +2616,24 @@ mod auto_resume_tests {
         fs::write(&path, r#"{"type":"step_finish","part":{"reason":"stop"}}"#).unwrap();
         assert!(opencode_terminal_event_seen(&path));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn steering_continuation_distinguishes_queued_and_cancelled_delivery() {
+        let message = steering::SteerMessage {
+            id: "1".to_string(),
+            created_at_epoch_ms: 1,
+            prompt: "Use the smaller API.".to_string(),
+            source: "test".to_string(),
+            mode: SteeringMode::Enqueue,
+        };
+        let queued = steering_continuation("original", std::slice::from_ref(&message), false);
+        assert!(!queued.contains("original"));
+        assert!(queued.contains("previous turn completed"));
+
+        let restarted = steering_continuation("original", &[message], true);
+        assert!(restarted.contains("original"));
+        assert!(restarted.contains("Restart from the persisted task prompt"));
     }
 
     #[cfg(windows)]

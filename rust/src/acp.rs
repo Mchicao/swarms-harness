@@ -348,6 +348,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn powershell_fake_peer_completes_initialize_session_and_prompt() {
+        // A cold PowerShell process on GitHub's Windows runner can take more
+        // than five seconds to reach the ACP read loop under parallel load.
+        const CI_PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
         let root = std::env::temp_dir().join(format!(
             "swarms-acp-peer-{}-{}",
             std::process::id(),
@@ -392,23 +395,23 @@ while (($line = [Console]::ReadLine()) -ne $null) {
             &args,
             &root,
             &log,
-            Duration::from_secs(5),
+            CI_PROCESS_TIMEOUT,
             Duration::from_secs(1),
         )
         .unwrap();
         assert_eq!(
             client
-                .open_session(&root, None, Duration::from_secs(5))
+                .open_session(&root, None, CI_PROCESS_TIMEOUT)
                 .unwrap(),
             "fake-session"
         );
         let prompt_id = client.start_prompt("test").unwrap();
-        let update = client.next_event(Duration::from_secs(5)).unwrap().unwrap();
+        let update = client.next_event(CI_PROCESS_TIMEOUT).unwrap().unwrap();
         let Event::Update(params) = update else {
             panic!("expected fake ACP update");
         };
         assert_eq!(update_text(&params), Some("hello"));
-        let response = client.next_event(Duration::from_secs(5)).unwrap().unwrap();
+        let response = client.next_event(CI_PROCESS_TIMEOUT).unwrap().unwrap();
         let Event::Response { id, result, error } = response else {
             panic!("expected fake ACP response");
         };
