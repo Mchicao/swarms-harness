@@ -110,6 +110,9 @@ pub struct TaskState {
     pub session_resume_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Actual provider transport used by the completed attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +144,8 @@ pub struct TaskState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_tab_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
@@ -168,6 +173,7 @@ impl TaskState {
             session_reused: false,
             session_resume_count: 0,
             session_id: None,
+            transport: None,
             verified: None,
             verify_error: None,
             usage: Usage::missing(),
@@ -180,6 +186,7 @@ impl TaskState {
             terminal_backend: None,
             terminal_session: None,
             terminal_workspace_id: None,
+            terminal_tab_id: None,
             terminal_pane_id: None,
             ended_at: None,
             checkpoint_key: None,

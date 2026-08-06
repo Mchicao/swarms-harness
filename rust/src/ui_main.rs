@@ -133,7 +133,9 @@ pub struct TaskNode {
     pub terminal_backend: Option<String>,
     pub terminal_session: Option<String>,
     pub terminal_workspace_id: Option<String>,
+    pub terminal_tab_id: Option<String>,
     pub terminal_pane_id: Option<String>,
+    pub transport: Option<String>,
     pub needs: Vec<String>,
     pub artifacts: Vec<String>,
     pub error: Option<String>,
@@ -520,12 +522,11 @@ pub fn relative_age(timestamp_ms: Option<u128>, now_ms: u128) -> String {
     };
     let seconds = now_ms.saturating_sub(timestamp_ms) / 1000;
     match seconds {
-        0..=59 => "now".to_string(),
+        0..=59 => "just now".to_string(),
         60..=3_599 => format!("{}m ago", seconds / 60),
         3_600..=86_399 => format!("{}h ago", seconds / 3_600),
-        86_400..=604_799 => format!("{}d ago", seconds / 86_400),
-        604_800..=2_629_799 => format!("{}w ago", seconds / 604_800),
-        _ => format!("{}mo ago", seconds / 2_629_800),
+        86_400..=2_592_000 => format!("{}d ago", seconds / 86_400),
+        _ => format!("{}mo ago", seconds / 2_592_000),
     }
 }
 
@@ -877,7 +878,9 @@ fn build_task_node(
         terminal_backend: get_str(task, "terminal_backend"),
         terminal_session: get_str(task, "terminal_session"),
         terminal_workspace_id: get_str(task, "terminal_workspace_id"),
+        terminal_tab_id: get_str(task, "terminal_tab_id"),
         terminal_pane_id: get_str(task, "terminal_pane_id"),
+        transport: get_str(task, "transport"),
         needs: task
             .get("needs")
             .and_then(Value::as_array)
@@ -1136,6 +1139,16 @@ mod tests {
         assert!(!safe_run_id("../escape"));
         assert!(!safe_run_id(&"9".repeat(129)));
         assert!(!safe_run_id("has space"));
+    }
+
+    #[test]
+    fn relative_age_uses_compact_run_recency_labels() {
+        let now = 10_000_000_000u128;
+        assert_eq!(relative_age(Some(now), now), "just now");
+        assert_eq!(relative_age(Some(now - 60_000), now), "1m ago");
+        assert_eq!(relative_age(Some(now - 24 * 86_400_000), now), "24d ago");
+        assert_eq!(relative_age(Some(now - 31 * 86_400_000), now), "1mo ago");
+        assert_eq!(relative_age(None, now), "unknown");
     }
 
     #[test]
@@ -1436,6 +1449,36 @@ pub mod ui_egui {
         accounts: BTreeMap<String, String>,
     }
 
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct SkillshareStatus {
+        source: SkillshareSource,
+        skill_count: usize,
+        targets: Vec<SkillshareTarget>,
+    }
+
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct SkillshareSource {
+        path: String,
+        skillignore: SkillshareIgnore,
+    }
+
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct SkillshareIgnore {
+        ignored_skills: Vec<String>,
+    }
+
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
+    struct SkillshareTarget {
+        name: String,
+        path: String,
+        status: String,
+        synced_count: usize,
+    }
+
     fn load_quota_identities(snapshot_path: &Path) -> Option<BTreeMap<String, String>> {
         let path = snapshot_path.with_file_name("quota_identities.local.json");
         let text = fs::read_to_string(path).ok()?;
@@ -1468,6 +1511,7 @@ pub mod ui_egui {
         bench_until: Option<Instant>,
         quota_snapshot: Option<quota::QuotaSnapshotView>,
         quota_error: Option<String>,
+        quota_plan_keys: Vec<String>,
         last_quota_poll: Option<Instant>,
         steer_prompt: String,
         steer_feedback: Option<String>,
@@ -1484,6 +1528,10 @@ pub mod ui_egui {
         selected_resource: Option<String>,
         resource_root: PathBuf,
         resource_sync_feedback: Option<String>,
+        skillshare_global: Option<SkillshareStatus>,
+        skillshare_project: Option<SkillshareStatus>,
+        skillshare_error: Option<String>,
+        rulesync_selected_targets: BTreeMap<String, std::collections::BTreeSet<String>>,
         new_mcp_name: String,
         new_mcp_cmd: String,
         agent_md_text: String,
@@ -1531,6 +1579,7 @@ pub mod ui_egui {
                 bench_until: bench_duration_secs.map(|s| Instant::now() + Duration::from_secs(s)),
                 quota_snapshot: None,
                 quota_error: None,
+                quota_plan_keys: Vec::new(),
                 last_quota_poll: None,
                 steer_prompt: String::new(),
                 steer_feedback: None,
@@ -1547,6 +1596,10 @@ pub mod ui_egui {
                 selected_resource: None,
                 resource_root: project_root,
                 resource_sync_feedback: None,
+                skillshare_global: None,
+                skillshare_project: None,
+                skillshare_error: None,
+                rulesync_selected_targets: BTreeMap::new(),
                 new_mcp_name: String::new(),
                 new_mcp_cmd: String::new(),
                 agent_md_text: String::new(),
@@ -1696,14 +1749,17 @@ pub mod ui_egui {
                 return;
             };
             match config::load_router(&root) {
-                Ok(router) if router.quota_policy.enabled => {
-                    let configured = Path::new(&router.quota_policy.snapshot_path);
-                    let path = if configured.is_absolute() {
-                        configured.to_path_buf()
-                    } else {
-                        root.join(configured)
-                    };
+                Ok(router) => {
+                    self.quota_plan_keys = configured_quota_keys(&router);
+                    let path = quota_snapshot_path(&root, &router.quota_policy);
+                    self.quota_snapshot = None;
                     match quota::load_snapshot_view(&path) {
+                        Ok(snapshot) if snapshot.entries.is_empty() => {
+                            self.quota_error = Some(format!(
+                                "quota snapshot has no accounts: {}",
+                                path.display()
+                            ));
+                        }
                         Ok(snapshot) => {
                             self.quota_snapshot = Some(snapshot);
                             self.quota_error = None;
@@ -1711,10 +1767,16 @@ pub mod ui_egui {
                                 self.ui_privacy.account_emails.extend(accounts);
                             }
                         }
-                        Err(error) => self.quota_error = Some(error),
+                        Err(_) if router.quota_policy.enabled => {
+                            self.quota_error =
+                                Some(format!("quota snapshot unavailable: {}", path.display()));
+                        }
+                        Err(_) => {
+                            self.quota_error =
+                                Some(format!("quota snapshot not configured: {}", path.display()));
+                        }
                     }
                 }
-                Ok(_) => self.quota_error = Some("quota tracking disabled".to_string()),
                 Err(error) => self.quota_error = Some(error),
             }
         }
@@ -1970,6 +2032,14 @@ pub mod ui_egui {
             self.resource_catalog = resources::discover(&self.resource_root);
         }
 
+        fn refresh_skillshare_status(&mut self) {
+            let (global, global_error) = load_skillshare_status(&self.resource_root, true);
+            let (project, project_error) = load_skillshare_status(&self.resource_root, false);
+            self.skillshare_global = global;
+            self.skillshare_project = project;
+            self.skillshare_error = global_error.or(project_error);
+        }
+
         fn sync_project_skills(&mut self) {
             if !self.resource_root.join(".skillshare/config.yaml").is_file() {
                 self.resource_sync_feedback = Some(
@@ -2041,50 +2111,137 @@ pub mod ui_egui {
         }
 
         fn rulesync_root(&self) -> PathBuf {
-            std::env::var_os("SWARMS_RULESYNC_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.resource_root.clone())
+            let repository_root = std::env::current_dir()
+                .ok()
+                .and_then(|path| find_repository_root(&path))
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|path| path.parent().and_then(find_repository_root))
+                });
+            resolve_rulesync_root(
+                &self.resource_root,
+                repository_root.as_deref(),
+                std::env::var_os("USERPROFILE").as_deref().map(Path::new),
+                std::env::var_os("SWARMS_RULESYNC_ROOT")
+                    .as_deref()
+                    .map(Path::new),
+            )
+        }
+
+        fn ensure_rulesync_selection(&mut self, targets: &[RulesyncTarget]) {
+            for feature in ["skills", "mcp", "rules"] {
+                if !self.rulesync_selected_targets.contains_key(feature) {
+                    self.rulesync_selected_targets.insert(
+                        feature.to_string(),
+                        targets.iter().map(|target| target.id.clone()).collect(),
+                    );
+                } else if let Some(selected) = self.rulesync_selected_targets.get_mut(feature) {
+                    selected.retain(|id| targets.iter().any(|target| target.id == *id));
+                }
+            }
         }
 
         fn rulesync_sources(&self, feature: &str) -> Vec<String> {
-            let source_root = self.rulesync_root().join(".rulesync");
-            let mut entries = match feature {
-                "skills" => fs::read_dir(source_root.join("skills"))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter_map(|entry| {
-                        let path = entry.path();
-                        entry
-                            .file_type()
-                            .ok()
-                            .filter(|kind| kind.is_dir() && path.join("SKILL.md").is_file())
-                            .and_then(|_| entry.file_name().to_str().map(str::to_string))
-                    })
-                    .collect(),
-                "mcp" => ["mcp.json", "mcp.jsonc"]
-                    .into_iter()
-                    .filter(|name| source_root.join(name).is_file())
-                    .map(str::to_string)
-                    .collect(),
-                "rules" => rulesync_rule_files(&source_root.join("rules")),
-                _ => Vec::new(),
-            };
+            let mut entries = Vec::new();
+            for (label, root) in self.rulesync_source_roots() {
+                for entry in rulesync_sources_at(&root, feature) {
+                    entries.push(format!("{label}: {entry}"));
+                }
+            }
             entries.sort();
             entries
         }
 
         fn rulesync_available(&self) -> bool {
-            self.rulesync_root().join(".rulesync").is_dir()
+            !self.rulesync_source_roots().is_empty()
+        }
+
+        fn rulesync_source_roots(&self) -> Vec<(String, PathBuf)> {
+            let explicit = std::env::var_os("SWARMS_RULESYNC_ROOT")
+                .map(PathBuf::from)
+                .map(|path| vec![("Configurada".to_string(), path)]);
+            if let Some(paths) = explicit {
+                return paths;
+            }
+            let home = std::env::var_os("USERPROFILE").map(PathBuf::from);
+            let repository_root = std::env::current_dir()
+                .ok()
+                .and_then(|path| find_repository_root(&path))
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|path| path.parent().and_then(find_repository_root))
+                });
+            let mut candidates = Vec::new();
+            for (label, path) in [
+                ("Global", home),
+                ("Proyecto", Some(self.resource_root.clone())),
+                ("Repositorio", repository_root),
+            ]
+            .into_iter()
+            .filter_map(|(label, path)| path.map(|path| (label.to_string(), path)))
+            {
+                if candidates
+                    .iter()
+                    .all(|(_, existing): &(String, PathBuf)| existing != &path)
+                    && path.join(".rulesync").is_dir()
+                {
+                    candidates.push((label, path));
+                }
+            }
+            candidates
+        }
+
+        fn rulesync_target_root(&self) -> PathBuf {
+            self.rulesync_source_roots()
+                .into_iter()
+                .find(|(_, root)| {
+                    root.join("rulesync.jsonc").is_file() || root.join("rulesync.json").is_file()
+                })
+                .map(|(_, root)| root)
+                .unwrap_or_else(|| self.rulesync_root())
+        }
+
+        fn rulesync_input_root(&self, feature: &str) -> PathBuf {
+            let roots = self.rulesync_source_roots();
+            roots
+                .iter()
+                .find(|(_, root)| {
+                    root == &self.resource_root && !rulesync_sources_at(root, feature).is_empty()
+                })
+                .or_else(|| {
+                    roots
+                        .iter()
+                        .find(|(_, root)| !rulesync_sources_at(root, feature).is_empty())
+                })
+                .map(|(_, root)| root.clone())
+                .or_else(|| roots.first().map(|(_, root)| root.clone()))
+                .unwrap_or_else(|| self.rulesync_root())
         }
 
         fn sync_rulesync_feature(&mut self, feature: &str) {
-            let root = self.rulesync_root();
+            let root = self.rulesync_input_root(feature);
+            let selected = self
+                .rulesync_selected_targets
+                .get(feature)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                self.resource_sync_feedback =
+                    Some(format!("No hay agentes seleccionados para {feature}."));
+                return;
+            }
+            let target_list = selected.join(",");
             let result = std::process::Command::new(
                 std::env::var("SWARMS_RULESYNC_BIN").unwrap_or_else(|_| "rulesync".to_string()),
             )
             .args([
                 "generate",
+                "--targets",
+                &target_list,
                 "--global",
                 "--features",
                 feature,
@@ -2639,12 +2796,12 @@ pub mod ui_egui {
                                             .color(text_color),
                                     );
                                     if let Some(t) = run.last_activity_unix_ms {
-                                        let bucket = temporal_bucket(Some(t), now);
+                                        let age_label = relative_age(Some(t), now);
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
-                                                    egui::RichText::new(bucket)
+                                                    egui::RichText::new(age_label)
                                                         .size(theme.type_scale.mono_small - 1.0)
                                                         .color(palette.muted),
                                                 );
@@ -2677,26 +2834,42 @@ pub mod ui_egui {
 
         fn render_sandbox(&mut self, ui: &mut egui::Ui) {
             let palette = crate::ui_theme::Theme::marraqueta().palette;
-            let root = self.rulesync_root();
+            if self.skillshare_global.is_none()
+                && self.skillshare_project.is_none()
+                && self.skillshare_error.is_none()
+            {
+                self.refresh_skillshare_status();
+            }
+            let source_roots = self.rulesync_source_roots();
             let rulesync_available = self.rulesync_available();
             let skills = self.rulesync_sources("skills");
             let mcps = self.rulesync_sources("mcp");
             let rules = self.rulesync_sources("rules");
+            let target_root = self.rulesync_target_root();
+            let targets = rulesync_targets(&target_root);
+            self.ensure_rulesync_selection(&targets);
+            let source_summary = source_roots
+                .iter()
+                .map(|(label, root)| format!("{label}: {}\\.rulesync", root.display()))
+                .collect::<Vec<_>>()
+                .join(" · ");
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
-                        egui::RichText::new("Global Rulesync rules")
+                        egui::RichText::new("Sync · plan global de distribución")
                             .strong()
                             .size(18.0),
                     );
                     ui.label(
-                        egui::RichText::new(format!("Source: {}\\.rulesync", root.display()))
+                        egui::RichText::new(format!("Fuentes Rulesync: {source_summary}"))
                             .small()
                             .color(palette.muted),
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Refresh").clicked() {
+                        self.refresh_resources();
+                        self.refresh_skillshare_status();
                         self.resource_sync_feedback =
                             Some("Rulesync source refreshed.".to_string());
                     }
@@ -2707,66 +2880,101 @@ pub mod ui_egui {
             }
             ui.separator();
 
+            render_skillshare_summary(
+                ui,
+                self.skillshare_global.as_ref(),
+                self.skillshare_project.as_ref(),
+                self.skillshare_error.as_deref(),
+                palette,
+            );
+            ui.separator();
+
             if !rulesync_available {
                 empty_state(
                     ui,
-                    "No global Rulesync source found",
-                    "Set SWARMS_RULESYNC_ROOT or initialize .rulesync in this workspace. Sync actions stay disabled until a real source exists.",
+                    "No hay una fuente Rulesync disponible",
+                    "Define SWARMS_RULESYNC_ROOT o inicializa .rulesync. Las acciones quedan deshabilitadas hasta encontrar una fuente real.",
                 );
                 return;
             }
 
-            ui.columns(3, |columns| {
-                columns[0].horizontal(|ui| {
-                    ui.label(egui::RichText::new("Skills").strong().size(15.0));
-                    if ui
-                        .add_enabled(rulesync_available, egui::Button::new("Sync Skills"))
-                        .clicked()
-                    {
-                        self.sync_rulesync_feature("skills");
-                    }
-                });
-                columns[0].separator();
-                render_rulesync_sources(
-                    &mut columns[0],
+            ui.label(egui::RichText::new("Agentes destino").strong().size(15.0));
+            if targets.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "No hay targets disponibles; las sincronizaciones quedan deshabilitadas.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new(
+                        "Elige los agentes dentro de cada bloque. La selección se aplica sólo a ese tipo de recurso.",
+                    )
+                    .small()
+                    .color(palette.muted),
+                );
+            }
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(
+                    "Cada bloque indica exactamente qué se sincroniza, desde dónde y hacia qué agentes.",
+                )
+                .small()
+                .color(palette.muted),
+            );
+            ui.separator();
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                render_rulesync_feature(
+                    ui,
+                    "Skills · Rulesync",
+                    "skills",
                     &skills,
-                    "No global Rulesync skills.",
-                    palette.muted,
+                    "No hay Skills en Rulesync; revisa el inventario Skillshare global de arriba.",
+                    &targets,
+                    self,
                 );
-
-                columns[1].horizontal(|ui| {
-                    ui.label(egui::RichText::new("MCP").strong().size(15.0));
-                    if ui
-                        .add_enabled(rulesync_available, egui::Button::new("Sync MCP"))
-                        .clicked()
-                    {
-                        self.sync_rulesync_feature("mcp");
-                    }
-                });
-                columns[1].separator();
-                render_rulesync_sources(
-                    &mut columns[1],
+                render_rulesync_feature(
+                    ui,
+                    "MCP · Rulesync",
+                    "mcp",
                     &mcps,
-                    "No global Rulesync MCP sources.",
-                    palette.muted,
+                    "No hay configuración MCP en la fuente Rulesync.",
+                    &targets,
+                    self,
                 );
-
-                columns[2].horizontal(|ui| {
-                    ui.label(egui::RichText::new("Rules / AGENTS.md").strong().size(15.0));
-                    if ui
-                        .add_enabled(rulesync_available, egui::Button::new("Sync AGENTS.md"))
-                        .clicked()
-                    {
-                        self.sync_rulesync_feature("rules");
-                    }
-                });
-                columns[2].separator();
-                render_rulesync_sources(
-                    &mut columns[2],
+                render_rulesync_feature(
+                    ui,
+                    "Reglas · Rulesync",
+                    "rules",
                     &rules,
-                    "No global Rulesync rules.",
-                    palette.muted,
+                    "No hay reglas Markdown en la fuente Rulesync.",
+                    &targets,
+                    self,
                 );
+                let configured_ids: std::collections::BTreeSet<&str> =
+                    targets.iter().map(|target| target.id.as_str()).collect();
+                let not_configured = [
+                    ("gemini", "Gemini CLI"),
+                    ("antigravity-cli", "AGY / Antigravity CLI"),
+                ]
+                .into_iter()
+                .filter(|(id, _)| !configured_ids.contains(id))
+                .map(|(_, label)| label)
+                .collect::<Vec<_>>();
+                if !not_configured.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Agentes detectables pero no incluidos en esta sincronización: {}",
+                            not_configured.join(", ")
+                        ))
+                        .small()
+                        .color(palette.muted),
+                    );
+                }
             });
         }
 
@@ -3298,50 +3506,118 @@ pub mod ui_egui {
         }
 
         fn render_quota_strip(&self, ui: &mut egui::Ui) {
-            if let Some(snapshot) = &self.quota_snapshot {
-                let palette = crate::ui_theme::Theme::marraqueta().palette;
+            let palette = crate::ui_theme::Theme::marraqueta().palette;
+            let snapshot = self.quota_snapshot.as_ref();
+            let mut keys = self.quota_plan_keys.clone();
+            if let Some(snapshot) = snapshot {
                 for entry in &snapshot.entries {
-                    let remaining = quota_remaining(&entry.windows);
-                    let color = quota_color(remaining);
-                    let response = egui::Frame::new()
-                        .fill(palette.bg_elevated)
-                        .stroke(egui::Stroke::new(1.0_f32, palette.border))
-                        .corner_radius(4.0)
-                        .inner_margin(egui::Margin::symmetric(6, 3))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                quota_mark(ui, &entry.key, color, &self.provider_icons);
-                                ui.label(
-                                    egui::RichText::new(quota_short_label(&entry.key))
-                                        .small()
-                                        .color(palette.text_dim),
-                                );
-                                ui.label(
-                                    egui::RichText::new(format!("{remaining:.0}%"))
+                    if !keys.contains(&entry.key) {
+                        keys.push(entry.key.clone());
+                    }
+                }
+            }
+            if !keys.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for key in &keys {
+                        let entry = snapshot.and_then(|snapshot| {
+                            snapshot.entries.iter().find(|entry| &entry.key == key)
+                        });
+                        let remaining = entry.map(|entry| quota_remaining(&entry.windows));
+                        let color = remaining.map_or(palette.muted, quota_color);
+                        let response = egui::Frame::new()
+                            .fill(palette.bg_elevated)
+                            .stroke(egui::Stroke::new(1.0_f32, palette.border))
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::symmetric(6, 3))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    quota_mark(ui, key, color, &self.provider_icons);
+                                    ui.label(
+                                        egui::RichText::new(quota_short_label(key))
+                                            .small()
+                                            .color(palette.text_dim),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(remaining.map_or_else(
+                                            || "—".to_string(),
+                                            |value| format!("{value:.0}%"),
+                                        ))
                                         .small()
                                         .strong()
                                         .color(color),
+                                    );
+                                });
+                            })
+                            .response;
+                        response.on_hover_ui(|ui| {
+                            ui.set_min_width(250.0);
+                            if let Some(entry) = entry {
+                                if let Some(snapshot) = snapshot {
+                                    render_quota_popover(
+                                        ui,
+                                        snapshot.generated_at_epoch,
+                                        entry,
+                                        &self.provider_icons,
+                                        &self.ui_privacy,
+                                    );
+                                }
+                            } else {
+                                ui.label(egui::RichText::new(quota_label(key)).strong());
+                                ui.label(
+                                    egui::RichText::new("Sin datos de cuota para este plan.")
+                                        .small()
+                                        .color(palette.muted),
                                 );
-                            });
-                        })
-                        .response;
-                    response.on_hover_ui(|ui| {
-                        ui.set_min_width(250.0);
-                        render_quota_popover(
-                            ui,
-                            snapshot.generated_at_epoch,
-                            entry,
-                            &self.provider_icons,
-                            &self.ui_privacy,
-                        );
-                    });
+                            }
+                        });
+                    }
+                });
+                if snapshot.is_none() {
+                    let response = ui.label(
+                        egui::RichText::new("sin snapshot")
+                            .small()
+                            .color(palette.muted),
+                    );
+                    if let Some(error) = &self.quota_error {
+                        response.on_hover_text(error);
+                    }
                 }
             } else if let Some(error) = &self.quota_error {
-                ui.label(
-                    egui::RichText::new(format!("quotas unavailable · {error}"))
+                let label = if self.quota_plan_keys.is_empty() {
+                    "Cuotas · sin snapshot".to_string()
+                } else {
+                    format!(
+                        "Cuotas · {} planes · sin snapshot",
+                        self.quota_plan_keys.len()
+                    )
+                };
+                let response = ui.label(egui::RichText::new(label).small().color(muted()));
+                response.on_hover_ui(|ui| {
+                    ui.set_min_width(320.0);
+                    ui.label(egui::RichText::new("Estado de cuotas").strong());
+                    ui.label(egui::RichText::new(error).small().color(muted()));
+                    if self.quota_plan_keys.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No hay planes con quota_key en el router cargado.",
+                            )
+                            .small()
+                            .color(muted()),
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("Planes configurados").small().strong());
+                        for key in &self.quota_plan_keys {
+                            ui.label(egui::RichText::new(quota_short_label(key)).small());
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "Falta un quota_snapshot.json sanitario. SWARMS no lee tokens ni inventa porcentajes.",
+                        )
                         .small()
                         .color(muted()),
-                );
+                    );
+                });
             }
         }
 
@@ -3614,13 +3890,23 @@ pub mod ui_egui {
                         );
                     }
                     if let Some(backend) = &node.terminal_backend {
-                        let target = match (&node.terminal_session, &node.terminal_pane_id) {
-                            (Some(session), Some(pane)) => {
+                        let target = match (
+                            &node.terminal_session,
+                            &node.terminal_tab_id,
+                            &node.terminal_pane_id,
+                        ) {
+                            (Some(session), Some(tab), Some(pane)) => {
+                                format!("{backend} · {session} · {tab} · {pane}")
+                            }
+                            (Some(session), _, Some(pane)) => {
                                 format!("{backend} · {session} · {pane}")
                             }
                             _ => backend.clone(),
                         };
                         row("terminal", &target);
+                    }
+                    if let Some(transport) = &node.transport {
+                        row("transport", transport);
                     }
                     if node.provider_subagent_visibility != "not_reported" {
                         row("subagent visibility", &node.provider_subagent_visibility);
@@ -3941,6 +4227,321 @@ pub mod ui_egui {
         }
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RulesyncTarget {
+        id: String,
+        label: String,
+    }
+
+    fn render_rulesync_feature(
+        ui: &mut egui::Ui,
+        label: &str,
+        feature: &str,
+        sources: &[String],
+        empty: &str,
+        targets: &[RulesyncTarget],
+        app: &mut ObservabilityApp,
+    ) {
+        let palette = crate::ui_theme::Theme::marraqueta().palette;
+        let selected_count = app
+            .rulesync_selected_targets
+            .get(feature)
+            .map_or(0, std::collections::BTreeSet::len);
+        let mut sync_clicked = false;
+        egui::Frame::new()
+            .fill(palette.bg_elevated)
+            .stroke(egui::Stroke::new(1.0_f32, palette.border))
+            .corner_radius(5.0)
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(label).strong().size(15.0));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} recurso(s) · {} de {} agentes",
+                            sources.len(),
+                            selected_count,
+                            targets.len()
+                        ))
+                        .small()
+                        .color(palette.muted),
+                    );
+                    if ui
+                        .add_enabled(
+                            !sources.is_empty() && selected_count > 0,
+                            egui::Button::new(format!("Sincronizar {label}")),
+                        )
+                        .clicked()
+                    {
+                        sync_clicked = true;
+                    }
+                });
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("Agentes destino para este recurso")
+                        .small()
+                        .strong(),
+                );
+                if targets.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Sin agentes disponibles en Rulesync.")
+                            .small()
+                            .color(palette.muted),
+                    );
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        for target in targets {
+                            let is_selected = app
+                                .rulesync_selected_targets
+                                .get(feature)
+                                .is_some_and(|selected| selected.contains(&target.id));
+                            let mut checked = is_selected;
+                            if ui.checkbox(&mut checked, &target.label).changed() {
+                                if let Some(selected) =
+                                    app.rulesync_selected_targets.get_mut(feature)
+                                {
+                                    if checked {
+                                        selected.insert(target.id.clone());
+                                    } else {
+                                        selected.remove(&target.id);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(5.0);
+                ui.label(
+                    egui::RichText::new(format!("{label} que se sincronizarán"))
+                        .small()
+                        .strong(),
+                );
+                render_rulesync_sources(ui, sources, empty, palette.muted);
+            });
+        if sync_clicked {
+            app.sync_rulesync_feature(feature);
+        }
+        ui.add_space(8.0);
+    }
+
+    fn load_skillshare_status(
+        resource_root: &Path,
+        global: bool,
+    ) -> (Option<SkillshareStatus>, Option<String>) {
+        let scope = if global { "global" } else { "project" };
+        let args = if global {
+            vec!["status", "-g", "--json"]
+        } else {
+            vec!["status", "-p", "--json"]
+        };
+        match std::process::Command::new(
+            std::env::var("SWARMS_SKILLSHARE_BIN").unwrap_or_else(|_| "skillshare".to_string()),
+        )
+        .args(args)
+        .current_dir(resource_root)
+        .output()
+        {
+            Ok(output) if output.status.success() => match serde_json::from_slice(&output.stdout) {
+                Ok(status) => (Some(status), None),
+                Err(error) => (
+                    None,
+                    Some(format!("Skillshare {scope} JSON inválido: {error}")),
+                ),
+            },
+            Ok(output) => (
+                None,
+                Some(format!(
+                    "Skillshare {scope} no disponible: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                        .lines()
+                        .next()
+                        .unwrap_or("error desconocido")
+                )),
+            ),
+            Err(error) => (
+                None,
+                Some(format!("Skillshare {scope} no disponible: {error}")),
+            ),
+        }
+    }
+
+    fn render_skillshare_summary(
+        ui: &mut egui::Ui,
+        global: Option<&SkillshareStatus>,
+        project: Option<&SkillshareStatus>,
+        error: Option<&str>,
+        palette: crate::ui_theme::Palette,
+    ) {
+        ui.label(egui::RichText::new("Skillshare · inventario global y de proyecto").strong());
+        if let Some(status) = global {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Global · {} Skills · {} agentes",
+                        status.skill_count,
+                        status.targets.len()
+                    ))
+                    .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("Fuente: {}", status.source.path))
+                        .small()
+                        .color(palette.muted),
+                );
+            });
+            render_skillshare_skill_names(ui, status, palette);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Sincronizado a:").small().strong());
+                for target in &status.targets {
+                    ui.label(
+                        egui::RichText::new(format!("{} ({})", target.name, target.synced_count))
+                            .small()
+                            .color(palette.text_dim),
+                    );
+                }
+            });
+        }
+        if let Some(status) = project {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Proyecto · {} Skills en la fuente",
+                        status.skill_count
+                    ))
+                    .small()
+                    .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("Fuente: {}", status.source.path))
+                        .small()
+                        .color(palette.muted),
+                );
+            });
+            render_skillshare_skill_names(ui, status, palette);
+        }
+        if let Some(error) = error {
+            ui.label(
+                egui::RichText::new(error)
+                    .small()
+                    .color(palette.pill_failed),
+            );
+        }
+        if global.is_none() && project.is_none() && error.is_none() {
+            ui.label(
+                egui::RichText::new("Skillshare no devolvió inventario.")
+                    .small()
+                    .color(palette.muted),
+            );
+        }
+    }
+
+    fn render_skillshare_skill_names(
+        ui: &mut egui::Ui,
+        status: &SkillshareStatus,
+        palette: crate::ui_theme::Palette,
+    ) {
+        let path = PathBuf::from(&status.source.path);
+        let mut names = fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_str().map(str::to_string)?;
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|kind| kind.is_dir() && entry.path().join("SKILL.md").is_file())
+                    .filter(|_| !status.source.skillignore.ignored_skills.contains(&name))
+                    .map(|_| name)
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        if names.is_empty() {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Skills:").small().strong());
+            for name in names {
+                ui.label(egui::RichText::new(name).small().color(palette.text_dim));
+            }
+        });
+    }
+
+    fn rulesync_targets(root: &Path) -> Vec<RulesyncTarget> {
+        let config_path = [root.join("rulesync.jsonc"), root.join("rulesync.json")]
+            .into_iter()
+            .find(|path| path.is_file());
+        let ids = config_path
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| {
+                serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|value| value.get("targets").and_then(Value::as_array).cloned())
+            })
+            .map(|values| {
+                values
+                    .into_iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| {
+                vec![
+                    "codexcli".to_string(),
+                    "claudecode".to_string(),
+                    "opencode".to_string(),
+                ]
+            });
+        ids.into_iter()
+            .map(|id| RulesyncTarget {
+                label: rulesync_target_label(&id).to_string(),
+                id,
+            })
+            .collect()
+    }
+
+    fn rulesync_sources_at(root: &Path, feature: &str) -> Vec<String> {
+        let source_root = root.join(".rulesync");
+        let mut entries = match feature {
+            "skills" => fs::read_dir(source_root.join("skills"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    entry
+                        .file_type()
+                        .ok()
+                        .filter(|kind| kind.is_dir() && path.join("SKILL.md").is_file())
+                        .and_then(|_| entry.file_name().to_str().map(str::to_string))
+                })
+                .collect(),
+            "mcp" => ["mcp.json", "mcp.jsonc"]
+                .into_iter()
+                .filter(|name| source_root.join(name).is_file())
+                .map(str::to_string)
+                .collect(),
+            "rules" => rulesync_rule_files(&source_root.join("rules")),
+            _ => Vec::new(),
+        };
+        entries.sort();
+        entries
+    }
+
+    fn rulesync_target_label(id: &str) -> &str {
+        match id {
+            "copilot" => "GitHub Copilot",
+            "cursor" => "Cursor",
+            "claudecode" => "Claude Code",
+            "codexcli" => "Codex CLI",
+            "opencode" => "OpenCode",
+            "agentsskills" => "Agent Skills",
+            "agentsmd" => "AGENTS.md",
+            "antigravity-cli" => "AGY / Antigravity CLI",
+            "antigravity-ide" => "Antigravity IDE",
+            other => other,
+        }
+    }
+
     fn rulesync_rule_files(root: &Path) -> Vec<String> {
         let mut files = Vec::new();
         let mut pending = vec![root.to_path_buf()];
@@ -4234,10 +4835,10 @@ pub mod ui_egui {
     fn quota_short_label(key: &str) -> &str {
         match key {
             "agy:claude_gpt" => "Claude",
-            "agy:gemini" => "Gemini",
+            "agy:gemini" => "AGY · Gemini",
             "codex:Codex" => "Codex",
             "codex:Hermes" => "Codex 2",
-            "zai:coding" => "Coding",
+            "zai:coding" => "GLM · Z.AI",
             _ => key,
         }
     }
@@ -4406,6 +5007,89 @@ pub mod ui_egui {
         }
     }
 
+    fn configured_quota_keys(router: &crate::model::Router) -> Vec<String> {
+        router
+            .providers
+            .values()
+            .filter_map(|provider| provider.quota_key.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn quota_snapshot_path(root: &Path, policy: &crate::model::QuotaPolicy) -> PathBuf {
+        if let Some(path) = std::env::var_os("SWARMS_QUOTA_SNAPSHOT") {
+            return normalize_path(PathBuf::from(path));
+        }
+        let configured = Path::new(&policy.snapshot_path);
+        let configured = if configured.is_absolute() {
+            configured.to_path_buf()
+        } else {
+            root.join(configured)
+        };
+        let mut candidates = vec![configured.clone(), root.join("quota_snapshot.json")];
+        if let Some(parent) = root.parent() {
+            candidates.push(parent.join("ai-usage-monitor/quota_snapshot.json"));
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            candidates
+                .push(PathBuf::from(home).join(".config/ai-usage-monitor/quota_snapshot.json"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates
+                .push(PathBuf::from(local_app_data).join("ai-usage-monitor/quota_snapshot.json"));
+        }
+        candidates
+            .into_iter()
+            .map(normalize_path)
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| normalize_path(configured))
+    }
+
+    fn normalize_path(path: PathBuf) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component.as_os_str()),
+            }
+        }
+        normalized
+    }
+
+    fn find_repository_root(start: &Path) -> Option<PathBuf> {
+        start
+            .ancestors()
+            .find(|ancestor| {
+                ancestor.join("rust/Cargo.toml").is_file()
+                    && ancestor.join("config/swarm_router.json").is_file()
+            })
+            .map(Path::to_path_buf)
+    }
+
+    fn resolve_rulesync_root(
+        resource_root: &Path,
+        repository_root: Option<&Path>,
+        home: Option<&Path>,
+        explicit: Option<&Path>,
+    ) -> PathBuf {
+        if let Some(path) = explicit {
+            return path.to_path_buf();
+        }
+        for candidate in [home, Some(resource_root), repository_root]
+            .into_iter()
+            .flatten()
+        {
+            if candidate.join(".rulesync").is_dir() {
+                return candidate.to_path_buf();
+            }
+        }
+        resource_root.to_path_buf()
+    }
+
     fn find_workspace_root(run_root: &Path) -> Option<PathBuf> {
         run_root.ancestors().find_map(|ancestor| {
             ancestor
@@ -4547,6 +5231,8 @@ pub mod ui_egui {
             assert_eq!(quota_label("custom:plan"), "custom:plan");
             assert_eq!(quota_short_label("codex:Codex"), "Codex");
             assert_eq!(quota_short_label("codex:Hermes"), "Codex 2");
+            assert_eq!(quota_short_label("agy:gemini"), "AGY · Gemini");
+            assert_eq!(quota_short_label("zai:coding"), "GLM · Z.AI");
             assert_eq!(
                 quota_account_label("codex:Codex"),
                 "Codex · Cuenta principal"
@@ -4576,6 +5262,117 @@ pub mod ui_egui {
             let accounts = load_quota_identities(&snapshot).unwrap();
 
             assert_eq!(accounts.get("codex:Codex").unwrap(), "one@example.com");
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn quota_refresh_reads_observational_snapshot_when_guard_is_disabled() {
+            let root = std::env::temp_dir().join(format!("swarms-quota-ui-{}", unix_ms()));
+            let run_root = root.join(".agent/swarm/runs");
+            fs::create_dir_all(&run_root).unwrap();
+            fs::create_dir_all(root.join("config")).unwrap();
+            fs::write(
+                root.join("config/swarm_router.json"),
+                r#"{
+                    "quota_policy": {"enabled": false, "snapshot_path": "quota.json"},
+                    "providers": {
+                        "mock": {"enabled": true, "provider": "mock", "model": "mock-worker", "wrapper": "mock"}
+                    }
+                }"#,
+            )
+            .unwrap();
+            fs::write(
+                root.join("quota.json"),
+                format!(
+                    r#"{{"generated_at_epoch":{},"quotas":{{"codex:Codex":{{"windows":{{"5h":72.0}}}}}}}}"#,
+                    unix_ms() / 1000
+                ),
+            )
+            .unwrap();
+
+            let mut app = ObservabilityApp::new(run_root, None, None, None);
+            app.refresh_quotas_if_due();
+
+            assert_eq!(app.quota_snapshot.as_ref().unwrap().entries.len(), 1);
+            assert!(app.quota_error.is_none());
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn quota_snapshot_path_normalizes_missing_external_source() {
+            let root = PathBuf::from("C:/Projects/SWARMS");
+            let policy = crate::model::QuotaPolicy {
+                snapshot_path: "../ai-usage-monitor/quota_snapshot.json".to_string(),
+                ..Default::default()
+            };
+
+            assert_eq!(
+                quota_snapshot_path(&root, &policy),
+                PathBuf::from("C:/Projects/ai-usage-monitor/quota_snapshot.json")
+            );
+        }
+
+        #[test]
+        fn rulesync_targets_are_read_as_named_agents() {
+            let root = std::env::temp_dir().join(format!("swarms-targets-{}", unix_ms()));
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join("rulesync.jsonc"),
+                r#"{"targets":["codexcli","opencode","agentsskills"]}"#,
+            )
+            .unwrap();
+
+            let targets = rulesync_targets(&root);
+
+            assert_eq!(
+                targets,
+                vec![
+                    RulesyncTarget {
+                        id: "codexcli".to_string(),
+                        label: "Codex CLI".to_string(),
+                    },
+                    RulesyncTarget {
+                        id: "opencode".to_string(),
+                        label: "OpenCode".to_string(),
+                    },
+                    RulesyncTarget {
+                        id: "agentsskills".to_string(),
+                        label: "Agent Skills".to_string(),
+                    },
+                ]
+            );
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn rulesync_targets_use_rulesync_defaults_without_project_config() {
+            let root = std::env::temp_dir().join(format!("swarms-target-defaults-{}", unix_ms()));
+            fs::create_dir_all(&root).unwrap();
+
+            let targets = rulesync_targets(&root);
+
+            assert_eq!(
+                targets
+                    .iter()
+                    .map(|target| target.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["codexcli", "claudecode", "opencode"]
+            );
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
+        fn rulesync_prefers_global_user_source_over_project_source() {
+            let root = std::env::temp_dir().join(format!("swarms-global-rulesync-{}", unix_ms()));
+            let project = root.join("project");
+            let home = root.join("home");
+            fs::create_dir_all(project.join(".rulesync/rules")).unwrap();
+            fs::create_dir_all(home.join(".rulesync/rules")).unwrap();
+
+            assert_eq!(
+                resolve_rulesync_root(&project, None, Some(&home), None),
+                home
+            );
             fs::remove_dir_all(root).ok();
         }
 
@@ -4693,6 +5490,25 @@ pub mod ui_egui {
         }
 
         #[test]
+        fn rulesync_root_falls_back_to_repository_for_external_run_workspace() {
+            let root = std::env::temp_dir().join(format!("swarms-rulesync-root-{}", unix_ms()));
+            let repository = root.join("repository");
+            let workspace = repository.join(".cache/verification-workspace");
+            fs::create_dir_all(repository.join("rust")).unwrap();
+            fs::create_dir_all(repository.join("config")).unwrap();
+            fs::create_dir_all(repository.join(".rulesync/rules")).unwrap();
+            fs::create_dir_all(&workspace).unwrap();
+            fs::write(repository.join("rust/Cargo.toml"), "[package]\n").unwrap();
+            fs::write(repository.join("config/swarm_router.json"), "{}\n").unwrap();
+
+            assert_eq!(
+                resolve_rulesync_root(&workspace, Some(&repository), None, None),
+                repository
+            );
+            fs::remove_dir_all(root).ok();
+        }
+
+        #[test]
         fn task_snapshot_preserves_herdr_terminal_fields() {
             let task: serde_json::Value = serde_json::from_str(
                 r#"{
@@ -4701,6 +5517,7 @@ pub mod ui_egui {
                 "terminal_backend": "herdr",
                 "terminal_session": "swarms",
                 "terminal_workspace_id": "ws-abc",
+                "terminal_tab_id": "tab-456",
                 "terminal_pane_id": "pane-123"
             }"#,
             )
@@ -4714,6 +5531,7 @@ pub mod ui_egui {
             assert_eq!(node.terminal_backend.as_deref(), Some("herdr"));
             assert_eq!(node.terminal_session.as_deref(), Some("swarms"));
             assert_eq!(node.terminal_workspace_id.as_deref(), Some("ws-abc"));
+            assert_eq!(node.terminal_tab_id.as_deref(), Some("tab-456"));
             assert_eq!(node.terminal_pane_id.as_deref(), Some("pane-123"));
         }
 

@@ -21,7 +21,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn relative_age_is_compact_and_handles_missing_timestamps() {
     let now = 10_000_000u128;
-    assert_eq!(relative_age(Some(now - 30_000), now), "now");
+    assert_eq!(relative_age(Some(now - 30_000), now), "just now");
     assert_eq!(relative_age(Some(now - 5 * 60_000), now), "5m ago");
     assert_eq!(relative_age(Some(now - 2 * 3_600_000), now), "2h ago");
     assert_eq!(relative_age(None, now), "unknown");

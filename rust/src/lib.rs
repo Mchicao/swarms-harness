@@ -1,5 +1,6 @@
 //! SWARMS runtime library — deterministic, self-contained Rust coordinator.
 
+pub mod acp;
 pub mod adapter;
 pub mod cli;
 pub mod config;

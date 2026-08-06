@@ -4,7 +4,7 @@
 //! produce [`CliSpec`] structs that the runtime executes via [`std::process`];
 //! `openai_compat` uses [`ureq`] for native HTTPS.
 
-use crate::model::{Provider, Task, ThinkingLevel};
+use crate::model::{AcpConfig, Provider, Task, ThinkingLevel};
 use crate::telemetry::Usage;
 use serde_json::{json, Value};
 use std::env;
@@ -50,6 +50,12 @@ impl AdapterKind {
     /// Whether this adapter can capture and resume a session ID.
     pub fn supports_session_reuse(&self) -> bool {
         matches!(self, Self::Codex | Self::OpenCode | Self::Kilo)
+    }
+
+    /// ACP is a provider process transport, not a property of the model.
+    /// Mock and HTTP routes stay on their existing native paths.
+    pub fn supports_acp(&self) -> bool {
+        !matches!(self, Self::Mock | Self::OpenAiCompat)
     }
 }
 
@@ -121,6 +127,38 @@ pub fn build_cli_command(
         AdapterKind::Agy => build_agy(task, prompt_text),
         _ => Err(format!("not a CLI adapter: {kind:?}")),
     }
+}
+
+/// Build the ACP launcher command without probing or starting the provider.
+/// Explicit configuration wins; otherwise only agents with a documented ACP
+/// subcommand receive a default.
+pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpec> {
+    if !kind.supports_acp() {
+        return None;
+    }
+    let (program, mut args) = match config.command.as_deref() {
+        Some(command) if !command.trim().is_empty() => (command.to_string(), Vec::new()),
+        _ => match kind {
+            AdapterKind::OpenCode => (
+                which("opencode").unwrap_or_else(|| "opencode".to_string()),
+                vec!["acp".to_string()],
+            ),
+            AdapterKind::Kilo => (
+                which("kilo").unwrap_or_else(|| "kilo".to_string()),
+                vec!["acp".to_string()],
+            ),
+            // The repository's gemini wrapper currently points at agy; require
+            // an explicit command so a future Gemini ACP launch is intentional.
+            AdapterKind::Agy | AdapterKind::Codex | AdapterKind::Hermes => return None,
+            AdapterKind::Mock | AdapterKind::OpenAiCompat => return None,
+        },
+    };
+    args.extend(config.args.iter().cloned());
+    Some(CliSpec {
+        program,
+        args,
+        env: Vec::new(),
+    })
 }
 
 fn build_codex(
@@ -399,6 +437,43 @@ pub fn parse_cli_usage(kind: AdapterKind, output: &str) -> Usage {
             .pointer("/cache/write")
             .and_then(Value::as_u64)
             .unwrap_or_else(|| usage_u64(usage, &["cache_write_tokens"]));
+        totals[3] += usage_u64(usage, &["output", "output_tokens", "completion_tokens"]);
+        totals[4] += usage_u64(usage, &["reasoning", "reasoning_tokens"]);
+    }
+    if !found {
+        return Usage::missing();
+    }
+    Usage {
+        input: totals[0].to_string(),
+        cache_read: totals[1].to_string(),
+        cache_write: totals[2].to_string(),
+        output: totals[3].to_string(),
+        reasoning: totals[4].to_string(),
+    }
+}
+
+/// Parse usage objects embedded in ACP updates without inventing zeros when
+/// the provider does not report token telemetry.
+pub fn parse_acp_usage(output: &str) -> Usage {
+    let mut totals = [0_u64; 5];
+    let mut found = false;
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let usage = value
+            .pointer("/update/usage")
+            .or_else(|| value.pointer("/params/update/usage"))
+            .or_else(|| value.get("usage"));
+        let Some(usage) = usage else { continue };
+        found = true;
+        totals[0] += usage_u64(usage, &["input", "input_tokens", "prompt_tokens"]);
+        totals[1] += usage_u64(usage, &["cache_read", "cached_input_tokens"]);
+        totals[2] += usage_u64(usage, &["cache_write", "cache_creation_input_tokens"]);
         totals[3] += usage_u64(usage, &["output", "output_tokens", "completion_tokens"]);
         totals[4] += usage_u64(usage, &["reasoning", "reasoning_tokens"]);
     }

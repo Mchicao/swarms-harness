@@ -1,7 +1,11 @@
 //! Deterministic DAG scheduler with persisted state, retries, and resume.
 
+use crate::acp::{self, Event};
 use crate::adapter::{self, AdapterKind, CliSpec};
-use crate::model::{find_dependency_task, Plan, Router, SessionMode, Task, ThinkingLevel};
+use crate::model::{
+    find_dependency_task, ExecutionFallback, ExecutionTransport, Plan, Router, SessionMode, Task,
+    ThinkingLevel,
+};
 use crate::quota::QuotaGuard;
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::steering::{self, AppliedSteer};
@@ -29,6 +33,7 @@ struct WorkerTerminal {
     backend: String,
     session: Option<String>,
     workspace_id: Option<String>,
+    tab_id: Option<String>,
     pane_id: Option<String>,
 }
 
@@ -225,6 +230,8 @@ fn task_checkpoint_key_for_definition(
         "verify": task.spec.verify,
         "thinking": task.spec.effective_thinking(plan),
         "session": session,
+        "execution": plan.execution,
+        "terminal": plan.terminal,
         "execution_timeout": "disabled",
     });
     if include_max_attempts {
@@ -281,6 +288,8 @@ fn save_workflow(
     heartbeat_interval_seconds: u64,
     project_id: &str,
     project_name: &str,
+    execution: &crate::model::ExecutionConfig,
+    terminal: &crate::model::TerminalConfig,
 ) -> Result<()> {
     let wf = json!({
         "run_id": run_id,
@@ -295,6 +304,8 @@ fn save_workflow(
         "task_count": task_count,
         "global_max_concurrency": global_cap,
         "provider_max_concurrency": caps,
+        "execution": execution,
+        "terminal": terminal,
     });
     write_json_value(&run_dir.join("workflow.json"), &wf)
 }
@@ -481,6 +492,8 @@ pub fn execute(
             heartbeat_seconds,
             &project_id,
             &project_name,
+            &plan.execution,
+            &plan.terminal,
         )?;
         append_event(
             &run_dir,
@@ -522,7 +535,13 @@ pub fn execute(
             let work_dir = run_dir.join("results").join(&task.id);
             let _ = fs::create_dir_all(&work_dir);
             let _ = fs::write(work_dir.join("prompt.txt"), &prompt);
-            let terminal = start_visible_worker_console(&work_dir, task);
+            let terminal = start_visible_worker_console(
+                workspace_root,
+                &run_dir,
+                &work_dir,
+                task,
+                &plan.terminal,
+            );
 
             let sender = sender.clone();
             let task = task.clone();
@@ -539,11 +558,20 @@ pub fn execute(
                 state.last_progress_unix_ms = state.heartbeat_unix_ms;
                 state.worker_log_bytes = 0;
                 state.worker_log_modified_unix_ms = None;
+                state.transport = Some(
+                    match plan.execution.transport {
+                        ExecutionTransport::Auto => "auto",
+                        ExecutionTransport::Acp => "acp",
+                        ExecutionTransport::CliBatch => "cli_batch",
+                    }
+                    .to_string(),
+                );
                 state.terminal_backend = terminal.as_ref().map(|value| value.backend.clone());
                 state.terminal_session = terminal.as_ref().and_then(|value| value.session.clone());
                 state.terminal_workspace_id = terminal
                     .as_ref()
                     .and_then(|value| value.workspace_id.clone());
+                state.terminal_tab_id = terminal.as_ref().and_then(|value| value.tab_id.clone());
                 state.terminal_pane_id = terminal.as_ref().and_then(|value| value.pane_id.clone());
                 save_task_state(&run_dir, state)?;
             }
@@ -595,6 +623,7 @@ pub fn execute(
                     state
                         .terminal_workspace_id
                         .clone_from(&previous.terminal_workspace_id);
+                    state.terminal_tab_id.clone_from(&previous.terminal_tab_id);
                     state
                         .terminal_pane_id
                         .clone_from(&previous.terminal_pane_id);
@@ -826,15 +855,20 @@ pub(crate) fn run_task(
             thinking,
             active_session_id.as_deref(),
             root,
+            run_dir,
             &work_dir,
+            &plan.execution,
         );
 
         match exec_result {
             Ok(mut exec) => {
-                let mut new_session_id = adapter::parse_session_id(
-                    AdapterKind::from_wrapper(&task.provider.wrapper).unwrap_or(AdapterKind::Mock),
-                    &exec.output,
-                );
+                let mut new_session_id = exec.session_id.clone().or_else(|| {
+                    adapter::parse_session_id(
+                        AdapterKind::from_wrapper(&task.provider.wrapper)
+                            .unwrap_or(AdapterKind::Mock),
+                        &exec.output,
+                    )
+                });
                 if let Some(ref sid) = new_session_id {
                     if let Some(key) = &session_config.key {
                         let _ = session_store.put(session::SessionEntry {
@@ -904,22 +938,28 @@ pub(crate) fn run_task(
                             thinking,
                             new_session_id.as_deref().or(active_session_id.as_deref()),
                             root,
+                            run_dir,
                             &work_dir,
+                            &plan.execution,
                         );
                         match steered {
                             Ok(next) => {
                                 let command_id = message.id.clone();
-                                let next_session_id = adapter::parse_session_id(
-                                    AdapterKind::from_wrapper(&task.provider.wrapper)
-                                        .unwrap_or(AdapterKind::Mock),
-                                    &next.output,
-                                );
+                                let next_session_id = next.session_id.clone().or_else(|| {
+                                    adapter::parse_session_id(
+                                        AdapterKind::from_wrapper(&task.provider.wrapper)
+                                            .unwrap_or(AdapterKind::Mock),
+                                        &next.output,
+                                    )
+                                });
                                 if next_session_id.is_some() {
                                     new_session_id = next_session_id;
                                 }
                                 preserve_steering_log(&work_dir, &previous_log, &message.prompt);
                                 merge_usage(&mut exec.usage, &next.usage);
                                 exec.output = next.output;
+                                exec.transport = next.transport;
+                                exec.session_id = next.session_id;
                                 let _ = steering::mark_applied(
                                     run_dir,
                                     &task.id,
@@ -1013,6 +1053,7 @@ pub(crate) fn run_task(
                     verified,
                     verify_error,
                     &exec.usage,
+                    Some(exec.transport),
                 );
             }
             Err(e) => {
@@ -1190,18 +1231,58 @@ fn merge_usage(total: &mut Usage, next: &Usage) {
 struct AdapterExec {
     output: String,
     usage: Usage,
+    session_id: Option<String>,
+    transport: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_adapter(
     task: &Task,
     prompt: &str,
     thinking: ThinkingLevel,
     session_id: Option<&str>,
     root: &Path,
+    run_dir: &Path,
     work_dir: &Path,
+    execution: &crate::model::ExecutionConfig,
 ) -> Result<AdapterExec> {
     let kind = AdapterKind::from_wrapper(&task.provider.wrapper)
         .ok_or_else(|| format!("unsupported wrapper: {}", task.provider.wrapper))?;
+
+    let acp_spec = adapter::build_acp_command(kind, &execution.acp);
+    let use_acp =
+        !matches!(execution.transport, ExecutionTransport::CliBatch) && acp_spec.is_some();
+    if use_acp {
+        let spec = acp_spec.expect("checked above");
+        match execute_acp(
+            task,
+            prompt,
+            session_id,
+            root,
+            run_dir,
+            work_dir,
+            &execution.acp,
+            &spec,
+        ) {
+            Ok(result) => return Ok(result),
+            Err(failure)
+                if failure.safe_fallback
+                    && matches!(execution.fallback, ExecutionFallback::CliBatch) =>
+            {
+                append_event(
+                    run_dir,
+                    "acp_fallback_to_cli",
+                    json!({"task_id": task.id, "error": failure.message}),
+                );
+            }
+            Err(failure) => return Err(failure.message),
+        }
+    } else if matches!(execution.transport, ExecutionTransport::Acp) {
+        return Err(format!(
+            "route '{}' requested ACP but wrapper '{}' has no ACP command",
+            task.spec.route, task.provider.wrapper
+        ));
+    }
 
     match kind {
         AdapterKind::Mock => {
@@ -1210,6 +1291,8 @@ fn execute_adapter(
             Ok(AdapterExec {
                 output: out.stdout,
                 usage: Usage::offline_mock(),
+                session_id: None,
+                transport: "mock".to_string(),
             })
         }
         AdapterKind::OpenAiCompat => {
@@ -1218,6 +1301,8 @@ fn execute_adapter(
             Ok(AdapterExec {
                 output: out.content,
                 usage: out.usage,
+                session_id: None,
+                transport: "http".to_string(),
             })
         }
         _ => {
@@ -1232,8 +1317,183 @@ fn execute_adapter(
             let log_path = work_dir.join("worker.log");
             let output = execute_cli(kind, spec, root, &log_path)?;
             let usage = adapter::parse_cli_usage(kind, &output);
-            Ok(AdapterExec { output, usage })
+            Ok(AdapterExec {
+                output,
+                usage,
+                session_id: None,
+                transport: "cli_batch".to_string(),
+            })
         }
+    }
+}
+
+struct AcpFailure {
+    message: String,
+    safe_fallback: bool,
+}
+
+impl AcpFailure {
+    fn safe(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            safe_fallback: true,
+        }
+    }
+
+    fn unsafe_after_prompt(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            safe_fallback: false,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_acp(
+    task: &Task,
+    prompt: &str,
+    existing_session: Option<&str>,
+    root: &Path,
+    run_dir: &Path,
+    work_dir: &Path,
+    config: &crate::model::AcpConfig,
+    spec: &CliSpec,
+) -> std::result::Result<AdapterExec, AcpFailure> {
+    let log_path = work_dir.join("worker.log");
+    let _ = fs::File::create(&log_path);
+    let startup = Duration::from_secs(config.startup_timeout_seconds);
+    let cancel_grace = Duration::from_secs(config.cancel_grace_seconds);
+    let mut client = acp::Client::launch(
+        &spec.program,
+        &spec.args,
+        root,
+        &log_path,
+        startup,
+        cancel_grace,
+    )
+    .map_err(AcpFailure::safe)?;
+    let session_id = client
+        .open_session(root, existing_session, startup)
+        .map_err(AcpFailure::safe)?;
+    append_event(
+        run_dir,
+        "acp_session_opened",
+        json!({"task_id": task.id, "session_id": session_id, "reused": existing_session.is_some()}),
+    );
+    let mut request_id = client.start_prompt(prompt).map_err(AcpFailure::safe)?;
+    let mut output = String::new();
+    let mut pending_steers = Vec::new();
+    let mut cancel_sent = false;
+    let mut cancel_deadline = None;
+
+    loop {
+        if cancel_sent && cancel_deadline.is_some_and(|deadline| Instant::now() > deadline) {
+            return Err(AcpFailure::unsafe_after_prompt(
+                "ACP agent did not acknowledge cancellation within the configured grace period",
+            ));
+        }
+        if let Some(event) = client
+            .next_event(Duration::from_millis(250))
+            .map_err(AcpFailure::unsafe_after_prompt)?
+        {
+            match event {
+                Event::Update(params) => {
+                    append_acp_log(&log_path, &params);
+                    if let Some(text) = acp::update_text(&params) {
+                        output.push_str(text);
+                    }
+                }
+                Event::Notification { method, params } => {
+                    append_acp_log(
+                        &log_path,
+                        &json!({"notification": method, "params": params}),
+                    );
+                }
+                Event::Response { id, result, error } if id == request_id => {
+                    if let Some(error) = error {
+                        if cancel_sent && !pending_steers.is_empty() {
+                            return Err(AcpFailure::unsafe_after_prompt(format!(
+                                "ACP cancelled prompt failed: {error}"
+                            )));
+                        }
+                        return Err(AcpFailure::unsafe_after_prompt(format!(
+                            "ACP prompt failed: {error}"
+                        )));
+                    }
+                    if cancel_sent && !pending_steers.is_empty() {
+                        let steer = pending_steers
+                            .iter()
+                            .map(|message: &steering::SteerMessage| message.prompt.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        let continued = format!(
+                            "{prompt}\n\nUSER STEER PROMPT\n{steer}\n\nApply this new direction before finishing the task."
+                        );
+                        request_id = client
+                            .start_prompt(&continued)
+                            .map_err(AcpFailure::unsafe_after_prompt)?;
+                        cancel_sent = false;
+                        cancel_deadline = None;
+                        continue;
+                    }
+                    for message in pending_steers.drain(..) {
+                        let _ = steering::mark_applied(
+                            run_dir,
+                            &task.id,
+                            &AppliedSteer {
+                                message,
+                                status: "applied".to_string(),
+                                error: None,
+                            },
+                        );
+                    }
+                    let response = result.unwrap_or(Value::Null);
+                    let stop = acp::stop_reason(&response).unwrap_or("unknown");
+                    append_event(
+                        run_dir,
+                        "acp_prompt_finished",
+                        json!({"task_id": task.id, "stop_reason": stop}),
+                    );
+                    let final_output = if output.is_empty() {
+                        fs::read_to_string(&log_path).unwrap_or_default()
+                    } else {
+                        output
+                    };
+                    return Ok(AdapterExec {
+                        output: final_output,
+                        usage: adapter::parse_acp_usage(
+                            &fs::read_to_string(&log_path).unwrap_or_default(),
+                        ),
+                        session_id: Some(session_id),
+                        transport: "acp".to_string(),
+                    });
+                }
+                Event::Response { .. } => {}
+            }
+        }
+
+        if !cancel_sent {
+            let messages =
+                steering::drain(run_dir, &task.id).map_err(AcpFailure::unsafe_after_prompt)?;
+            if !messages.is_empty() {
+                for message in messages {
+                    append_acp_log(
+                        &log_path,
+                        &json!({"type": "swarms_steer", "prompt": message.prompt}),
+                    );
+                    pending_steers.push(message);
+                }
+                client.cancel().map_err(AcpFailure::unsafe_after_prompt)?;
+                cancel_sent = true;
+                cancel_deadline = Some(Instant::now() + client.cancel_grace());
+            }
+        }
+    }
+}
+
+fn append_acp_log(path: &Path, value: &Value) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{value}");
     }
 }
 
@@ -1321,19 +1581,27 @@ fn signal_worker_console_finished(log_path: &Path) {
 /// worker remain in the background; the window shows context, tails
 /// `worker.log`, and closes after the completion signal.
 #[cfg(windows)]
-fn start_visible_worker_console(work_dir: &Path, task: &Task) -> Option<WorkerTerminal> {
+fn start_visible_worker_console(
+    workspace_root: &Path,
+    run_dir: &Path,
+    work_dir: &Path,
+    task: &Task,
+    terminal: &crate::model::TerminalConfig,
+) -> Option<WorkerTerminal> {
     use std::os::windows::process::CommandExt;
 
-    let backend = worker_console_backend();
+    let backend = worker_console_backend(terminal);
     let use_herd = backend == "herdr";
     let legacy_console_hidden = std::env::var("SWARMS_WORKER_CONSOLES")
         .map(|value| value.eq_ignore_ascii_case("hidden") || value == "0")
         .unwrap_or(false);
-    if !should_start_worker_terminal(
-        AdapterKind::from_wrapper(&task.provider.wrapper),
-        use_herd,
-        legacy_console_hidden,
-    ) {
+    if backend == "hidden"
+        || !should_start_worker_terminal(
+            AdapterKind::from_wrapper(&task.provider.wrapper),
+            use_herd,
+            legacy_console_hidden,
+        )
+    {
         return None;
     }
     let log_path = work_dir.join("worker.log");
@@ -1346,8 +1614,23 @@ fn start_visible_worker_console(work_dir: &Path, task: &Task) -> Option<WorkerTe
         .to_string_lossy()
         .replace('\'', "''");
     let title = format!("SWARMS | {} | {}", task.id, task.provider.model).replace('\'', "''");
+    let pane_label = herdr_pane_label(task);
     if use_herd {
-        return start_herdr_worker_pane(work_dir, &title, &path, &prompt_path);
+        let result = start_herdr_worker_pane(
+            workspace_root,
+            run_dir,
+            work_dir,
+            terminal.workspace_scope,
+            &task.stage,
+            &pane_label,
+            &title,
+            &path,
+            &prompt_path,
+        );
+        if result.is_some() || terminal.on_unavailable != crate::model::TerminalUnavailable::Native
+        {
+            return result;
+        }
     }
     let script = worker_console_script(&title, &path, &prompt_path);
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
@@ -1359,6 +1642,7 @@ fn start_visible_worker_console(work_dir: &Path, task: &Task) -> Option<WorkerTe
         backend: "windows_console".to_string(),
         session: None,
         workspace_id: None,
+        tab_id: None,
         pane_id: None,
     })
 }
@@ -1375,10 +1659,15 @@ fn should_start_worker_terminal(
 /// Herd is opt-in while its native Windows support remains beta. The worker
 /// process stays under SWARMS, preserving quotas, raw logs, retries and resume.
 #[cfg(windows)]
-fn worker_console_backend() -> String {
+fn worker_console_backend(terminal: &crate::model::TerminalConfig) -> String {
     std::env::var("SWARMS_TERMINAL_BACKEND")
-        .unwrap_or_else(|_| "native".to_string())
-        .to_ascii_lowercase()
+        .ok()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| match terminal.backend {
+            crate::model::TerminalBackend::Herdr => "herdr".to_string(),
+            crate::model::TerminalBackend::Hidden => "hidden".to_string(),
+            crate::model::TerminalBackend::Native => "native".to_string(),
+        })
 }
 
 #[cfg(windows)]
@@ -1405,70 +1694,233 @@ fn herdr_session() -> String {
 }
 
 #[cfg(windows)]
+#[derive(Clone, Debug)]
+struct HerdrRunWorkspace {
+    session: String,
+    workspace_id: String,
+    root_tab_id: String,
+    root_pane_id: String,
+    tabs: HashMap<String, HerdrRunTab>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug)]
+struct HerdrRunTab {
+    tab_id: String,
+    root_pane_id: String,
+    worker_count: usize,
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn start_herdr_worker_pane(
+    workspace_root: &Path,
+    run_dir: &Path,
     work_dir: &Path,
+    scope: crate::model::TerminalWorkspaceScope,
+    stage: &str,
+    pane_label: &str,
     title: &str,
     log_path: &str,
     prompt_path: &str,
 ) -> Option<WorkerTerminal> {
     static HERDR_START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static HERDR_WORKSPACES: OnceLock<Mutex<HashMap<String, HerdrRunWorkspace>>> = OnceLock::new();
     let herdr = herdr_program();
     let session = herdr_session();
-    let herd_cwd = work_dir.canonicalize().ok()?;
+    let workspace_cwd = if scope == crate::model::TerminalWorkspaceScope::Worker {
+        work_dir
+    } else {
+        workspace_root
+    };
+    let root_cwd = workspace_cwd.canonicalize().ok()?;
+    let run_key_path = if scope == crate::model::TerminalWorkspaceScope::Worker {
+        work_dir
+    } else {
+        run_dir
+    };
+    let run_key = run_key_path
+        .canonicalize()
+        .ok()?
+        .to_string_lossy()
+        .to_string();
     let _lock = HERDR_START_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .ok()?;
-    let running = herdr_server_is_running(&herdr, &session);
-    if !running {
-        // Herd's Windows preview server is most reliable when started through
-        // the same PowerShell process model documented by Herd itself.
-        let launch = format!(
-            "Start-Process -FilePath '{}' -ArgumentList @('--session','{}','server') -WindowStyle Hidden",
-            herdr.replace('\'', "''"),
-            session.replace('\'', "''")
-        );
-        Command::new("powershell")
-            .args(["-NoLogo", "-NoProfile", "-Command", &launch])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        for _ in 0..10 {
-            thread::sleep(Duration::from_millis(100));
-            if herdr_server_is_running(&herdr, &session) {
-                break;
+    let workspaces = HERDR_WORKSPACES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = workspaces.lock().ok()?;
+    let mut workspace = if let Some(existing) = registry.get(&run_key) {
+        existing.clone()
+    } else {
+        if !herdr_server_is_running(&herdr, &session) {
+            let launch = format!(
+                "Start-Process -FilePath '{}' -ArgumentList @('--session','{}','server') -WindowStyle Hidden",
+                herdr.replace('\'', "''"),
+                session.replace('\'', "''")
+            );
+            Command::new("powershell")
+                .args(["-NoLogo", "-NoProfile", "-Command", &launch])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok()?;
+            for _ in 0..10 {
+                thread::sleep(Duration::from_millis(100));
+                if herdr_server_is_running(&herdr, &session) {
+                    break;
+                }
             }
         }
-    }
-    let output = Command::new(&herdr)
+        if !herdr_server_is_running(&herdr, &session) {
+            return None;
+        }
+        let run_id = run_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("run");
+        let label = if scope == crate::model::TerminalWorkspaceScope::Worker {
+            title.to_string()
+        } else {
+            format!("SWARMS | {run_id}")
+        };
+        let output = Command::new(&herdr)
+            .args([
+                "--session",
+                &session,
+                "workspace",
+                "create",
+                "--cwd",
+                &root_cwd.to_string_lossy(),
+                "--label",
+                &label,
+                "--no-focus",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let result = serde_json::from_slice::<Value>(&output.stdout).ok()?;
+        let created = HerdrRunWorkspace {
+            session: session.clone(),
+            workspace_id: result
+                .pointer("/result/workspace/workspace_id")?
+                .as_str()?
+                .to_string(),
+            root_tab_id: result
+                .pointer("/result/tab/tab_id")
+                .or_else(|| result.pointer("/result/workspace/tab_id"))?
+                .as_str()?
+                .to_string(),
+            root_pane_id: result
+                .pointer("/result/root_pane/pane_id")?
+                .as_str()?
+                .to_string(),
+            tabs: HashMap::new(),
+        };
+        registry.insert(run_key.clone(), created.clone());
+        created
+    };
+
+    let stage_key = stage.to_string();
+    let stage_label = herdr_label(&format!("Phase | {stage}"), 80);
+    let tab = if let Some(existing) = workspace.tabs.get(&stage_key) {
+        existing.clone()
+    } else {
+        let created = if workspace.tabs.is_empty() {
+            let _ = Command::new(&herdr)
+                .args([
+                    "--session",
+                    &workspace.session,
+                    "tab",
+                    "rename",
+                    &workspace.root_tab_id,
+                    &stage_label,
+                ])
+                .status();
+            HerdrRunTab {
+                tab_id: workspace.root_tab_id.clone(),
+                root_pane_id: workspace.root_pane_id.clone(),
+                worker_count: 0,
+            }
+        } else {
+            let output = Command::new(&herdr)
+                .args([
+                    "--session",
+                    &workspace.session,
+                    "tab",
+                    "create",
+                    "--workspace",
+                    &workspace.workspace_id,
+                    "--cwd",
+                    &root_cwd.to_string_lossy(),
+                    "--label",
+                    &stage_label,
+                    "--no-focus",
+                ])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let result = serde_json::from_slice::<Value>(&output.stdout).ok()?;
+            HerdrRunTab {
+                tab_id: result.pointer("/result/tab/tab_id")?.as_str()?.to_string(),
+                root_pane_id: result
+                    .pointer("/result/root_pane/pane_id")?
+                    .as_str()?
+                    .to_string(),
+                worker_count: 0,
+            }
+        };
+        workspace.tabs.insert(stage_key.clone(), created.clone());
+        created
+    };
+
+    let pane_id = if tab.worker_count == 0 {
+        tab.root_pane_id.clone()
+    } else {
+        let output = Command::new(&herdr)
+            .args([
+                "--session",
+                &workspace.session,
+                "pane",
+                "split",
+                &tab.root_pane_id,
+                "--direction",
+                "down",
+                "--no-focus",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        serde_json::from_slice::<Value>(&output.stdout)
+            .ok()?
+            .pointer("/result/pane/pane_id")?
+            .as_str()?
+            .to_string()
+    };
+    let _ = Command::new(&herdr)
         .args([
             "--session",
-            &session,
-            "workspace",
-            "create",
-            "--cwd",
-            &herd_cwd.to_string_lossy(),
-            "--label",
-            title,
-            "--no-focus",
+            &workspace.session,
+            "pane",
+            "rename",
+            &pane_id,
+            pane_label,
         ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .status();
+    if let Some(stage_tab) = workspace.tabs.get_mut(&stage_key) {
+        stage_tab.worker_count = stage_tab.worker_count.saturating_add(1);
     }
-    let result = serde_json::from_slice::<Value>(&output.stdout).ok()?;
-    let workspace_id = result
-        .pointer("/result/workspace/workspace_id")?
-        .as_str()?
-        .to_string();
-    let pane_id = result
-        .pointer("/result/root_pane/pane_id")?
-        .as_str()?
-        .to_string();
+    registry.insert(run_key, workspace.clone());
+    drop(registry);
+
     let escaped_herdr = herdr.replace('\'', "''");
-    let escaped_session = session.replace('\'', "''");
+    let escaped_session = workspace.session.replace('\'', "''");
     let escaped_pane = pane_id.replace('\'', "''");
     let viewer = worker_console_script(title, log_path, prompt_path).replace(
         &format!(
@@ -1484,7 +1936,14 @@ fn start_herdr_worker_pane(
         script_path.display()
     );
     if !Command::new(&herdr)
-        .args(["--session", &session, "pane", "run", &pane_id, &command])
+        .args([
+            "--session",
+            &workspace.session,
+            "pane",
+            "run",
+            &pane_id,
+            &command,
+        ])
         .status()
         .is_ok_and(|status| status.success())
     {
@@ -1492,10 +1951,48 @@ fn start_herdr_worker_pane(
     }
     Some(WorkerTerminal {
         backend: "herdr".to_string(),
-        session: Some(session),
-        workspace_id: Some(workspace_id),
+        session: Some(workspace.session),
+        workspace_id: Some(workspace.workspace_id),
+        tab_id: Some(tab.tab_id),
         pane_id: Some(pane_id),
     })
+}
+
+#[cfg(windows)]
+fn herdr_label(value: &str, max_chars: usize) -> String {
+    let mut label = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for ch in value.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            pending_space = !label.is_empty();
+            continue;
+        }
+        if pending_space {
+            label.push(' ');
+            pending_space = false;
+        }
+        label.push(ch);
+        if label.chars().count() >= max_chars {
+            break;
+        }
+    }
+    let label = label.trim().to_string();
+    if label.is_empty() {
+        "Unassigned".to_string()
+    } else {
+        label
+    }
+}
+
+#[cfg(windows)]
+fn herdr_pane_label(task: &Task) -> String {
+    herdr_label(
+        &format!(
+            "Task | {} | {} | {} | {}",
+            task.id, task.spec.role, task.provider.provider, task.provider.model
+        ),
+        80,
+    )
 }
 
 #[cfg(windows)]
@@ -1543,7 +2040,13 @@ Get-Content -LiteralPath '{log_path}' -Wait -Tail 50 | ForEach-Object {{ Show-Sw
 }
 
 #[cfg(not(windows))]
-fn start_visible_worker_console(_work_dir: &Path, _task: &Task) -> Option<WorkerTerminal> {
+fn start_visible_worker_console(
+    _workspace_root: &Path,
+    _run_dir: &Path,
+    _work_dir: &Path,
+    _task: &Task,
+    _terminal: &crate::model::TerminalConfig,
+) -> Option<WorkerTerminal> {
     None
 }
 
@@ -1792,6 +2295,7 @@ fn success_state(
     verified: Option<bool>,
     verify_error: Option<String>,
     usage: &Usage,
+    transport: Option<String>,
 ) -> TaskState {
     let elapsed = started.elapsed().as_millis();
     TaskState {
@@ -1811,6 +2315,7 @@ fn success_state(
         session_reused,
         session_resume_count,
         session_id,
+        transport,
         verified,
         verify_error,
         usage: usage.clone(),
@@ -1823,6 +2328,7 @@ fn success_state(
         terminal_backend: None,
         terminal_session: None,
         terminal_workspace_id: None,
+        terminal_tab_id: None,
         terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
@@ -1854,6 +2360,7 @@ fn failed_state(
         session_reused: false,
         session_resume_count: 0,
         session_id: None,
+        transport: None,
         verified: None,
         verify_error: None,
         usage: usage.clone(),
@@ -1866,6 +2373,7 @@ fn failed_state(
         terminal_backend: None,
         terminal_session: None,
         terminal_workspace_id: None,
+        terminal_tab_id: None,
         terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
@@ -1897,6 +2405,8 @@ pub fn dry_run(
         heartbeat_interval_seconds(),
         &project_id,
         &project_name,
+        &plan.execution,
+        &plan.terminal,
     )?;
 
     let states: Vec<TaskState> = tasks
@@ -2073,5 +2583,13 @@ mod auto_resume_tests {
         assert!(script.contains("TOOL"));
         assert!(script.contains(WORKER_CONSOLE_FINISHED_SENTINEL));
         assert!(script.contains("Read-Host | Out-Null"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn herdr_labels_are_bounded_and_collapse_control_whitespace() {
+        assert_eq!(herdr_label("  Build\n\tworkers  ", 80), "Build workers");
+        assert_eq!(herdr_label("\n\t", 80), "Unassigned");
+        assert!(herdr_label("a very long stage name", 8).chars().count() <= 8);
     }
 }

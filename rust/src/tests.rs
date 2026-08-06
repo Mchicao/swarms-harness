@@ -161,6 +161,8 @@ fn legacy_timeout_fields_never_create_a_worker_deadline() {
         stages: Vec::new(),
         thinking: None,
         session: None,
+        execution: model::ExecutionConfig::default(),
+        terminal: model::TerminalConfig::default(),
         default_timeout_seconds: Some(1),
         default_max_attempts: None,
     };
@@ -232,6 +234,55 @@ fn workspace_write_policy_reaches_cli_adapters() {
     .unwrap();
     assert!(opencode_spec.args.contains(&"--auto".to_string()));
     assert!(!opencode_spec.args.contains(&"--pure".to_string()));
+}
+
+#[test]
+fn acp_command_defaults_are_conservative_and_overrides_are_explicit() {
+    let default = adapter::build_acp_command(AdapterKind::OpenCode, &model::AcpConfig::default())
+        .expect("OpenCode has a documented ACP launcher");
+    assert!(default.program.contains("opencode"));
+    assert_eq!(default.args, vec!["acp"]);
+    assert!(adapter::build_acp_command(AdapterKind::Codex, &model::AcpConfig::default()).is_none());
+
+    let explicit = model::AcpConfig {
+        command: Some("codex-acp".to_string()),
+        args: vec!["--stdio".to_string()],
+        ..model::AcpConfig::default()
+    };
+    let overridden = adapter::build_acp_command(AdapterKind::Codex, &explicit).unwrap();
+    assert_eq!(overridden.program, "codex-acp");
+    assert_eq!(overridden.args, vec!["--stdio"]);
+}
+
+#[test]
+fn acp_usage_stays_missing_when_provider_does_not_report_usage() {
+    let usage = adapter::parse_acp_usage(
+        r#"{"type":"acp_update","update":{"usage":{"input":12,"output":7}}}"#,
+    );
+    assert_eq!(usage.input, "12");
+    assert_eq!(usage.output, "7");
+    assert_eq!(adapter::parse_acp_usage("plain text").input, "missing");
+}
+
+#[test]
+fn acp_only_review_rejects_a_route_without_a_launcher() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "validate ACP configuration",
+        "execution": {"transport": "acp"},
+        "stages": [{"tasks": [{
+            "id": "worker",
+            "route": "mock",
+            "task": "Do nothing"
+        }]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let review = review_plan(&plan, &router, &tasks);
+    assert!(review
+        .findings
+        .iter()
+        .any(|finding| finding.code == "acp_command_missing"));
 }
 
 #[test]

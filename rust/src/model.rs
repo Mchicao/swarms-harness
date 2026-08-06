@@ -82,6 +82,116 @@ pub struct SessionConfig {
     pub on_missing: OnMissing,
 }
 
+// ---------------------------------------------------------------------------
+// Execution and terminal surfaces
+// ---------------------------------------------------------------------------
+
+/// Transport used to communicate with a worker provider.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTransport {
+    /// Use ACP when a configured provider exposes it, otherwise use CLI.
+    #[default]
+    Auto,
+    /// Require ACP for providers that can be launched through it.
+    Acp,
+    /// Preserve the existing one-shot CLI behavior.
+    CliBatch,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionFallback {
+    #[default]
+    CliBatch,
+    Fail,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AcpConfig {
+    /// Optional executable override. When absent, the adapter supplies a safe
+    /// provider-specific default for known ACP agents.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_acp_protocol_version")]
+    pub protocol_version: u32,
+    #[serde(default = "default_acp_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_acp_cancel_grace")]
+    pub cancel_grace_seconds: u64,
+}
+
+impl Default for AcpConfig {
+    fn default() -> Self {
+        Self {
+            command: None,
+            args: Vec::new(),
+            protocol_version: default_acp_protocol_version(),
+            startup_timeout_seconds: default_acp_startup_timeout(),
+            cancel_grace_seconds: default_acp_cancel_grace(),
+        }
+    }
+}
+
+fn default_acp_protocol_version() -> u32 {
+    1
+}
+
+fn default_acp_startup_timeout() -> u64 {
+    10
+}
+
+fn default_acp_cancel_grace() -> u64 {
+    5
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+pub struct ExecutionConfig {
+    #[serde(default)]
+    pub transport: ExecutionTransport,
+    #[serde(default)]
+    pub fallback: ExecutionFallback,
+    #[serde(default)]
+    pub acp: AcpConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalBackend {
+    #[default]
+    Native,
+    Herdr,
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalUnavailable {
+    #[default]
+    Hidden,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalWorkspaceScope {
+    #[default]
+    Run,
+    Worker,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+pub struct TerminalConfig {
+    #[serde(default)]
+    pub backend: TerminalBackend,
+    #[serde(default)]
+    pub on_unavailable: TerminalUnavailable,
+    #[serde(default)]
+    pub workspace_scope: TerminalWorkspaceScope,
+}
+
 impl OnMissing {
     pub fn is_default(&self) -> bool {
         *self == OnMissing::default()
@@ -270,6 +380,12 @@ pub struct Plan {
     /// Plan-level default session config.
     #[serde(default)]
     pub session: Option<SessionConfig>,
+    /// Optional interactive transport and terminal policies. Existing plans
+    /// default to automatic provider transport and the historical terminal.
+    #[serde(default)]
+    pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub terminal: TerminalConfig,
     #[serde(default)]
     pub default_timeout_seconds: Option<u64>,
     #[serde(default)]

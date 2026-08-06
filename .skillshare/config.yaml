@@ -1,16 +1,17 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/runkids/skillshare/main/schemas/project-config.schema.json
 targets:
-    - codex
-    - gemini
-    - antigravity
-    - opencode
-    - copilot
-    - hermes
-    - openclaw
-    - xcode-codex
-    - claude
-    - cursor
-    - name: aider
+  - codex
+  - gemini
+  - antigravity
+  - opencode
+  - copilot
+  - hermes
+  - openclaw
+  - xcode-codex
+  - claude
+  - cursor
+  - name: aider
+    skills:
       path: .aider/skills
 audit:
-    block_threshold: CRITICAL
+  block_threshold: CRITICAL

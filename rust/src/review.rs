@@ -199,6 +199,45 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             }
         };
 
+        // ACP v1 is intentionally explicit: an ACP-only plan must name a
+        // launchable agent, while auto mode may safely fall back to CLI.
+        if plan.execution.acp.protocol_version != 1 {
+            findings.push(Finding {
+                severity: Severity::Error,
+                code: "unsupported_acp_protocol".to_string(),
+                message: "execution.acp.protocol_version must be 1".to_string(),
+                task_id: Some(task.source_id.clone()),
+            });
+        }
+        if plan.execution.acp.startup_timeout_seconds == 0
+            || plan.execution.acp.startup_timeout_seconds > 300
+            || plan.execution.acp.cancel_grace_seconds == 0
+            || plan.execution.acp.cancel_grace_seconds > 300
+        {
+            findings.push(Finding {
+                severity: Severity::Error,
+                code: "invalid_acp_timeout".to_string(),
+                message: "ACP startup and cancel timeouts must be between 1 and 300 seconds"
+                    .to_string(),
+                task_id: Some(task.source_id.clone()),
+            });
+        }
+        if matches!(
+            plan.execution.transport,
+            crate::model::ExecutionTransport::Acp
+        ) && crate::adapter::build_acp_command(kind, &plan.execution.acp).is_none()
+        {
+            findings.push(Finding {
+                severity: Severity::Error,
+                code: "acp_command_missing".to_string(),
+                message: format!(
+                    "route '{}' requests ACP but wrapper '{}' has no configured ACP command",
+                    route, provider.wrapper
+                ),
+                task_id: Some(task.source_id.clone()),
+            });
+        }
+
         // Role
         if !VALID_ROLES.contains(&task.spec.role.as_str()) {
             findings.push(Finding {
