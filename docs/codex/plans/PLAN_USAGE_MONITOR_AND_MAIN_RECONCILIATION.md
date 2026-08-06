@@ -22,7 +22,7 @@ aligned.
 - [x] (2026-08-06) Registered and started the `AI Usage Monitor` Scheduled Task at user logon; task result was `0` and the venv `pythonw.exe` process was observed.
 - [x] (2026-08-06) Analyzed PR #36 commit-by-commit and merged PR #36 plus PR #37 into local `main` without conflicts.
 - [x] (2026-08-06) Verified the existing SWARMS quota reader is independent of the monitor process and reads the sibling snapshot path when the quota guard is disabled.
-- [ ] Push the reconciled local `main` to GitHub and confirm the final SHA.
+- [x] (2026-08-06) Pushed the reconciled local `main` to GitHub and confirmed local and remote SHA `3fea20c051b295611e74740921355ebe3e6824ed`.
 
 ## Surprises & Discoveries
 
@@ -43,10 +43,13 @@ aligned.
 
 ## Outcomes & Retrospective
 
-The monitor is cloned and starts through Task Scheduler. SWARMS local `main`
-contains the merged PR #36/#37 changes plus the local cleanup and plan commits.
-The remaining step is to publish the reconciled local `main`; provider quota
-coverage remains dependent on each provider's authentication and response.
+The monitor is cloned at `C:\Proyectos\ai-usage-monitor` and starts through
+Task Scheduler using its private Python environment. SWARMS local and GitHub
+`main` both resolve to `3fea20c051b295611e74740921355ebe3e6824ed` and contain
+the merged PR #36/#37 changes plus the local cleanup and plan commits.
+Provider quota coverage remains dependent on each provider's authentication
+and response; the monitor currently reports Codex data and explicit errors for
+AGY and Z.AI on this machine.
 
 ## Context and Orientation
 
