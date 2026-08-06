@@ -9,9 +9,41 @@ use crate::telemetry::Usage;
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::process::Child;
 
 type Result<T> = std::result::Result<T, String>;
+
+/// Ensures an opt-in long-lived provider process cannot survive an early error.
+pub(crate) struct ChildGuard(Child);
+
+impl ChildGuard {
+    pub(crate) fn new(child: Child) -> Self {
+        Self(child)
+    }
+}
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Adapter kind
@@ -21,6 +53,7 @@ type Result<T> = std::result::Result<T, String>;
 pub enum AdapterKind {
     Mock,
     Codex,
+    Claude,
     OpenCode,
     Kilo,
     Hermes,
@@ -33,6 +66,7 @@ impl AdapterKind {
         match wrapper {
             "mock" => Some(Self::Mock),
             "codex" => Some(Self::Codex),
+            "claude" => Some(Self::Claude),
             "opencode" => Some(Self::OpenCode),
             "kilo" => Some(Self::Kilo),
             "hermes" => Some(Self::Hermes),
@@ -49,7 +83,10 @@ impl AdapterKind {
 
     /// Whether this adapter can capture and resume a session ID.
     pub fn supports_session_reuse(&self) -> bool {
-        matches!(self, Self::Codex | Self::OpenCode | Self::Kilo)
+        matches!(
+            self,
+            Self::Codex | Self::Claude | Self::OpenCode | Self::Kilo
+        )
     }
 
     /// ACP is a provider process transport, not a property of the model.
@@ -121,6 +158,7 @@ pub fn build_cli_command(
 ) -> Result<CliSpec> {
     match kind {
         AdapterKind::Codex => build_codex(task, prompt_text, thinking, session_id),
+        AdapterKind::Claude => build_claude(task, prompt_text, session_id),
         AdapterKind::OpenCode => build_opencode(task, prompt_text, thinking, session_id),
         AdapterKind::Kilo => build_kilo(task, prompt_text, thinking, session_id),
         AdapterKind::Hermes => build_hermes(task, prompt_text, provider_name),
@@ -149,12 +187,33 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
             ),
             // The repository's gemini wrapper currently points at agy; require
             // an explicit command so a future Gemini ACP launch is intentional.
-            AdapterKind::Agy | AdapterKind::Codex | AdapterKind::Hermes => return None,
+            AdapterKind::Agy | AdapterKind::Codex | AdapterKind::Claude | AdapterKind::Hermes => {
+                return None
+            }
             AdapterKind::Mock | AdapterKind::OpenAiCompat => return None,
         },
     };
     args.extend(config.args.iter().cloned());
     Some(CliSpec {
+        program,
+        args,
+        env: Vec::new(),
+    })
+}
+
+fn build_claude(task: &Task, prompt_text: &str, session_id: Option<&str>) -> Result<CliSpec> {
+    let program = which("claude").unwrap_or_else(|| "claude".to_string());
+    let mut args = vec!["-p".to_string(), prompt_text.to_string()];
+    if let Some(id) = session_id {
+        args.extend(["--resume".to_string(), id.to_string()]);
+    }
+    if !task.provider.model.is_empty() {
+        args.extend(["--model".to_string(), task.provider.model.clone()]);
+    }
+    if task.spec.tools_policy == "full" {
+        args.push("--dangerously-skip-permissions".to_string());
+    }
+    Ok(CliSpec {
         program,
         args,
         env: Vec::new(),
@@ -345,7 +404,7 @@ pub fn parse_session_id(kind: AdapterKind, output: &str) -> Option<String> {
             }
             None
         }
-        AdapterKind::OpenCode | AdapterKind::Kilo => {
+        AdapterKind::OpenCode | AdapterKind::Kilo | AdapterKind::Claude => {
             // Try as a single JSON object first, then as JSONL.
             if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
                 if let Some(id) = find_id_recursive(&v, &["sessionID", "session_id", "session"]) {
@@ -407,7 +466,7 @@ fn find_id_recursive(v: &Value, keys: &[&str]) -> Option<String> {
 pub fn parse_cli_usage(kind: AdapterKind, output: &str) -> Usage {
     if !matches!(
         kind,
-        AdapterKind::Codex | AdapterKind::OpenCode | AdapterKind::Kilo
+        AdapterKind::Codex | AdapterKind::OpenCode | AdapterKind::Kilo | AdapterKind::Claude
     ) {
         return Usage::missing();
     }
@@ -828,7 +887,7 @@ pub fn validate_url(url: &str) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn which(bin_name: &str) -> Option<String> {
+pub(crate) fn which(bin_name: &str) -> Option<String> {
     let var = if cfg!(windows) { "Path" } else { "PATH" };
     let path = env::var(var).ok()?;
     let ext = if cfg!(windows) { ".exe" } else { "" };

@@ -370,8 +370,53 @@ fn agy_no_session_support() {
     assert!(!AdapterKind::Hermes.supports_thinking());
     assert!(AdapterKind::Codex.supports_session_reuse());
     assert!(AdapterKind::Codex.supports_thinking());
+    assert!(AdapterKind::Claude.supports_session_reuse());
+    assert!(!AdapterKind::Claude.supports_thinking());
     assert!(AdapterKind::OpenCode.supports_thinking());
     assert!(AdapterKind::Kilo.supports_thinking());
+}
+
+#[test]
+fn claude_command_is_resumable_and_permission_safe_by_default() {
+    let mut task = make_task("claude", &[], "mock");
+    task.provider.provider = "claude_cli".to_string();
+    task.provider.wrapper = "claude".to_string();
+    task.provider.model = "claude-sonnet-4-6".to_string();
+
+    let spec = adapter::build_cli_command(
+        AdapterKind::Claude,
+        &task,
+        "continue",
+        ThinkingLevel::Auto,
+        Some("claude-session"),
+        "claude_cli",
+    )
+    .unwrap();
+    assert!(spec.args.contains(&"--resume".to_string()));
+    assert!(spec.args.contains(&"claude-session".to_string()));
+    assert!(!spec
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+
+    task.spec.tools_policy = "full".to_string();
+    let full = adapter::build_cli_command(
+        AdapterKind::Claude,
+        &task,
+        "continue",
+        ThinkingLevel::Auto,
+        None,
+        "claude_cli",
+    )
+    .unwrap();
+    assert!(full
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+
+    let output = r#"{"type":"system","session_id":"claude-session"}"#;
+    assert_eq!(
+        adapter::parse_session_id(AdapterKind::Claude, output).as_deref(),
+        Some("claude-session")
+    );
 }
 
 #[test]
