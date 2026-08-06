@@ -15,6 +15,11 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 Python scripts are legacy benchmark/telemetry tools. No Rust code invokes Python.
 
+## Branch and Worktree Policy
+
+- Normal SWARMS operation: work on `main` or the current branch without creating branches automatically.
+- Branches/worktrees: use them only when the user explicitly enables isolated or benchmark mode.
+
 ## Ejecución bloqueante para agentes coordinadores
 
 - Trata cada `swarms run` como una única tool call bloqueante que devuelve control cuando el workflow termina.
