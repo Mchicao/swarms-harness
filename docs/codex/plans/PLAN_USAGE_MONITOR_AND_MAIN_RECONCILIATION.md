@@ -18,17 +18,19 @@ aligned.
 
 - [x] (2026-08-06) Confirmed the SWARMS checkout is on local `main` with an uncommitted `AGENTS.md` edit and no additional local worktree.
 - [x] (2026-08-06) Located recent GitHub PRs, including the merged consolidation PR #36 and the merged DataViz cleanup PR #37.
-- [ ] Clone and inspect `ai-usage-monitor`.
-- [ ] Configure and verify Windows startup for the monitor.
-- [ ] Analyze the selected PR commit-by-commit and reconcile it with local SWARMS changes.
-- [ ] Make SWARMS quota reading independent from the monitor process.
-- [ ] Run full validation, commit compatible changes on local `main`, and push the final `main` to GitHub.
+- [x] (2026-08-06) Cloned `ai-usage-monitor` at commit `6ca4e4d` into `C:\Proyectos\ai-usage-monitor` and created its private `.venv`.
+- [x] (2026-08-06) Registered and started the `AI Usage Monitor` Scheduled Task at user logon; task result was `0` and the venv `pythonw.exe` process was observed.
+- [x] (2026-08-06) Analyzed PR #36 commit-by-commit and merged PR #36 plus PR #37 into local `main` without conflicts.
+- [x] (2026-08-06) Verified the existing SWARMS quota reader is independent of the monitor process and reads the sibling snapshot path when the quota guard is disabled.
+- [ ] Push the reconciled local `main` to GitHub and confirm the final SHA.
 
 ## Surprises & Discoveries
 
 - The network sandbox initially blocked GitHub API access; approved network access is required for PR inspection and cloning.
 - Local `main` is one commit ahead of `origin/main` because the legacy branch/worktree cleanup was committed locally but not pushed.
-- The exact PR still needs to be determined from the recent merged PRs; #36 is titled `feat: consolidate local steering advances`, while #37 is a DataViz cleanup.
+- PR #36 is the other agent's relevant change: it adds live Codex App Server, OpenCode Server, and Claude stream-json transports, bounded steering continuation, child cleanup, and matching tests. PR #37 only removes DataViz-specific workflow archives.
+- The monitor's first real snapshot contained `codex:Codex`; AGY and Z.AI were absent because those providers did not return data in that run. The correct UI state for absent providers is unavailable, not zero.
+- The monitor's documented launcher assumed Python 3.10, but this machine's available Python was Anaconda 3.12. A private `.venv` was created and the launcher was pointed at its `pythonw.exe`.
 
 ## Decision Log
 
@@ -41,9 +43,10 @@ aligned.
 
 ## Outcomes & Retrospective
 
-Pending implementation. This section will record the final startup command,
-quota data path, selected PR commits, merge result, and any remaining provider
-quota limitations.
+The monitor is cloned and starts through Task Scheduler. SWARMS local `main`
+contains the merged PR #36/#37 changes plus the local cleanup and plan commits.
+The remaining step is to publish the reconciled local `main`; provider quota
+coverage remains dependent on each provider's authentication and response.
 
 ## Context and Orientation
 
@@ -84,9 +87,9 @@ and confirm the local and remote SHAs match.
    monitor command with a hidden window where appropriate.
 4. Fetch `origin/main` and the candidate PR refs; inspect commits and diffs.
 5. Reconcile local `AGENTS.md` and existing Rust changes with the PR without
-   discarding user work.
-6. Implement independent SWARMS quota loading with a clear stale/unavailable
-   state and no invented percentages.
+   discarding user work. This produced a clean local merge of `origin/main`.
+6. Keep the independent SWARMS quota loading with a clear stale/unavailable
+   state and no invented percentages; validate it against the monitor snapshot.
 7. Validate the monitor startup, quota snapshot reading, Rust tests, release
    build, doctor, and mock workflow.
 8. Commit on local `main`, push `HEAD:main`, and verify SHA equality.
@@ -95,13 +98,14 @@ and confirm the local and remote SHAs match.
 
 - The monitor clone exists outside the SWARMS Git tree and reports its exact
   commit and startup command.
-- Windows startup contains one user-level entry for the monitor and launching
-  it does not require an interactive terminal.
+- Windows startup contains one user-level `AI Usage Monitor` entry and
+  launching it does not require an interactive terminal.
 - SWARMS displays the last valid quota snapshot when the monitor is not
   running, and displays an explicit unavailable/stale state when no snapshot
   exists.
 - `cargo fmt --check`, Clippy, all-feature tests, release build, `doctor`, and
-  the mock workflow pass from `C:\Proyectos\SWARMS`.
+  the mock workflow pass from `C:\Proyectos\SWARMS`; the monitor's six unit
+  tests and Python compilation also pass.
 - Local `main` and GitHub `origin/main` resolve to the same commit after push.
 
 ## Idempotence and Recovery
