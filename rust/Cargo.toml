@@ -27,7 +27,7 @@ ui-egui = ["dep:eframe", "dep:egui_extras"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json", "tls"] }
-egui_extras = { version = "0.32", optional = true, features = ["image", "svg"] }
+egui_extras = { version = "0.36", optional = true, features = ["image", "svg"] }
 
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.32", optional = true, default-features = false, features = ["accesskit", "default_fonts", "glow"] }
