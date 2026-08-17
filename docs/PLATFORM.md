@@ -1,6 +1,7 @@
 # Platform Compatibility
 
-The public SWARMS flow is Python-first.
+The public SWARMS flow is Rust-first. Python remains available for legacy
+compatibility, benchmarks, and telemetry tools.
 
 ## Supported
 
@@ -8,18 +9,19 @@ The public SWARMS flow is Python-first.
 - macOS with Python 3.10+ and Git
 - Linux with Python 3.10+ and Git
 
-Run:
+Run the native runtime:
 
 ```powershell
-python scripts/swarm.py doctor
+cargo run --manifest-path rust/Cargo.toml -- doctor
 ```
 
 If doctor passes, the default offline mock workflow can run without model credentials:
 
 ```powershell
-python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
 ## Legacy Compatibility
 
-`scripts/parallel_swarm.ps1` remains in the repository as a legacy/internal adapter for older worktree experiments. It requires PowerShell 7. It is not the public flow and agents should not call it directly unless a user asks for legacy compatibility.
+The old `scripts/parallel_swarm.ps1` adapter is no longer part of the public
+flow. Use the Rust runtime for workflow execution.
