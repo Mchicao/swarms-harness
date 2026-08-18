@@ -204,6 +204,8 @@ fn codex_command_maps_thinking_and_resume() {
     .unwrap();
     assert!(spec2.args.contains(&"resume".to_string()));
     assert!(spec2.args.contains(&"sess-abc".to_string()));
+    assert!(!spec2.args.contains(&"-s".to_string()));
+    assert!(!spec2.args.contains(&"workspace-write".to_string()));
 }
 
 #[test]
@@ -877,6 +879,17 @@ fn feature_role_with_passing_verify_completes() {
     let task_state = &report.results[0];
     assert_eq!(task_state.status, TaskStatus::Completed);
     assert_eq!(task_state.verified, Some(true));
+    let verify_dir = dir
+        .join(".agent")
+        .join("swarm")
+        .join("runs")
+        .join("verify-pass")
+        .join("results")
+        .join(&report.results[0].task_id);
+    assert!(verify_dir.join("verify-001.log").is_file());
+    let evidence = fs::read_to_string(verify_dir.join("verification.jsonl")).unwrap();
+    assert!(evidence.contains("\"command\""));
+    assert!(evidence.contains("\"exit_code\":0"));
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -1709,6 +1722,102 @@ fn non_parallel_stage_selects_one_ready_task() {
         &quotas,
     );
     assert_eq!(ready.selected.len(), 1);
+}
+
+#[test]
+fn in_progress_task_is_not_relaunched_on_heartbeat() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "stages":[{"name":"parallel","parallel":true,"tasks":[
+            {"id":"a","route":"mock","task":"a"},
+            {"id":"b","route":"mock","task":"b"}
+        ]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let mut states: HashMap<_, _> = tasks
+        .iter()
+        .map(|task| {
+            (
+                task.id.clone(),
+                crate::telemetry::TaskState::new(
+                    &task.id,
+                    &task.source_id,
+                    &task.stage,
+                    &task.spec.route,
+                ),
+            )
+        })
+        .collect();
+    let first_task_id = tasks[0].id.clone();
+    states.get_mut(&first_task_id).unwrap().status = TaskStatus::InProgress;
+    let quotas = crate::quota::QuotaGuard::load(std::path::Path::new("."), &router.quota_policy);
+
+    let ready = runtime::find_ready(
+        &tasks,
+        &states,
+        2,
+        &HashMap::from([("mock".to_string(), 2)]),
+        &plan,
+        &router,
+        &quotas,
+    );
+
+    assert_eq!(ready.selected.len(), 1);
+    assert_eq!(ready.selected[0].id, tasks[1].id);
+}
+
+#[test]
+fn in_progress_task_consumes_global_route_serial_and_session_capacity() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "session": {"mode": "reuse", "key": "shared"},
+        "stages":[{"name":"serial","parallel":false,"tasks":[
+            {"id":"a","route":"mock","task":"a"},
+            {"id":"b","route":"mock","task":"b"}
+        ]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let mut states: HashMap<_, _> = tasks
+        .iter()
+        .map(|task| {
+            (
+                task.id.clone(),
+                crate::telemetry::TaskState::new(
+                    &task.id,
+                    &task.source_id,
+                    &task.stage,
+                    &task.spec.route,
+                ),
+            )
+        })
+        .collect();
+    states.get_mut(&tasks[0].id).unwrap().status = TaskStatus::InProgress;
+    states.get_mut(&tasks[0].id).unwrap().effective_route = "mock".to_string();
+    let quotas = crate::quota::QuotaGuard::load(std::path::Path::new("."), &router.quota_policy);
+
+    let global_blocked = runtime::find_ready(
+        &tasks,
+        &states,
+        1,
+        &HashMap::from([("mock".to_string(), 2)]),
+        &plan,
+        &router,
+        &quotas,
+    );
+    assert!(global_blocked.selected.is_empty());
+
+    let route_blocked = runtime::find_ready(
+        &tasks,
+        &states,
+        2,
+        &HashMap::from([("mock".to_string(), 1)]),
+        &plan,
+        &router,
+        &quotas,
+    );
+    assert!(route_blocked.selected.is_empty());
 }
 
 #[test]

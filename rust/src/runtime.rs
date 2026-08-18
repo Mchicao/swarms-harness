@@ -342,10 +342,43 @@ pub(crate) fn find_ready(
     let mut active_by_route: HashMap<String, usize> = HashMap::new();
     let mut active_keys: HashSet<String> = HashSet::new();
     let mut serial_stages: HashSet<String> = HashSet::new();
+    let mut active_count = 0usize;
+
+    // A heartbeat re-enters this function while workers are still running.
+    // Seed every occupancy guard from persisted non-terminal state so a
+    // pending task cannot exceed global, route, serial-stage, or session-key
+    // capacity just because the scheduler was re-entered.
+    for task in tasks {
+        let Some(state) = states.get(&task.id) else {
+            continue;
+        };
+        if !matches!(state.status, TaskStatus::Queued | TaskStatus::InProgress) {
+            continue;
+        }
+        active_count += 1;
+        let route = if state.effective_route.is_empty() {
+            task.effective_route.as_str()
+        } else {
+            state.effective_route.as_str()
+        };
+        *active_by_route.entry(route.to_string()).or_default() += 1;
+        if !task.stage_parallel {
+            serial_stages.insert(task.stage.clone());
+        }
+        let session = task.spec.effective_session(plan);
+        if session.mode != SessionMode::Disabled {
+            if let Some(key) = session.key {
+                active_keys.insert(key);
+            }
+        }
+    }
 
     for task in tasks {
         let state = states.get(&task.id);
-        if state.is_some_and(|s| s.status.is_terminal()) {
+        // Only pending tasks may be launched. In-progress tasks are not
+        // terminal, but selecting them again on each heartbeat duplicates
+        // workers, viewers, and provider usage until the host collapses.
+        if state.is_some_and(|s| !matches!(s.status, TaskStatus::Pending)) {
             continue;
         }
 
@@ -376,7 +409,7 @@ pub(crate) fn find_ready(
             continue;
         }
 
-        if selected.len() >= global_cap {
+        if active_count >= global_cap {
             continue;
         }
         if !task.stage_parallel && serial_stages.contains(&task.stage) {
@@ -439,6 +472,7 @@ pub(crate) fn find_ready(
         if !task.stage_parallel {
             serial_stages.insert(task.stage.clone());
         }
+        active_count += 1;
         let mut selected_task = task.clone();
         selected_task.effective_route = route;
         selected_task.provider = provider;
@@ -1597,17 +1631,36 @@ fn execute_cli(kind: AdapterKind, spec: CliSpec, cwd: &Path, log_path: &Path) ->
                 ));
             }
             Ok(None) => {
-                if matches!(kind, AdapterKind::OpenCode | AdapterKind::Kilo)
-                    && opencode_terminal_event_seen(log_path)
+                if (matches!(kind, AdapterKind::OpenCode | AdapterKind::Kilo)
+                    && opencode_terminal_event_seen(log_path))
+                    || (kind == AdapterKind::Codex && codex_terminal_event_seen(log_path))
                 {
                     let seen_at = terminal_event_seen_at.get_or_insert_with(Instant::now);
                     if seen_at.elapsed() >= Duration::from_secs(3) {
-                        // The provider already emitted its terminal protocol event.
-                        // Reap only the leaked CLI wrapper; its complete output is
-                        // then verified normally by the task runner.
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Ok(fs::read_to_string(log_path).unwrap_or_default());
+                        // Prefer the real exit status if the wrapper finished
+                        // during the grace period. Only reap a leaked wrapper
+                        // after the provider's explicit terminal event remains
+                        // the sole completion signal.
+                        match child.try_wait() {
+                            Ok(Some(status)) if status.success() => {
+                                return Ok(fs::read_to_string(log_path).unwrap_or_default());
+                            }
+                            Ok(Some(status)) => {
+                                let output = fs::read_to_string(log_path).unwrap_or_default();
+                                return Err(format!(
+                                    "process '{}' exited {:?}: {}",
+                                    spec.program,
+                                    status.code(),
+                                    tail_chars(&output, 2000)
+                                ));
+                            }
+                            Ok(None) => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                return Ok(fs::read_to_string(log_path).unwrap_or_default());
+                            }
+                            Err(error) => return Err(format!("wait '{}': {error}", spec.program)),
+                        }
                     }
                 } else {
                     terminal_event_seen_at = None;
@@ -1982,6 +2035,7 @@ fn start_herdr_worker_pane(
     }
     registry.insert(run_key, workspace.clone());
     drop(registry);
+    ensure_herdr_client(&herdr, &workspace.session);
 
     let escaped_herdr = herdr.replace('\'', "''");
     let escaped_session = workspace.session.replace('\'', "''");
@@ -2020,6 +2074,48 @@ fn start_herdr_worker_pane(
         tab_id: Some(tab.tab_id),
         pane_id: Some(pane_id),
     })
+}
+
+#[cfg(windows)]
+fn ensure_herdr_client(herdr: &str, session: &str) {
+    use std::os::windows::process::CommandExt;
+
+    static HERDR_CLIENT_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let clients = HERDR_CLIENT_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut clients) = clients.lock() else {
+        return;
+    };
+    if clients.contains(session) {
+        return;
+    }
+
+    let escaped_herdr = herdr.replace('\'', "''");
+    let escaped_session = session.replace('\'', "''");
+    let command = format!("& '{escaped_herdr}' --session '{escaped_session}'");
+    let title = format!("Herdr | {session}");
+    let launched = Command::new("wt.exe")
+        .args([
+            "new-tab",
+            "--title",
+            &title,
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NoExit",
+            "-Command",
+            &command,
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
+        || Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NoExit", "-Command", &command])
+            .creation_flags(0x0000_0010)
+            .spawn()
+            .is_ok();
+
+    if launched {
+        clients.insert(session.to_string());
+    }
 }
 
 #[cfg(windows)]
@@ -2286,16 +2382,76 @@ fn run_verify_commands(
     if task.spec.verify.is_empty() {
         return (None, None);
     }
-    for cmd_str in &task.spec.verify {
-        let log_path = work_dir.join("verify.log");
-        match execute_shell(cmd_str, root, &log_path) {
-            Ok(()) => {}
-            Err(e) => return (Some(false), Some(e)),
+    for (index, cmd_str) in task.spec.verify.iter().enumerate() {
+        let log_name = format!("verify-{:03}.log", index + 1);
+        let log_path = work_dir.join(&log_name);
+        let started_at = now_iso();
+        let result = execute_shell_bounded_status(cmd_str, root, &log_path, VERIFY_DEADLINE);
+        let ended_at = now_iso();
+        let log_content = fs::read_to_string(&log_path).unwrap_or_default();
+        let mut evidence = json!({
+            "task_id": task.id,
+            "index": index + 1,
+            "command": cmd_str,
+            "log": log_name,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "output_fnv1a64": format!("{:016x}", fnv1a64(log_content.as_bytes())),
+        });
+        match result {
+            Ok(status) if status.success() => {
+                evidence["success"] = json!(true);
+                evidence["exit_code"] = json!(status.code());
+            }
+            Ok(status) => {
+                evidence["success"] = json!(false);
+                evidence["exit_code"] = json!(status.code());
+                append_verification_evidence(work_dir, &evidence);
+                let tail = tail_chars(&log_content, 2000);
+                return (
+                    Some(false),
+                    Some(format!("verify failed (exit {:?}): {tail}", status.code())),
+                );
+            }
+            Err(error) => {
+                evidence["success"] = json!(false);
+                evidence["exit_code"] = Value::Null;
+                evidence["error"] = json!(error.clone());
+                append_verification_evidence(work_dir, &evidence);
+                return (Some(false), Some(error));
+            }
         }
+        append_verification_evidence(work_dir, &evidence);
     }
     (Some(true), None)
 }
 
+/// Codex CLI can emit its final JSON event before the wrapper process exits.
+/// Treat that explicit protocol event as terminal after the same short grace
+/// period used for OpenCode, so a leaked provider wrapper cannot strand a task
+/// in `in_progress` after the turn has completed.
+fn codex_terminal_event_seen(log_path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(log_path) else {
+        return false;
+    };
+    content.lines().any(|line| {
+        serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|item| item.get("type").and_then(Value::as_str).map(str::to_string))
+            .is_some_and(|event_type| event_type == "turn.completed")
+    })
+}
+
+fn append_verification_evidence(work_dir: &Path, evidence: &Value) {
+    let path = work_dir.join("verification.jsonl");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = serde_json::to_writer(&mut file, evidence);
+    let _ = writeln!(file);
+}
+
+#[allow(dead_code)]
 pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Result<()> {
     execute_shell_bounded(cmd_str, cwd, log_path, VERIFY_DEADLINE)
 }
@@ -2303,12 +2459,22 @@ pub(crate) fn execute_shell(cmd_str: &str, cwd: &Path, log_path: &Path) -> Resul
 /// Run a shell command under an explicit deadline. Split from `execute_shell`
 /// so tests can exercise the timeout path with a short deadline instead of
 /// waiting for the full production `VERIFY_DEADLINE`.
+#[allow(dead_code)]
 pub(crate) fn execute_shell_bounded(
     cmd_str: &str,
     cwd: &Path,
     log_path: &Path,
     deadline: Duration,
 ) -> Result<()> {
+    execute_shell_bounded_status(cmd_str, cwd, log_path, deadline).map(|_| ())
+}
+
+fn execute_shell_bounded_status(
+    cmd_str: &str,
+    cwd: &Path,
+    log_path: &Path,
+    deadline: Duration,
+) -> Result<std::process::ExitStatus> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -2334,13 +2500,7 @@ pub(crate) fn execute_shell_bounded(
         .stderr(Stdio::from(err));
 
     let mut child = command.spawn().map_err(|e| format!("spawn verify: {e}"))?;
-    let status = wait_bounded("verify", &mut child, deadline, None)?;
-    if status.success() {
-        return Ok(());
-    }
-    let log_content = fs::read_to_string(log_path).unwrap_or_default();
-    let tail = tail_chars(&log_content, 2000);
-    Err(format!("verify failed (exit {:?}): {tail}", status.code()))
+    wait_bounded("verify", &mut child, deadline, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -2615,6 +2775,16 @@ mod auto_resume_tests {
         assert!(!opencode_terminal_event_seen(&path));
         fs::write(&path, r#"{"type":"step_finish","part":{"reason":"stop"}}"#).unwrap();
         assert!(opencode_terminal_event_seen(&path));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn codex_terminal_event_requires_explicit_completion_protocol() {
+        let path = std::env::temp_dir().join(format!("swarms-codex-complete-{}.log", unix_ms()));
+        fs::write(&path, r#"{"type":"item.completed"}"#).unwrap();
+        assert!(!codex_terminal_event_seen(&path));
+        fs::write(&path, r#"{"type":"turn.completed","usage":{}}"#).unwrap();
+        assert!(codex_terminal_event_seen(&path));
         fs::remove_file(path).unwrap();
     }
 

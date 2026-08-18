@@ -35,7 +35,9 @@ repeat edits.
 Herdr is the default observation surface. A run creates one Herdr workspace rooted at
 the project; each task stage gets a labelled tab, and each worker gets a
 descriptively labelled pane that tails its own worker.log. Herdr server and
-helper commands are hidden. If Herdr is selected but unavailable, the default
+helper commands are hidden, while the run-scoped Herdr client is opened in a
+visible Windows Terminal window. If no visible terminal host is available,
+the server remains headless. If Herdr itself is unavailable, the default
 policy is hidden execution; native consoles are only used when explicitly
 selected or explicitly allowed as the unavailable fallback.
 

@@ -57,8 +57,11 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 For Herdr, ensure herdr.exe is available on PATH or set SWARMS_HERDR_BIN.
 SWARMS_HERDR_SESSION can select the Herdr session; it defaults to swarms. ACP
-provider processes remain hidden, while the Herdr server is launched hidden as
-well.
+provider processes remain hidden. SWARMS launches the Herdr server hidden and
+opens one visible Windows Terminal client titled `Herdr | <session>`; if
+Windows Terminal is unavailable, it falls back to a new PowerShell console.
+Headless environments keep the server-only behavior and retain the pane ids in
+telemetry.
 
 The UI's Send steer control writes a bounded request to
 steering/<task-id>/inbox.jsonl. The selected delivery mode is persisted with

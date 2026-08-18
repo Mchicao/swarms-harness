@@ -243,8 +243,13 @@ fn build_codex(
     }
     args.push("-m".to_string());
     args.push(task.provider.model.clone());
-    args.push("-s".to_string());
-    args.push(sandbox.to_string());
+    // `codex exec resume` has no sandbox option in the installed CLI.
+    // A resumed session already owns its execution policy; passing `-s`
+    // after `resume` makes Codex reject the command before the worker starts.
+    if session_id.is_none() {
+        args.push("-s".to_string());
+        args.push(sandbox.to_string());
+    }
     if let Some(effort) = thinking.as_codex_str() {
         args.push("-c".to_string());
         args.push(format!("model_reasoning_effort={effort}"));

@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     fn event_tail_keeps_only_the_newest_rows() {
-        let root = std::env::temp_dir().join(format!("swarms-events-{}", unix_ms()));
+        let root = std::env::temp_dir().join(format!("swarms-event-tail-{}", unix_ms()));
         fs::create_dir_all(&root).unwrap();
         let payload = (0..8)
             .map(|id| format!("{{\"event\":\"tick\",\"payload\":{{\"task_id\":\"{id}\"}}}}\n"))
@@ -5496,7 +5496,7 @@ pub mod ui_egui {
 
         #[test]
         fn activating_completed_run_loads_existing_events() {
-            let root = std::env::temp_dir().join(format!("swarms-events-{}", unix_ms()));
+            let root = std::env::temp_dir().join(format!("swarms-event-activation-{}", unix_ms()));
             let run_dir = root.join("done");
             fs::create_dir_all(&run_dir).unwrap();
             fs::write(
