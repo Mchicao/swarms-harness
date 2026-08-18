@@ -32,7 +32,7 @@ Provider stderr is appended to the worker log. A failed ACP turn after a
 prompt has started is not duplicated through CLI fallback because that could
 repeat edits.
 
-Herdr is an observation surface. A run creates one Herdr workspace rooted at
+Herdr is the default observation surface. A run creates one Herdr workspace rooted at
 the project; each task stage gets a labelled tab, and each worker gets a
 descriptively labelled pane that tails its own worker.log. Herdr server and
 helper commands are hidden. If Herdr is selected but unavailable, the default
@@ -41,7 +41,7 @@ selected or explicitly allowed as the unavailable fallback.
 
 ## Configuration
 
-Plans may add:
+Plans may override the defaults or make them explicit with:
 
 ~~~
 {

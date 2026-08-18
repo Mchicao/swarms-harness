@@ -161,9 +161,10 @@ pub struct ExecutionConfig {
 #[serde(rename_all = "snake_case")]
 pub enum TerminalBackend {
     #[default]
-    Native,
+    /// Show worker activity in the run-scoped Herdr workspace.
     Herdr,
     Hidden,
+    Native,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
@@ -380,8 +381,8 @@ pub struct Plan {
     /// Plan-level default session config.
     #[serde(default)]
     pub session: Option<SessionConfig>,
-    /// Optional interactive transport and terminal policies. Existing plans
-    /// default to automatic provider transport and the historical terminal.
+    /// Interactive transport and terminal policies. Existing plans default to
+    /// automatic ACP-or-CLI transport and a run-scoped Herdr surface.
     #[serde(default)]
     pub execution: ExecutionConfig,
     #[serde(default)]
@@ -605,4 +606,19 @@ pub fn find_dependency_task<'a>(tasks: &'a [Task], dep: &str) -> Option<&'a Task
 
 pub fn task_index_to_id(index: usize, source_id: &str) -> String {
     format!("{index:04}-{}", slug(source_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExecutionFallback, ExecutionTransport, Plan, TerminalBackend};
+
+    #[test]
+    fn interactive_defaults_prefer_herdr_and_safe_auto_transport() {
+        let plan: Plan = serde_json::from_value(serde_json::json!({"stages": []}))
+            .expect("minimal plan should deserialize");
+
+        assert_eq!(plan.terminal.backend, TerminalBackend::Herdr);
+        assert_eq!(plan.execution.transport, ExecutionTransport::Auto);
+        assert_eq!(plan.execution.fallback, ExecutionFallback::CliBatch);
+    }
 }

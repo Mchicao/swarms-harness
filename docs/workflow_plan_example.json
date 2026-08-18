@@ -26,6 +26,19 @@
     }
   },
   "thinking": "medium",
+  "execution": {
+    "transport": "auto",
+    "fallback": "cli_batch",
+    "acp": {
+      "command": "opencode",
+      "args": ["acp"]
+    }
+  },
+  "terminal": {
+    "backend": "herdr",
+    "on_unavailable": "hidden",
+    "workspace_scope": "run"
+  },
   "default_timeout_seconds": 600,
   "default_max_attempts": 1,
   "stages": [

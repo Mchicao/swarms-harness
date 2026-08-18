@@ -18,7 +18,9 @@ UI can show the exact Herdr surface used by a worker.
 
 ## Plan configuration
 
-Add the following fields to a plan when interactive ACP and Herdr are desired:
+Interactive ACP-or-CLI transport and the run-scoped Herdr surface are now the
+SWARMS defaults. Add the following fields when a plan should make those
+defaults explicit or override them per run:
 
 ~~~
 {
@@ -73,8 +75,10 @@ Other terminal results are `rejected` or `failed`.
 
 ## Optional live transports
 
-Plan configuration remains portable: these integrations are opt-in environment
-switches and only apply while `execution.transport` is `auto`.
+Plan configuration remains portable. The generic ACP path is selected by
+default when the wrapper exposes a safe launcher; provider-specific live
+transports remain opt-in environment switches and only apply while
+`execution.transport` is `auto`.
 
 | Provider | Enable | Provider mechanism |
 | --- | --- | --- |
