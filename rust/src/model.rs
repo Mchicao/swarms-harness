@@ -200,6 +200,91 @@ impl OnMissing {
 }
 
 // ---------------------------------------------------------------------------
+// Parallel test-time scaling
+// ---------------------------------------------------------------------------
+
+/// Execution policy for how many candidate rollouts a task runs and how the
+/// winner is chosen. `single` (default) preserves the classic one-shot path.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalingMode {
+    #[default]
+    Single,
+    BestOfN,
+    AdaptiveParallel,
+    SynthesizeN,
+}
+
+/// Operation the escalation model performs when cheap rollouts are ambiguous.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalateAction {
+    #[default]
+    Select,
+    Review,
+    Synthesize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ScalingPolicy {
+    #[serde(default)]
+    pub mode: ScalingMode,
+    /// Candidates per parallel wave (best_of_n / synthesize_n) or expansion
+    /// batch size (adaptive_parallel). Clamped to 2..=8 by static review.
+    #[serde(default = "default_scaling_candidates")]
+    pub candidates: usize,
+    /// Total rollout budget. 0 means the mode default (N, or 1+N adaptive).
+    #[serde(default)]
+    pub max_rollouts: usize,
+    /// Route for the optional LLM verifier (may be cheaper than the generator).
+    #[serde(default)]
+    pub verifier_route: Option<String>,
+    /// Minimum verifier confidence (0.0-1.0) to accept its ranking directly.
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+    /// Strong model to escalate to when rollouts remain ambiguous.
+    #[serde(default)]
+    pub escalate_route: Option<String>,
+    #[serde(default)]
+    pub escalate_action: EscalateAction,
+}
+
+impl Default for ScalingPolicy {
+    fn default() -> Self {
+        Self {
+            mode: ScalingMode::Single,
+            candidates: default_scaling_candidates(),
+            max_rollouts: 0,
+            verifier_route: None,
+            min_confidence: default_min_confidence(),
+            escalate_route: None,
+            escalate_action: EscalateAction::default(),
+        }
+    }
+}
+
+impl ScalingPolicy {
+    /// Effective total rollout budget for the mode.
+    pub fn rollout_budget(&self) -> usize {
+        if self.max_rollouts > 0 {
+            return self.max_rollouts;
+        }
+        match self.mode {
+            ScalingMode::AdaptiveParallel => 1 + self.candidates,
+            _ => self.candidates,
+        }
+    }
+}
+
+fn default_scaling_candidates() -> usize {
+    3
+}
+
+fn default_min_confidence() -> f64 {
+    0.7
+}
+
+// ---------------------------------------------------------------------------
 // Router / Provider
 // ---------------------------------------------------------------------------
 
@@ -391,6 +476,9 @@ pub struct Plan {
     pub default_timeout_seconds: Option<u64>,
     #[serde(default)]
     pub default_max_attempts: Option<u32>,
+    /// Plan-level default scaling policy (overridable per task).
+    #[serde(default)]
+    pub scaling: Option<ScalingPolicy>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -498,6 +586,9 @@ pub struct TaskSpec {
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
     pub max_attempts: Option<u32>,
+    /// Parallel test-time scaling policy (overrides plan default).
+    #[serde(default)]
+    pub scaling: Option<ScalingPolicy>,
 }
 
 fn default_role() -> String {
@@ -528,6 +619,13 @@ impl TaskSpec {
 
     pub fn effective_max_attempts(&self, plan: &Plan) -> u32 {
         self.max_attempts.or(plan.default_max_attempts).unwrap_or(1)
+    }
+
+    pub fn effective_scaling(&self, plan: &Plan) -> ScalingPolicy {
+        self.scaling
+            .clone()
+            .or_else(|| plan.scaling.clone())
+            .unwrap_or_default()
     }
 
     /// Roles that produce features or directly gate their completion. These

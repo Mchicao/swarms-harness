@@ -584,6 +584,8 @@ pub fn execute(
             let run_dir = run_dir.clone();
             let console_log = work_dir.join("worker.log");
             let plan = plan.clone();
+            let router = router.clone();
+            let caps = caps.clone();
             let store = Arc::clone(&session_store);
 
             if let Some(state) = states.get_mut(&task.id) {
@@ -620,7 +622,21 @@ pub fn execute(
 
             thread::spawn(move || {
                 let state = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store)
+                    if task.spec.effective_scaling(&plan).mode != crate::model::ScalingMode::Single
+                    {
+                        crate::scaling::run_scaled_task(
+                            &workspace_root,
+                            &run_dir,
+                            &task,
+                            &plan,
+                            &prompt,
+                            &router,
+                            global_cap,
+                            &caps,
+                        )
+                    } else {
+                        run_task(&workspace_root, &run_dir, &task, &plan, &prompt, &store)
+                    }
                 }))
                 .unwrap_or_else(|_| {
                     failed_state(
@@ -731,6 +747,7 @@ pub fn execute(
         "workflow_finished",
         json!({"status": report.status.clone()}),
     );
+    close_herdr_workspaces(&all_states);
 
     Ok(report)
 }
@@ -1251,7 +1268,7 @@ fn preserve_steering_log(work_dir: &Path, previous: &str, steer_prompt: &str) {
     let _ = fs::write(path, format!("{previous}{separator}{current}"));
 }
 
-fn merge_usage(total: &mut Usage, next: &Usage) {
+pub(crate) fn merge_usage(total: &mut Usage, next: &Usage) {
     fn add(left: &str, right: &str) -> String {
         match (left.parse::<u64>(), right.parse::<u64>()) {
             (Ok(left), Ok(right)) => left.saturating_add(right).to_string(),
@@ -1265,15 +1282,15 @@ fn merge_usage(total: &mut Usage, next: &Usage) {
     total.reasoning = add(&total.reasoning, &next.reasoning);
 }
 
-struct AdapterExec {
-    output: String,
-    usage: Usage,
-    session_id: Option<String>,
-    transport: String,
+pub(crate) struct AdapterExec {
+    pub(crate) output: String,
+    pub(crate) usage: Usage,
+    pub(crate) session_id: Option<String>,
+    pub(crate) transport: String,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_adapter(
+pub(crate) fn execute_adapter(
     task: &Task,
     prompt: &str,
     thinking: ThinkingLevel,
@@ -1851,16 +1868,7 @@ fn start_herdr_worker_pane(
         workspace_root
     };
     let root_cwd = workspace_cwd.canonicalize().ok()?;
-    let run_key_path = if scope == crate::model::TerminalWorkspaceScope::Worker {
-        work_dir
-    } else {
-        run_dir
-    };
-    let run_key = run_key_path
-        .canonicalize()
-        .ok()?
-        .to_string_lossy()
-        .to_string();
+    let run_key = herdr_workspace_key(run_dir)?;
     let _lock = HERDR_START_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -1896,11 +1904,7 @@ fn start_herdr_worker_pane(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("run");
-        let label = if scope == crate::model::TerminalWorkspaceScope::Worker {
-            title.to_string()
-        } else {
-            format!("SWARMS | {run_id}")
-        };
+        let label = format!("SWARMS | {run_id}");
         let output = Command::new(&herdr)
             .args([
                 "--session",
@@ -2088,27 +2092,23 @@ fn ensure_herdr_client(herdr: &str, session: &str) {
     if clients.contains(session) {
         return;
     }
+    if herdr_client_is_running(session) {
+        clients.insert(session.to_string());
+        return;
+    }
 
     let escaped_herdr = herdr.replace('\'', "''");
     let escaped_session = session.replace('\'', "''");
     let command = format!("& '{escaped_herdr}' --session '{escaped_session}'");
     let title = format!("Herdr | {session}");
+    let shell_args = herdr_client_shell_args(&command);
     let launched = Command::new("wt.exe")
-        .args([
-            "new-tab",
-            "--title",
-            &title,
-            "powershell.exe",
-            "-NoLogo",
-            "-NoProfile",
-            "-NoExit",
-            "-Command",
-            &command,
-        ])
+        .args(["new-tab", "--title", &title, "powershell.exe"])
+        .args(shell_args)
         .status()
         .is_ok_and(|status| status.success())
         || Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoProfile", "-NoExit", "-Command", &command])
+            .args(shell_args)
             .creation_flags(0x0000_0010)
             .spawn()
             .is_ok();
@@ -2117,6 +2117,57 @@ fn ensure_herdr_client(herdr: &str, session: &str) {
         clients.insert(session.to_string());
     }
 }
+
+#[cfg(windows)]
+fn herdr_client_shell_args(command: &str) -> [&str; 4] {
+    ["-NoLogo", "-NoProfile", "-Command", command]
+}
+
+#[cfg(windows)]
+fn herdr_client_is_running(session: &str) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const SCRIPT: &str = "$needle = '--session ' + $env:SWARMS_HERDR_CLIENT_SESSION; $client = Get-CimInstance Win32_Process -Filter \"Name='herdr.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($needle) -and -not $_.CommandLine.TrimEnd().EndsWith(' server') }; if ($client) { exit 0 } else { exit 1 }";
+    Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-Command", SCRIPT])
+        .env("SWARMS_HERDR_CLIENT_SESSION", session)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(windows)]
+fn herdr_workspace_key(run_dir: &Path) -> Option<String> {
+    Some(run_dir.canonicalize().ok()?.to_string_lossy().to_string())
+}
+
+#[cfg(windows)]
+fn close_herdr_workspaces(states: &[TaskState]) {
+    let herdr = herdr_program();
+    let mut workspaces = HashSet::new();
+    for state in states {
+        let (Some(session), Some(workspace_id)) = (
+            state.terminal_session.as_deref(),
+            state.terminal_workspace_id.as_deref(),
+        ) else {
+            continue;
+        };
+        if state.terminal_backend.as_deref() != Some("herdr")
+            || !workspaces.insert((session.to_string(), workspace_id.to_string()))
+        {
+            continue;
+        }
+        let _ = Command::new(&herdr)
+            .args(["--session", session, "workspace", "close", workspace_id])
+            .status();
+    }
+}
+
+#[cfg(not(windows))]
+fn close_herdr_workspaces(_states: &[TaskState]) {}
 
 #[cfg(windows)]
 fn herdr_label(value: &str, max_chars: usize) -> String {
@@ -2374,7 +2425,7 @@ pub(crate) fn wait_bounded(
     }
 }
 
-fn run_verify_commands(
+pub(crate) fn run_verify_commands(
     task: &Task,
     root: &Path,
     work_dir: &Path,
@@ -2508,7 +2559,7 @@ fn execute_shell_bounded_status(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-fn success_state(
+pub(crate) fn success_state(
     task: &Task,
     thinking: ThinkingLevel,
     started: Instant,
@@ -2556,10 +2607,11 @@ fn success_state(
         terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
+        scaling: None,
     }
 }
 
-fn failed_state(
+pub(crate) fn failed_state(
     task: &Task,
     thinking: ThinkingLevel,
     started: Instant,
@@ -2601,6 +2653,7 @@ fn failed_state(
         terminal_pane_id: None,
         ended_at: Some(now_iso()),
         checkpoint_key: None,
+        scaling: None,
     }
 }
 
@@ -2835,6 +2888,26 @@ mod auto_resume_tests {
         assert!(script.contains("TOOL"));
         assert!(script.contains(WORKER_CONSOLE_FINISHED_SENTINEL));
         assert!(script.contains("Read-Host | Out-Null"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn herdr_client_exits_with_the_attached_client() {
+        let args = herdr_client_shell_args("herdr --session swarms");
+        assert!(!args.contains(&"-NoExit"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn herdr_workspace_key_is_run_scoped() {
+        let run_dir = std::env::temp_dir().join(format!("swarms-herdr-run-{}", unix_ms()));
+        fs::create_dir_all(run_dir.join("results/worker-a")).unwrap();
+        fs::create_dir_all(run_dir.join("results/worker-b")).unwrap();
+
+        let key = herdr_workspace_key(&run_dir).unwrap();
+        assert_eq!(key, run_dir.canonicalize().unwrap().to_string_lossy());
+
+        fs::remove_dir_all(run_dir).unwrap();
     }
 
     #[cfg(windows)]

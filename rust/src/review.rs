@@ -397,6 +397,118 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             _ => {}
         }
 
+        // Parallel test-time scaling: routes, budget ranges, and the signals
+        // needed to actually rank candidates.
+        let scaling = task.spec.effective_scaling(plan);
+        if scaling.mode != crate::model::ScalingMode::Single {
+            if session.mode == crate::model::SessionMode::Reuse {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "scaling_session_reuse".to_string(),
+                    message: format!(
+                        "task '{}' uses parallel scaling; candidates must be independent, so session reuse is not allowed",
+                        task.source_id
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            if !(2..=8).contains(&scaling.candidates) {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "invalid_scaling_candidates".to_string(),
+                    message: format!(
+                        "task '{}': scaling.candidates must be 2..=8, got {}",
+                        task.source_id, scaling.candidates
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            if scaling.max_rollouts > 0 && scaling.max_rollouts < scaling.candidates {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "invalid_scaling_budget".to_string(),
+                    message: format!(
+                        "task '{}': scaling.max_rollouts ({}) is below candidates ({})",
+                        task.source_id, scaling.max_rollouts, scaling.candidates
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            for (field, route_name) in [
+                ("verifier_route", scaling.verifier_route.as_deref()),
+                ("escalate_route", scaling.escalate_route.as_deref()),
+            ] {
+                if let Some(route) = route_name {
+                    match router.get_provider(route) {
+                        Some(p) if p.enabled => {
+                            let is_premium = match p.cost_class {
+                                Some(class) => class.is_premium(),
+                                None => {
+                                    let route_lower = route.to_lowercase();
+                                    PREMIUM_SUBSTRINGS.iter().any(|s| route_lower.contains(s))
+                                }
+                            };
+                            if field == "escalate_route" && is_premium && !premium_allowed {
+                                findings.push(Finding {
+                                    severity: Severity::Error,
+                                    code: "scaling_premium_blocked".to_string(),
+                                    message: format!(
+                                        "task '{}': escalate_route '{route}' is premium but review_policy.premium_allowed is not true",
+                                        task.source_id
+                                    ),
+                                    task_id: Some(task.source_id.clone()),
+                                });
+                            }
+                        }
+                        Some(_) => findings.push(Finding {
+                            severity: Severity::Error,
+                            code: "scaling_route_disabled".to_string(),
+                            message: format!(
+                                "task '{}': scaling.{field} '{route}' is disabled",
+                                task.source_id
+                            ),
+                            task_id: Some(task.source_id.clone()),
+                        }),
+                        None => findings.push(Finding {
+                            severity: Severity::Error,
+                            code: "scaling_route_unknown".to_string(),
+                            message: format!(
+                                "task '{}': scaling.{field} '{route}' is unknown",
+                                task.source_id
+                            ),
+                            task_id: Some(task.source_id.clone()),
+                        }),
+                    }
+                }
+            }
+            let has_deterministic_signal = task.spec.has_verification();
+            let has_model_signal =
+                scaling.verifier_route.is_some() || scaling.escalate_route.is_some();
+            let needs_signal = scaling.mode != crate::model::ScalingMode::SynthesizeN;
+            if needs_signal && !has_deterministic_signal && !has_model_signal {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "scaling_requires_verification".to_string(),
+                    message: format!(
+                        "task '{}': scaling needs at least one verify command or a verifier_route to rank candidates",
+                        task.source_id
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+            if scaling.mode == crate::model::ScalingMode::SynthesizeN && !has_model_signal {
+                findings.push(Finding {
+                    severity: Severity::Error,
+                    code: "scaling_requires_synth_route".to_string(),
+                    message: format!(
+                        "task '{}': synthesize_n needs a verifier_route or escalate_route as the synthesis model",
+                        task.source_id
+                    ),
+                    task_id: Some(task.source_id.clone()),
+                });
+            }
+        }
+
         // Feature-producing roles must declare independent verification. A task
         // that reaches `Completed` without verification is treated as workflow
         // success today, so a missing gate is an error, not a warning.

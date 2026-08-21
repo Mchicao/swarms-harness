@@ -12,6 +12,7 @@ pub mod quota;
 pub mod resources;
 pub mod review;
 pub mod runtime;
+pub mod scaling;
 pub mod session;
 pub mod steering;
 pub mod telemetry;

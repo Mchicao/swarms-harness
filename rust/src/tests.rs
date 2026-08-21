@@ -102,6 +102,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
         session: None,
         timeout_seconds: None,
         max_attempts: None,
+        scaling: None,
     };
     let provider = providers.get(route).cloned().unwrap_or_else(mock_provider);
     Task {
@@ -165,6 +166,7 @@ fn legacy_timeout_fields_never_create_a_worker_deadline() {
         terminal: model::TerminalConfig::default(),
         default_timeout_seconds: Some(1),
         default_max_attempts: None,
+        scaling: None,
     };
     assert_eq!(task.spec.effective_timeout(&plan), None);
 }
@@ -1319,6 +1321,7 @@ fn review_rejects_thinking_on_hermes() {
             session: None,
             timeout_seconds: None,
             max_attempts: None,
+            scaling: None,
         },
         id: model::task_index_to_id(0, "t"),
         source_id: "t".to_string(),
@@ -2372,4 +2375,231 @@ fn unset_kind_tasks_are_not_flagged() {
             | "process_only_plan"
             | "high_process_ratio"
     )));
+}
+
+// ---------------------------------------------------------------------------
+// 21. Parallel test-time scaling
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scaling_review_accepts_valid_policy() {
+    let result = review_json(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "verify": ["git --version"],
+            "scaling": {"mode": "best_of_n", "candidates": 3}
+        }]}]
+    }));
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.code.starts_with("scaling_")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn scaling_review_rejects_session_reuse() {
+    let result = review_json(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "verify": ["git --version"],
+            "session": {"mode": "reuse", "key": "k"},
+            "scaling": {"mode": "best_of_n", "candidates": 3}
+        }]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "scaling_session_reuse"));
+}
+
+#[test]
+fn scaling_review_rejects_missing_ranking_signal() {
+    let result = review_json(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "scaling": {"mode": "adaptive_parallel", "candidates": 3}
+        }]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "scaling_requires_verification"));
+}
+
+#[test]
+fn scaling_review_rejects_unknown_and_premium_aux_routes() {
+    let unknown = review_json(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "verify": ["git --version"],
+            "scaling": {"mode": "best_of_n", "candidates": 3, "verifier_route": "nope"}
+        }]}]
+    }));
+    assert!(unknown
+        .findings
+        .iter()
+        .any(|f| f.code == "scaling_route_unknown"));
+
+    let premium_router = {
+        let mut router = mock_router();
+        router
+            .providers
+            .insert("codex".to_string(), mock_provider());
+        router
+    };
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "verify": ["git --version"],
+            "scaling": {"mode": "adaptive_parallel", "candidates": 3,
+                        "escalate_route": "codex", "escalate_action": "review"}
+        }]}]
+    }))
+    .unwrap();
+    let tasks = crate::config::build_tasks(&plan, &premium_router).unwrap();
+    let premium = review_plan(&plan, &premium_router, &tasks);
+    assert!(premium
+        .findings
+        .iter()
+        .any(|f| f.code == "scaling_premium_blocked"));
+}
+
+#[test]
+fn scaling_review_rejects_out_of_range_candidates() {
+    let result = review_json(json!({
+        "goal": "scaled plan",
+        "stages":[{"tasks":[{
+            "id": "t",
+            "route": "mock",
+            "task": "x",
+            "verify": ["git --version"],
+            "scaling": {"mode": "best_of_n", "candidates": 9}
+        }]}]
+    }));
+    assert!(result
+        .findings
+        .iter()
+        .any(|f| f.code == "invalid_scaling_candidates"));
+}
+
+fn init_git_repo(dir: &Path) {
+    use std::process::Command;
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    };
+    run(&["init"]);
+    run(&[
+        "-c",
+        "user.email=swarms@test",
+        "-c",
+        "user.name=swarms",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
+}
+
+#[test]
+fn scaled_mock_best_of_n_completes_with_outcome() {
+    let dir = temp_dir();
+    init_git_repo(&dir);
+    let run_dir = dir.join(".agent/swarm/runs/scaling-test");
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "stages": [{"name": "Build", "tasks": [{
+            "id": "worker",
+            "route": "mock",
+            "task": "Create docs/bench_notes/reshard_plan.md with edge cases.",
+            "verify": ["git --version"],
+            "scaling": {"mode": "best_of_n", "candidates": 2}
+        }]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let task = crate::config::build_tasks(&plan, &router)
+        .unwrap()
+        .remove(0);
+    let caps = HashMap::from([("mock".to_string(), 4)]);
+    let state = crate::scaling::run_scaled_task(
+        &dir,
+        &run_dir,
+        &task,
+        &plan,
+        "Create docs/bench_notes/reshard_plan.md with edge cases.",
+        &router,
+        4,
+        &caps,
+    );
+    assert_eq!(state.status, TaskStatus::Completed, "{:?}", state.error);
+    let outcome = state.scaling.expect("scaling outcome recorded");
+    assert_eq!(outcome.rollouts.len(), 2);
+    assert_eq!(outcome.decision, "select");
+    assert_eq!(outcome.decision_reason, "tie_first_verified");
+    assert!(outcome.winner_index.is_some());
+    assert!(dir.join("docs/bench_notes/reshard_plan.md").exists());
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn scheduler_runs_scaled_task_end_to_end() {
+    let dir = temp_dir();
+    init_git_repo(&dir);
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "terminal": {"backend": "hidden"},
+        "stages": [{"name": "Build", "parallel": true, "tasks": [{
+            "id": "worker",
+            "route": "mock",
+            "task": "Create docs/bench_notes/reshard_plan.md with edge cases.",
+            "verify": ["git --version"],
+            "scaling": {"mode": "best_of_n", "candidates": 2}
+        }]}]
+    }))
+    .unwrap();
+    let router = mock_router();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let caps = HashMap::from([("mock".to_string(), 4)]);
+    let report = runtime::execute(
+        &dir,
+        &dir,
+        &tasks,
+        &plan,
+        &router,
+        4,
+        &caps,
+        "scaling-e2e",
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(report.status, "completed", "{:?}", report.errors);
+    let scaled = report
+        .results
+        .iter()
+        .find_map(|s| s.scaling.as_ref())
+        .expect("scheduler produced a scaling outcome");
+    assert_eq!(scaled.rollouts.len(), 2);
+    assert!(dir.join("docs/bench_notes/reshard_plan.md").exists());
+    fs::remove_dir_all(dir).ok();
 }

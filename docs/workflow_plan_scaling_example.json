@@ -1,0 +1,82 @@
+{
+  "_doc": "Parallel test-time scaling example. Uses Gemini 3.7 Flash (Medium) for every rollout, verifier, and synthesis step. Requires route gemini37_flash_medium enabled in config/swarm_router.local.json (the open-source base keeps it disabled). Candidates run in isolated git worktrees; verify commands execute inside each worktree and the winner's diff is applied back to the workspace.",
+  "schema_version": 1,
+  "goal": "Implement the reshard utility pair with parallel candidate rollouts, deterministic verification, and Gemini 3.7 Medium synthesis.",
+  "project": {
+    "id": "swarms-scaling-example",
+    "name": "SWARMS Scaling Example"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": false,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 12,
+    "global_max_concurrency": 4,
+    "provider_concurrency": {
+      "gemini37_flash_medium": 4,
+      "mock": 3
+    }
+  },
+  "stages": [
+    {
+      "name": "ParallelImplementation",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "compress",
+          "role": "programmer",
+          "route": "gemini37_flash_medium",
+          "task": "Implement bench_apps/reshard/compress.py. It must copy an input directory into shard_N folders under an output directory, with at most 3 files per shard and no writes outside the output directory.",
+          "artifacts": ["bench_apps/reshard/compress.py"],
+          "tools_policy": "workspace-write",
+          "kind": "feature",
+          "acceptance": ["shards contain at most 3 files", "no writes outside the output directory"],
+          "verify": ["python -c \"import ast; ast.parse(open('bench_apps/reshard/compress.py').read())\""],
+          "scaling": {
+            "mode": "adaptive_parallel",
+            "candidates": 3,
+            "verifier_route": "gemini37_flash_medium",
+            "escalate_route": "gemini37_flash_medium",
+            "escalate_action": "review",
+            "min_confidence": 0.7
+          }
+        },
+        {
+          "id": "decompress",
+          "role": "programmer",
+          "route": "gemini37_flash_medium",
+          "task": "Implement bench_apps/reshard/decompress.py. It must reconstruct the original flat files from a resharded directory into a target directory, preserving file contents.",
+          "artifacts": ["bench_apps/reshard/decompress.py"],
+          "tools_policy": "workspace-write",
+          "kind": "feature",
+          "acceptance": ["roundtrip preserves file contents", "path traversal outside the output is refused"],
+          "verify": ["python -c \"import ast; ast.parse(open('bench_apps/reshard/decompress.py').read())\""],
+          "scaling": {
+            "mode": "synthesize_n",
+            "candidates": 3,
+            "verifier_route": "gemini37_flash_medium"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "tests",
+          "role": "qa",
+          "route": "gemini37_flash_medium",
+          "task": "Create bench_tests/test_bench_reshard.py with roundtrip tests, output-boundary checks, and deterministic shard naming. Do not edit bench_apps/.",
+          "needs": ["compress", "decompress"],
+          "artifacts": ["bench_tests/test_bench_reshard.py"],
+          "protected": ["bench_apps/reshard/compress.py", "bench_apps/reshard/decompress.py"],
+          "tools_policy": "workspace-write",
+          "verify": ["python -m pytest bench_tests/test_bench_reshard.py -q"]
+        }
+      ]
+    }
+  ]
+}

@@ -25,6 +25,8 @@
     "glm52": "glm52",
     "gemini": "gemini_flash",
     "antigravity": "gemini_flash",
+    "gemini37": "gemini37_flash_medium",
+    "gemini37_medium": "gemini37_flash_medium",
     "codex": "codex"
   },
   "role_routes": {
@@ -101,6 +103,23 @@
       "scarcity": 0.90,
       "strengths": ["critical", "architecture", "hard", "security", "subtle", "large", "multi-file"],
       "weaknesses": ["simple", "docs", "boilerplate", "scarce quota"]
+    },
+    "gemini37_flash_medium": {
+      "_doc": "Gemini 3.7 Flash (Medium) via the antigravity CLI. Disabled in the open-source base config; enable it in config/swarm_router.local.json. Default route for parallel test-time scaling plans.",
+      "enabled": false,
+      "provider": "antigravity_cli",
+      "model": "Gemini 3.7 Flash (Medium)",
+      "canonical_model": "gemini-3.7-flash-medium",
+      "wrapper": "gemini",
+      "quota_key": "agy:gemini",
+      "fallback_routes": ["gemini_flash", "glm52", "mock"],
+      "health_key": "antigravity_cli",
+      "metric_key": "gemini37_medium",
+      "relative_cost": 0.0,
+      "quality": 0.72,
+      "scarcity": 0.0,
+      "strengths": ["docs", "review", "qa", "frontend", "coverage", "parallel-scaling"],
+      "weaknesses": ["deep debug", "large migration"]
     },
     "hy3_openrouter": {
       "_doc": "Tencent HY3 (Hunyuan) via OpenRouter's free variant. Set the OpenRouter credential env var and enable in config/swarm_router.local.json to use. OpenAI-compatible.",

@@ -152,6 +152,9 @@ pub struct TaskState {
     /// Stable hash of the task definition used to validate resume checkpoints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_key: Option<String>,
+    /// Present only for tasks with a parallel scaling policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaling: Option<ScalingOutcome>,
 }
 
 impl TaskState {
@@ -190,8 +193,61 @@ impl TaskState {
             terminal_pane_id: None,
             ended_at: None,
             checkpoint_key: None,
+            scaling: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Parallel scaling outcome (persisted per scaled task)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RolloutInfo {
+    pub index: usize,
+    pub route: String,
+    pub model: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub duration_ms: u128,
+    #[serde(default)]
+    pub usage: Usage,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct VerifierInfo {
+    pub route: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EscalationInfo {
+    pub route: String,
+    pub action: String,
+    pub reason: String,
+}
+
+/// Observability record for a scaled task: how many rollouts ran, on which
+/// models, with what verification evidence, and why the winner (or an
+/// escalation) was chosen.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ScalingOutcome {
+    pub mode: String,
+    pub rollouts: Vec<RolloutInfo>,
+    pub decision: String,
+    pub decision_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<VerifierInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<EscalationInfo>,
 }
 
 // ---------------------------------------------------------------------------
