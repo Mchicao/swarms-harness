@@ -94,6 +94,74 @@ cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features u
 See `docs/RUST_RUNTIME.md` for the full architecture, thinking levels, session
 affinity, and telemetry documentation.
 
+## Parallel Agents (Test-Time Scaling)
+
+Some tasks deserve more than one attempt. Instead of always paying for one
+expensive execution, a task can run several cheap candidates in parallel, keep
+the best one, and only spend more compute when the result is uncertain:
+
+```text
+Task
+  -> N parallel candidates (each in its own isolated git worktree)
+  -> tests/build run per candidate
+  -> one clear winner?  -> done, no extra model calls
+  -> tie or unclear?    -> verifier model scores the candidates
+  -> still unclear?     -> stronger model selects, repairs, or synthesizes
+```
+
+Enable it per task with a `scaling` block in the plan:
+
+```json
+{
+  "id": "compress",
+  "route": "gemini37_flash_medium",
+  "verify": ["python -m pytest bench_tests/ -q"],
+  "scaling": {
+    "mode": "adaptive_parallel",
+    "candidates": 3,
+    "verifier_route": "gemini37_flash_medium",
+    "escalate_route": "gemini37_flash_medium",
+    "escalate_action": "review"
+  }
+}
+```
+
+Four modes:
+
+| Mode | What happens | Rollouts |
+|---|---|---|
+| `single` (default) | One execution, classic behavior | 1 |
+| `best_of_n` | N candidates race in parallel, best wins | N |
+| `adaptive_parallel` | 1 candidate first; expands to N more only if verification is ambiguous | 1 to 1+N |
+| `synthesize_n` | N candidates, then one model writes a new solution combining the best parts | N+1 |
+
+How the winner is picked — objective checks first, models only as tie-breaker:
+
+1. Your `verify` commands (tests, build, lint) run inside each candidate's
+   worktree. If exactly one candidate passes, it wins and no model judges
+   anything.
+2. On a tie, an optional `verifier_route` model (it can be cheaper than the
+   worker) scores every candidate in one call. A low-confidence verdict never
+   decides.
+3. Still ambiguous? The `escalate_route` model `select`s the best candidate,
+   `review`s and repairs the leader, or `synthesize`s a new solution.
+
+Costs stay bounded: total rollouts are capped (`max_rollouts`), parallel waves
+respect your provider and global concurrency caps, escalation is
+quota-checked, and premium escalation routes still need explicit
+`premium_allowed`. Every task records what it spent — rollouts, models, tokens,
+scores, winner, and why — in its task state, so you can compare policies and
+see whether scaling was worth it.
+
+Try it offline-safe with the bundled example (needs the
+`gemini37_flash_medium` route enabled in your local router, or swap routes to
+`mock`):
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_scaling_example.json
+cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_scaling_example.json --force
+```
+
 ## Quick Start
 
 Requires Python 3.10+ and Git.

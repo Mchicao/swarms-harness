@@ -66,6 +66,43 @@ Per-task `thinking` controls reasoning depth. Only verified adapter flags are us
 
 Tasks can reuse provider sessions for prompt caching. See `docs/RUST_RUNTIME.md`.
 
+## Parallel Test-Time Scaling
+
+A task may run several candidate rollouts instead of one shot. The policy is a
+`scaling` block on the task (or plan-level default); absent = `single`, the
+classic path, byte-identical to before.
+
+Agent-facing rules (implementation: `rust/src/scaling.rs`):
+
+- Modes: `single` | `best_of_n` | `adaptive_parallel` | `synthesize_n`.
+  `adaptive_parallel` runs 1 rollout, expands by `candidates` more only if
+  deterministic verification is ambiguous, then escalates once at most.
+  `synthesize_n` runs N rollouts and has the synthesis route produce one new
+  solution. Total rollouts are bounded by `max_rollouts` (default: mode
+  budget); waves are clamped by the route cap and global cap.
+- Candidate rollouts execute in isolated **git worktrees** seeded with the
+  workspace dirty state. Scaling fails closed without a git workspace. Never
+  run a scaled task on a non-repo workspace.
+- Winner selection is deterministic-first: the task's `verify` commands run
+  inside each candidate worktree; exactly one passer wins with no LLM call.
+  Ties/all-fail go to `verifier_route` (JSON verdict, needs
+  `confidence >= min_confidence`), then one quota-checked escalation
+  (`select`/`review`/`synthesize` via `escalate_route`).
+- The winner's diff is applied to the real workspace, then the standard
+  artifact + verify gates run exactly once against the root. Session reuse is
+  rejected on scaled tasks (candidates must be independent).
+- Static review codes: `scaling_session_reuse`, `invalid_scaling_candidates`
+  (2..=8), `invalid_scaling_budget`, `scaling_route_unknown`,
+  `scaling_route_disabled`, `scaling_premium_blocked`,
+  `scaling_requires_verification`, `scaling_requires_synth_route`.
+- Observability: `TaskState.scaling` (rollouts, routes, models, per-rollout
+  usage and verification, scores, winner, decision reason, verifier,
+  escalation) plus `scaling_wave_started` / `scaling_rollout_finished` /
+  `scaling_decision` events. Read these to answer "was scaling worth it".
+- Reference plan: `docs/workflow_plan_scaling_example.json` (Gemini 3.7 Flash
+  Medium route `gemini37_flash_medium`; base router keeps it disabled — it is
+  enabled per-machine in `config/swarm_router.local.json`).
+
 ## Required Validation
 
 Before claiming changes are complete:
@@ -87,6 +124,7 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 - `rust/src/model.rs`: domain types (Plan, Task, Provider, ThinkingLevel, SessionConfig).
 - `rust/src/review.rs`: static plan validation (DAG, routes, thinking, session, artifacts).
 - `rust/src/runtime.rs`: scheduler (DAG waves, retries, observable progress, resume, verify, artifacts).
+- `rust/src/scaling.rs`: parallel test-time scaling (candidate rollouts in git worktrees, verifier, escalation).
 - `rust/src/adapter.rs`: native adapters (mock, CLI builders, OpenAI-compat HTTP, session/usage parsing).
 - `rust/src/session.rs`: session affinity store.
 - `rust/src/telemetry.rs`: usage normalisation, task state, report generation.
@@ -94,6 +132,7 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 - `rust/src/ui_bin.rs`: native `swarms-ui` binary entry point.
 - `config/role_policy.json`: planner/critic/programmer/verifier policy.
 - `docs/workflow_plan_example.json`: working plan example.
+- `docs/workflow_plan_scaling_example.json`: parallel scaling plan example (Gemini 3.7 Flash Medium).
 
 ## Safety
 

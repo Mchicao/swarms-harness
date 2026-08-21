@@ -115,6 +115,69 @@ headless mode; review rejects `mode: reuse` for those adapters.
 Same-key tasks are serialised by the scheduler to prevent concurrent
 continuation of a single conversation.
 
+## Parallel test-time scaling (single / best_of_n / adaptive / synthesize)
+
+A task can spend extra inference compute only when it is useful instead of
+always paying for one expensive execution. Add a `scaling` block per task (or
+plan-level default):
+
+```json
+{
+  "id": "compress",
+  "route": "gemini37_flash_medium",
+  "verify": ["python -m pytest bench_tests/ -q"],
+  "scaling": {
+    "mode": "adaptive_parallel",
+    "candidates": 3,
+    "verifier_route": "gemini37_flash_medium",
+    "escalate_route": "gemini37_flash_medium",
+    "escalate_action": "review",
+    "min_confidence": 0.7
+  }
+}
+```
+
+Modes:
+
+- `single` (default) — classic one-shot execution, unchanged behavior.
+- `best_of_n` — N independent rollouts in parallel, best candidate wins.
+- `adaptive_parallel` — 1 rollout first; if verification is ambiguous, expand
+  to N more, then escalate if still uncertain.
+- `synthesize_n` — N rollouts, then the `verifier_route` (or `escalate_route`)
+  model produces one new solution combining the strongest candidates.
+
+How it runs:
+
+1. Each candidate rollout executes in its own **git worktree** seeded with the
+   current workspace dirty state, so parallel writers never clobber each
+   other. Scaling requires a git workspace; it fails closed otherwise.
+2. Deterministic `verify` commands run **inside each worktree** first
+   (objective checks before LLM judgment). Exactly one passer wins with no
+   model-based verification at all.
+3. On ties or all-fail, the optional LLM verifier (`verifier_route`, may be
+   cheaper than the generator) scores every candidate in one call and returns
+   JSON `{scores, confidence, winner}`; low-confidence verdicts never decide.
+4. Still ambiguous → `escalate_route` performs `select` (pick winner),
+   `review` (repair the leading candidate in place), or `synthesize` (build a
+   new solution from the top candidates). Escalation is quota-checked and
+  premium routes still require `review_policy.premium_allowed`.
+5. The winner's diff is applied back to the workspace and the normal artifact
+   + verify gates run exactly once against the real root.
+
+Review rules: `candidates` 2..=8; aux routes must exist and be enabled;
+session reuse is rejected (candidates must be independent); best_of_n and
+adaptive need at least one `verify` command or a `verifier_route`;
+synthesize_n needs a synthesis route.
+
+Observability: the task state gains a `scaling` block (rollouts, routes,
+models, per-rollout usage/verification, scores, winner, decision reason,
+verifier, escalation) and `events.jsonl` records
+`scaling_wave_started` / `scaling_rollout_finished` / `scaling_decision`.
+
+Waves are clamped by the route cap and global cap. See
+`docs/workflow_plan_scaling_example.json` for a Gemini 3.7 Flash (Medium)
+plan.
+
 ## Quota-aware routing
 
 The optional quota guard reads the atomic snapshot written by
