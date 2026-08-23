@@ -58,6 +58,7 @@ pub enum AdapterKind {
     Kilo,
     Hermes,
     Agy,
+    Perch,
     OpenAiCompat,
 }
 
@@ -71,6 +72,7 @@ impl AdapterKind {
             "kilo" => Some(Self::Kilo),
             "hermes" => Some(Self::Hermes),
             "gemini" => Some(Self::Agy),
+            "perch" => Some(Self::Perch),
             "openai_compat" => Some(Self::OpenAiCompat),
             _ => None,
         }
@@ -78,7 +80,10 @@ impl AdapterKind {
 
     /// Whether this adapter has a native thinking/reasoning flag.
     pub fn supports_thinking(&self) -> bool {
-        matches!(self, Self::Codex | Self::OpenCode | Self::Kilo)
+        matches!(
+            self,
+            Self::Codex | Self::OpenCode | Self::Kilo | Self::Perch
+        )
     }
 
     /// Whether this adapter can capture and resume a session ID.
@@ -90,9 +95,10 @@ impl AdapterKind {
     }
 
     /// ACP is a provider process transport, not a property of the model.
-    /// Mock and HTTP routes stay on their existing native paths.
+    /// Mock and HTTP routes stay on their existing native paths; Perch has no
+    /// ACP surface at all (CLI batch only).
     pub fn supports_acp(&self) -> bool {
-        !matches!(self, Self::Mock | Self::OpenAiCompat)
+        !matches!(self, Self::Mock | Self::OpenAiCompat | Self::Perch)
     }
 }
 
@@ -163,6 +169,7 @@ pub fn build_cli_command(
         AdapterKind::Kilo => build_kilo(task, prompt_text, thinking, session_id),
         AdapterKind::Hermes => build_hermes(task, prompt_text, provider_name),
         AdapterKind::Agy => build_agy(task, prompt_text),
+        AdapterKind::Perch => build_perch(prompt_text, thinking),
         _ => Err(format!("not a CLI adapter: {kind:?}")),
     }
 }
@@ -190,7 +197,8 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
             AdapterKind::Agy | AdapterKind::Codex | AdapterKind::Claude | AdapterKind::Hermes => {
                 return None
             }
-            AdapterKind::Mock | AdapterKind::OpenAiCompat => return None,
+            // Perch has no documented ACP subcommand; CLI batch only.
+            AdapterKind::Mock | AdapterKind::OpenAiCompat | AdapterKind::Perch => return None,
         },
     };
     args.extend(config.args.iter().cloned());
@@ -324,7 +332,11 @@ fn build_hermes(task: &Task, prompt_text: &str, provider_name: &str) -> Result<C
     let program = which("hermes").unwrap_or_else(|| "hermes".to_string());
     let mut args = vec!["chat".to_string(), "-Q".to_string()];
 
-    let max_turns = env::var("HERMES_MAX_TURNS").unwrap_or_else(|_| "8".to_string());
+    // Agentic implementation tasks need far more than 8 tool iterations:
+    // the old default starved workers mid-implementation (2026-08-22, two
+    // failed waves). 24 fits inside the plan timeouts; HERMES_MAX_TURNS still
+    // wins for machine-specific overrides.
+    let max_turns = env::var("HERMES_MAX_TURNS").unwrap_or_else(|_| "24".to_string());
     args.push("--max-turns".to_string());
     args.push(max_turns);
 
@@ -374,6 +386,34 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
     args.push("--print".to_string());
     args.push(prompt_text.to_string());
 
+    Ok(CliSpec {
+        program,
+        args,
+        env: Vec::new(),
+    })
+}
+
+fn build_perch(prompt_text: &str, thinking: ThinkingLevel) -> Result<CliSpec> {
+    let program = which("perch").unwrap_or_else(|| "perch".to_string());
+    // Model selection is done outside SWARMS: either a Roost tier on a logged-in
+    // Starter/Pro account or a BYOK endpoint activated with `perch byok use`.
+    // Passing --model here would fight that pin, so the adapter stays neutral.
+    let mut args = vec![
+        "run".to_string(),
+        prompt_text.to_string(),
+        "--json".to_string(),
+    ];
+    let effort = match thinking {
+        ThinkingLevel::Auto => None,
+        ThinkingLevel::Minimal => Some("off"),
+        ThinkingLevel::Low => Some("low"),
+        ThinkingLevel::Medium => Some("medium"),
+        ThinkingLevel::High | ThinkingLevel::Max => Some("high"),
+    };
+    if let Some(effort) = effort {
+        args.push("--effort".to_string());
+        args.push(effort.to_string());
+    }
     Ok(CliSpec {
         program,
         args,

@@ -242,6 +242,21 @@
       "scarcity": 0.10,
       "strengths": ["agentic", "tool-calling", "multi-file", "self-correcting", "free", "architecture", "debug", "tests"],
       "weaknesses": ["vision", "free-tier rate limits", "heavier token cost than bare completion"]
+    },
+    "perch": {
+      "_doc": "Perch CLI (perchai.app) as a verifiable operator. Model selection lives inside perch (Roost tiers on a logged-in account, or BYOK endpoint via `perch byok set/use`), so the adapter never passes --model. Requires the perch CLI installed and signed in. Enable in config/swarm_router.local.json.",
+      "enabled": false,
+      "provider": "perch_cli",
+      "model": "",
+      "canonical_model": "perch-roost",
+      "wrapper": "perch",
+      "health_key": "perch_cli",
+      "metric_key": "perch",
+      "relative_cost": 0.0,
+      "quality": 0.75,
+      "scarcity": 0.10,
+      "strengths": ["agentic", "operator", "tools", "citations", "verifiable", "multi-step"],
+      "weaknesses": ["needs perch login", "starter token allowance", "no session reuse"]
     }
   }
 }

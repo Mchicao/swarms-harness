@@ -364,6 +364,13 @@ fn hermes_no_thinking_flag() {
     assert!(!spec.args.contains(&"--variant".to_string()));
     assert!(spec.args.contains(&"--provider".to_string()));
     assert!(spec.args.contains(&"nous".to_string()));
+    // Default turn budget must be large enough for implementation tasks.
+    let turns = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--max-turns")
+        .unwrap();
+    assert_eq!(spec.args.get(turns + 1).map(String::as_str), Some("24"));
 }
 
 #[test]
@@ -378,6 +385,57 @@ fn agy_no_session_support() {
     assert!(!AdapterKind::Claude.supports_thinking());
     assert!(AdapterKind::OpenCode.supports_thinking());
     assert!(AdapterKind::Kilo.supports_thinking());
+}
+
+#[test]
+fn perch_command_is_model_neutral_and_maps_effort() {
+    let mut task = make_task("perch", &[], "mock");
+    task.provider.provider = "perch_cli".to_string();
+    task.provider.wrapper = "perch".to_string();
+    task.provider.model = "stealth-ox-alpha".to_string();
+
+    let spec = adapter::build_cli_command(
+        AdapterKind::Perch,
+        &task,
+        "do work",
+        ThinkingLevel::Auto,
+        None,
+        "perch_cli",
+    )
+    .unwrap();
+    assert!(spec.program.contains("perch"));
+    assert!(spec.args.contains(&"run".to_string()));
+    assert!(spec.args.contains(&"--json".to_string()));
+    assert!(spec.args.contains(&"do work".to_string()));
+    // model selection stays with perch (roost tier or byok pin), never --model
+    assert!(!spec.args.contains(&"--model".to_string()));
+    assert!(!spec.args.contains(&"stealth-ox-alpha".to_string()));
+
+    let high = adapter::build_cli_command(
+        AdapterKind::Perch,
+        &task,
+        "do work",
+        ThinkingLevel::High,
+        None,
+        "perch_cli",
+    )
+    .unwrap();
+    assert!(high.args.contains(&"--effort".to_string()));
+    assert!(high.args.contains(&"high".to_string()));
+
+    let minimal = adapter::build_cli_command(
+        AdapterKind::Perch,
+        &task,
+        "do work",
+        ThinkingLevel::Minimal,
+        None,
+        "perch_cli",
+    )
+    .unwrap();
+    assert!(minimal.args.contains(&"off".to_string()));
+    assert!(AdapterKind::Perch.supports_thinking());
+    assert!(!AdapterKind::Perch.supports_session_reuse());
+    assert!(!AdapterKind::Perch.supports_acp());
 }
 
 #[test]

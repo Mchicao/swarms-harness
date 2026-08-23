@@ -63,3 +63,7 @@ uv.lock
 .codex/
 .cursor/
 .hermes/
+
+# Local tool artifacts
+.atl/
+output/
