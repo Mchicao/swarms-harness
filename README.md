@@ -8,6 +8,8 @@ SWARMS lets you decide which model plans, which model codes, which model reviews
 
 Website: https://swarms-orchestrator.vercel.app/
 
+New: [Swarm-Driven Development (SwDD)](https://github.com/Mchicao/swarm-driven-development) connects OpenSpec, SWARMS, Gentle-AI, and Engram behind one native `swdd` command — spec first, swarm execution, receipt-backed delivery.
+
 I have used versions of this workflow personally since January-February 2026. The original idea came from Ralph-style coding loops: keep a strong model on planning and review, then let cheaper workers handle implementation, QA, issue triage, and repeated validation.
 
 Español: [README.es.md](README.es.md)
@@ -23,6 +25,27 @@ Availability, quotas, eligibility, pricing, and terms can change at any time.
 Always verify the current offer directly with the provider before running a
 workload. SWARMS does not guarantee free access; it routes only to the
 providers and models you configure locally.
+
+### Verified free routes (tested August 2026)
+
+These four routes are configured and verified working end to end in a local
+`config/swarm_router.local.json`:
+
+| Route | Model | Source | Cost |
+|---|---|---|---|
+| `ox_alpha_free` | `opencode/x-preview-f-free` — Ox Alpha Free (Unlimited) | OpenCode Zen | $0 |
+| `ox_alpha_hermes` | `stealth/ox-alpha` — Ox Alpha promo ("quadrillion tokens per day") | Nous Portal via Hermes Agent | $0 (limited time) |
+| `muse_spark_free` | `opencode/muse-spark-1.2-contributor-free` — Muse Spark 1.2 Free, 1M ctx | OpenCode Zen | $0 |
+| `gemini37_flash_medium` | Gemini 3.7 Flash (Medium) | Antigravity CLI | $0 |
+
+Plus GLM 5.3 (`zai-coding-plan/glm-5.3`) through OpenCode on a Z.AI coding plan,
+and Tencent HY3 across five additional free routes. Run four free workers in
+parallel with:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -- run --force \
+  --plan my_plan.json --global-max-concurrency 4 --provider-cap ox_alpha_free=4
+```
 
 ## Claude Code and GPT-5.6 Ultra-Style Workflows
 
@@ -98,7 +121,13 @@ affinity, and telemetry documentation.
 
 Some tasks deserve more than one attempt. Instead of always paying for one
 expensive execution, a task can run several cheap candidates in parallel, keep
-the best one, and only spend more compute when the result is uncertain:
+the best one, and only spend more compute when the result is uncertain.
+
+The evidence says this works: on DeepSWE, GLM trails Fable on a single shot
+(69.7 vs 69.0) but passes it with 2 shots (81.1 vs 77.1) and 4 shots (87.6 vs
+84.1) — at a fraction of the price. Similarly, sampling 5 DeepSeek V4 Flash
+solutions and self-verifying with LLM-as-a-Verifier lifted Terminal-Bench 2.1
+from 79% to 88%, beating Claude Fable 5 while being ~11× cheaper.
 
 ```text
 Task
