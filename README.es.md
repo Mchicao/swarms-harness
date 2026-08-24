@@ -54,6 +54,10 @@ SWARMS incluye rutas, wrappers, docs o telemetria para:
 
 El router versionado solo habilita `mock`. Eso mantiene el clone local y gratis. Tu configuracion privada vive en archivos ignorados como `config/swarm_router.local.json` y en tus propias variables de entorno.
 
+OpenCode 2.0 y pi-agent son objetivos explícitos de integración futura. Todavía
+no son rutas implementadas y el soporte OpenCode actual no demuestra
+compatibilidad automática con OpenCode 2.0.
+
 ## Como Se Configura
 
 Tu defines la politica:
@@ -153,7 +157,10 @@ objetivo
   -> verificacion y report.json
 ```
 
-El runtime guarda estado en `.agent/swarm/runs/<run_id>/`: prompts, logs, estado de tareas, eventos, resultados y reportes. El coordinador no tiene que cargar todo el ruido de workers en contexto.
+El runtime guarda estado en
+`<workspace-root>/.agent/swarm/runs/<run_id>/`: prompts, logs, estado de tareas,
+eventos, resultados y reportes quedan junto al workspace objetivo. El
+coordinador no tiene que cargar todo el ruido de workers en contexto.
 
 ## Modo Singularity
 

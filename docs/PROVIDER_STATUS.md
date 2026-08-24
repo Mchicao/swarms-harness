@@ -17,6 +17,14 @@ SWARMS separates route names from provider execution. A route can exist in code,
 | `claude` | Reserved premium | Disabled | Must require explicit user approval and premium policy. |
 | `opus` | Reserved premium | Disabled | Planning/escalation only; not enabled by default. |
 
+## Future Provider Targets
+
+The user wants future support for **OpenCode 2.0** and **pi-agent**. Neither is
+implemented or treated as compatible with an existing route today. Promotion
+to supported requires a versioned adapter contract, exact CLI/API discovery,
+session/resume and steering tests, usage telemetry, workspace/sandbox review,
+offline fixtures and an opt-in local configuration example.
+
 ## Rules For Real Providers
 
 - Never enable a real provider in committed config.

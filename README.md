@@ -76,6 +76,10 @@ SWARMS includes compatibility paths, wrappers, docs, routing names, or telemetry
 
 The committed router enables only `mock`. That keeps a clone local and free. Your private setup lives in ignored files such as `config/swarm_router.local.json` and your own environment variables.
 
+OpenCode 2.0 and pi-agent are explicit future provider targets. They are not
+implemented routes yet; current OpenCode support must not be presented as
+automatic OpenCode 2.0 compatibility.
+
 ## How Configuration Works
 
 You choose the policy:
@@ -238,7 +242,10 @@ goal
   -> verification and report.json
 ```
 
-The runtime stores state under `.agent/swarm/runs/<run_id>/`. It keeps worker prompts, logs, task state, lifecycle events, result JSON, and final reports out of the coordinator context.
+The runtime stores state under `<workspace-root>/.agent/swarm/runs/<run_id>/`.
+It keeps worker prompts, logs, task state, lifecycle events, result JSON, and
+final reports beside the selected target workspace and out of the coordinator
+context.
 
 ## Singularity Mode
 
@@ -258,6 +265,10 @@ SWARMS should eventually connect the autonomous loop to the tools where engineer
 
 - Trello: read cards, create implementation plans, move cards after validation.
 - Hermes Agent: use Hermes as another local agent route or coordination surface.
+- OpenCode 2.0: add a versioned adapter after validating its actual CLI/API,
+  sessions, steering, telemetry and workspace boundary.
+- pi-agent: evaluate it as an opt-in provider/runtime after the same safety and
+  offline-fixture gates; do not alias it to another adapter.
 - Discord: post cycle summaries, request approvals, and accept lightweight commands.
 - JIRA: read tickets, plan work, update status, and attach verification reports.
 - Microsoft Teams: send QA summaries, escalation notices, and Singularity cycle reports.
