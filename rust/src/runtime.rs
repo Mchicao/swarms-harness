@@ -499,7 +499,7 @@ pub fn execute(
     force: bool,
     resume: bool,
 ) -> Result<Report> {
-    let run_dir = root.join(".agent/swarm/runs").join(run_id);
+    let run_dir = workspace_root.join(".agent/swarm/runs").join(run_id);
     let mut states = init_states(&run_dir, tasks, plan, force, resume)?;
     for state in states.values() {
         save_task_state(&run_dir, state)?;

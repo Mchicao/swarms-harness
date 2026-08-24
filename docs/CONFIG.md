@@ -27,6 +27,26 @@ Las rutas OpenCode pueden fijar una variante de razonamiento en el proveedor:
 Para ejecutar workers con herramientas sobre otro repositorio, usa
 `--workspace-root`. El router y el código del harness permanecen en SWARMS;
 los agentes leen las reglas y escriben los artefactos en esa raíz objetivo.
+El runtime persiste el run bajo
+`<workspace-root>/.agent/swarm/runs/<run-id>`. Si un comando ejecutable apunta
+a un plan fuera del directorio de lanzamiento y omite `--workspace-root`, el
+CLI falla antes de iniciar workers en vez de asumir el repositorio equivocado.
+
+Migración one-time para runs anteriores al cambio de ubicación: los runs
+lanzados con el binario viejo guardaban su estado bajo el directorio del
+launcher (`<launcher>/.agent/swarm/runs/<id>`), incluso con
+`--workspace-root`. Esos runs no se pueden resumir con el binario nuevo
+ninguna combinación de flags; para recuperarlos, mueve el estado una vez:
+
+```
+move <launcher>\.agent\swarmuns\<id> <workspace>\.agent\swarmuns```
+
+y resume desde ese workspace con `--workspace-root <workspace>`.
+
+Las tareas dependientes reciben automáticamente la salida legible de sus
+`needs`. No codifiques rutas hacia `worker.log` de otro repositorio en el
+prompt del reviewer; si necesita un archivo completo, decláralo como artefacto
+dentro del workspace objetivo.
 
 ## Token-Saving Defaults
 
@@ -62,3 +82,7 @@ Anthropic-style routes should be treated as premium planner, critic, or escalati
 `agy`/Antigravity can consume Google AI Pro quota. In current headless mode, token counts are not reliably exposed, so SWARMS records those events as `missing_usage_events`.
 
 Codex and Claude-style premium agents should stay disabled unless the user explicitly opts in.
+
+OpenCode 2.0 and pi-agent are future integration targets. They are not aliases
+for the current OpenCode adapter and must not be enabled until their CLI/API,
+session, steering, telemetry and sandbox behavior are validated.

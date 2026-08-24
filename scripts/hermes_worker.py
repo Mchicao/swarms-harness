@@ -42,7 +42,7 @@ from pathlib import Path
 
 DEFAULT_MODEL = os.environ.get("HERMES_MODEL", "")  # empty = let Hermes pick
 DEFAULT_PROVIDER = os.environ.get("HERMES_PROVIDER", "")  # empty = auto
-DEFAULT_MAX_TURNS = int(os.environ.get("HERMES_MAX_TURNS", "8"))
+DEFAULT_MAX_TURNS = int(os.environ.get("HERMES_MAX_TURNS", "24"))
 DEFAULT_TIMEOUT = int(os.environ.get("HERMES_TIMEOUT", "300"))
 HERMES_BIN = os.environ.get("HERMES_BIN", "hermes")
 

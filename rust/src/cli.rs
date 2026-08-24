@@ -2,7 +2,7 @@
 
 use crate::model;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
@@ -179,7 +179,171 @@ pub fn resolve_router_path(root: &std::path::Path, override_path: &Option<PathBu
     }
 }
 
+/// Commands whose plan must live inside the launcher directory unless
+/// `--workspace-root` is given. New executable commands must opt in here
+/// consciously; otherwise they silently skip the external-plan gate.
+pub fn is_workspace_gated(command: &str) -> bool {
+    matches!(command, "dry-run" | "run" | "singularity")
+}
+
+/// Strip the Windows verbatim `\\?\` prefix that `canonicalize()` produces.
+/// Verbatim forms leak into worker prompts, session identity and reports,
+/// where many tools (git -C, npm, rg) reject them.
+fn non_verbatim(path: PathBuf) -> PathBuf {
+    let text = path.as_os_str().to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest.to_string())
+    } else {
+        path
+    }
+}
+
+/// Resolve a stable target workspace and fail closed on the common
+/// "launcher repo != target repo" mistake. The returned path never uses the
+/// Windows verbatim form; canonical forms are kept only for containment
+/// comparisons.
+pub fn resolve_workspace_root(
+    current_dir: &Path,
+    plan_path: &Path,
+    explicit: Option<&Path>,
+    command: &str,
+) -> Result<PathBuf> {
+    let current_canon = current_dir.canonicalize().map_err(|e| {
+        format!(
+            "cannot resolve current directory {}: {e}",
+            current_dir.display()
+        )
+    })?;
+    let current = non_verbatim(current_canon.clone());
+    if let Some(path) = explicit {
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            current.join(path)
+        };
+        return candidate
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve workspace root {}: {e}", candidate.display()))
+            .and_then(|resolved| {
+                if resolved.is_dir() {
+                    Ok(non_verbatim(resolved))
+                } else {
+                    Err(format!(
+                        "workspace root is not a directory: {}",
+                        non_verbatim(resolved).display()
+                    ))
+                }
+            });
+    }
+
+    if is_workspace_gated(command) {
+        let candidate = if plan_path.is_absolute() {
+            plan_path.to_path_buf()
+        } else {
+            current.join(plan_path)
+        };
+        let plan = candidate
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve plan {}: {e}", candidate.display()))?;
+        if !plan.starts_with(&current_canon) {
+            return Err(format!(
+                "--workspace-root is required because plan {} is outside launcher directory {}",
+                non_verbatim(plan).display(),
+                current.display()
+            ));
+        }
+    }
+    Ok(current)
+}
+
+/// Persist all run state inside the selected target workspace.
+pub fn run_dir(workspace_root: &Path, run_id: &str) -> PathBuf {
+    workspace_root.join(".agent/swarm/runs").join(run_id)
+}
+
 /// Resolve the effective global concurrency from CLI override or plan budget.
 pub fn effective_global_cap(cli_override: Option<usize>, plan: &model::Plan) -> usize {
     cli_override.unwrap_or(plan.budget_policy.global_max_concurrency.max(1))
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "swarms-cli-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn execution_requires_workspace_for_external_plan() {
+        let launcher = temp_dir("launcher");
+        let target = temp_dir("target");
+        let plan = target.join("plan.json");
+        fs::write(&plan, "{}").unwrap();
+
+        let error = resolve_workspace_root(&launcher, &plan, None, "run").unwrap_err();
+        assert!(error.contains("--workspace-root is required"));
+
+        fs::remove_dir_all(launcher).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn explicit_workspace_owns_run_state() {
+        let launcher = temp_dir("launcher-explicit");
+        let target = temp_dir("target-explicit");
+        let plan = target.join("plan.json");
+        fs::write(&plan, "{}").unwrap();
+
+        let workspace = resolve_workspace_root(&launcher, &plan, Some(&target), "run").unwrap();
+        assert_eq!(workspace, non_verbatim(target.canonicalize().unwrap()));
+        assert_eq!(
+            run_dir(&workspace, "proof"),
+            workspace.join(".agent/swarm/runs/proof")
+        );
+
+        fs::remove_dir_all(launcher).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn default_workspace_maps_launcher_and_never_leaks_verbatim_paths() {
+        let launcher = temp_dir("launcher-default");
+        let plan = launcher.join("plan.json");
+        fs::write(&plan, "{}").unwrap();
+
+        let workspace = resolve_workspace_root(&launcher, &plan, None, "run").unwrap();
+        let text = workspace.to_string_lossy().to_string();
+        assert!(!text.contains(r"\\?\"), "verbatim path leaked: {text}");
+        assert_eq!(workspace, non_verbatim(launcher.canonicalize().unwrap()));
+
+        fs::remove_dir_all(launcher).unwrap();
+    }
+
+    #[test]
+    fn review_command_is_exempt_from_the_external_plan_gate() {
+        let launcher = temp_dir("launcher-review");
+        let outside = temp_dir("outside-review");
+        let plan = outside.join("plan.json");
+        fs::write(&plan, "{}").unwrap();
+
+        let workspace = resolve_workspace_root(&launcher, &plan, None, "review").unwrap();
+        let text = workspace.to_string_lossy().to_string();
+        assert!(!text.contains(r"\\?\"), "verbatim path leaked: {text}");
+        assert_eq!(workspace, non_verbatim(launcher.canonicalize().unwrap()));
+
+        fs::remove_dir_all(launcher).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
 }

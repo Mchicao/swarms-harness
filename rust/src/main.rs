@@ -16,13 +16,6 @@ fn main() {
 fn run() -> Result<()> {
     let args = cli::parse_args()?;
     let root = env::current_dir().map_err(|e| e.to_string())?;
-    let workspace_root = args.workspace_root.clone().unwrap_or_else(|| root.clone());
-    if !workspace_root.is_dir() {
-        return Err(format!(
-            "workspace root is not a directory: {}",
-            workspace_root.display()
-        ));
-    }
 
     let router_path = cli::resolve_router_path(&root, &args.router_config);
     let router = config::load_router_from_path(&root, &router_path)?;
@@ -30,6 +23,13 @@ fn run() -> Result<()> {
     if args.command == "doctor" {
         return print_doctor(&root, &router);
     }
+
+    let workspace_root = cli::resolve_workspace_root(
+        &root,
+        &args.plan,
+        args.workspace_root.as_deref(),
+        &args.command,
+    )?;
 
     let plan = config::load_plan(&args.plan)?;
     let tasks = config::build_tasks(&plan, &router)?;
@@ -57,7 +57,7 @@ fn run() -> Result<()> {
     let caps = config::effective_caps(&plan, &args.caps, &router);
 
     if args.command == "dry-run" {
-        let run_dir = root.join(".agent/swarm/runs").join(&args.run_id);
+        let run_dir = cli::run_dir(&workspace_root, &args.run_id);
         let report = runtime::dry_run(
             &run_dir,
             &workspace_root,

@@ -658,6 +658,13 @@ class WorkflowRuntime:
         # not its paid glm-5.2 Z.AI default.
         if task.wrapper == "hermes" and task.model.startswith("tencent/hy3"):
             command.extend(["--provider", "nous"])
+        # SWARMS timeout alignment: hermes/opencode workers default to their
+        # own short timeouts (300s/600s), which kill long agentic tasks before
+        # the runtime's own subprocess timeout. Pass the runtime timeout
+        # explicitly so all layers agree on a single budget
+        # (SWARMS_WORKER_TIMEOUT).
+        if task.wrapper in {"hermes", "opencode"}:
+            command.extend(["--timeout", str(DEFAULT_WORKER_TIMEOUT)])
         return command
 
     def run_task(self, task: WorkflowTask, tasks: list[WorkflowTask]) -> dict[str, Any]:
@@ -708,7 +715,7 @@ class WorkflowRuntime:
                     with output_log.open("w", encoding="utf-8") as log:
                         proc = subprocess.run(
                             command,
-                            cwd=PROJECT_ROOT,
+                            cwd=self.workspace_root,
                             text=True,
                             stdout=log,
                             stderr=subprocess.STDOUT,

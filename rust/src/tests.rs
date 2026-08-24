@@ -955,6 +955,75 @@ fn feature_role_with_passing_verify_completes() {
 }
 
 #[test]
+fn execute_persists_run_state_under_explicit_workspace_root() {
+    let launcher = temp_dir();
+    let workspace = temp_dir();
+    assert_ne!(
+        launcher.canonicalize().unwrap(),
+        workspace.canonicalize().unwrap()
+    );
+
+    let passing = if cfg!(windows) { "exit /b 0" } else { "true" };
+    let plan_json = json!({
+        "schema_version": 1,
+        "goal": "persist run state beside the target workspace",
+        "stages": [{
+            "name": "S",
+            "tasks": [{
+                "id": "workspace-task",
+                "route": "mock",
+                "role": "programmer",
+                "task": "Implement bench_apps/reshard/compress.py so it shards files.",
+                "artifacts": ["bench_apps/reshard/compress.py"],
+                "verify": [passing]
+            }]
+        }]
+    });
+    let plan_path = workspace.join("plan.json");
+    fs::write(&plan_path, plan_json.to_string()).unwrap();
+
+    let cfg_path = launcher.join("config/swarm_router.json");
+    fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg_path,
+        json!({"providers":{"mock":{"enabled":true,"provider":"mock","model":"mock-worker","wrapper":"mock"}}}).to_string(),
+    )
+    .unwrap();
+
+    let plan = crate::config::load_plan(&plan_path).unwrap();
+    let router = crate::config::load_router(&launcher).unwrap();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let caps = HashMap::from([("mock".to_string(), 1)]);
+    let report = runtime::execute(
+        &launcher,
+        &workspace,
+        &tasks,
+        &plan,
+        &router,
+        1,
+        &caps,
+        "workspace-root-test",
+        true,
+        false,
+    )
+    .unwrap();
+
+    let target_run = workspace.join(".agent/swarm/runs/workspace-root-test");
+    let launcher_run = launcher.join(".agent/swarm/runs/workspace-root-test");
+    assert_eq!(report.status, "completed");
+    assert!(target_run.join("report.json").is_file());
+    assert!(target_run
+        .join("results")
+        .join(&report.results[0].task_id)
+        .join("verification.jsonl")
+        .is_file());
+    assert!(!launcher_run.exists());
+
+    fs::remove_dir_all(&launcher).ok();
+    fs::remove_dir_all(&workspace).ok();
+}
+
+#[test]
 fn quoted_verify_command_survives_platform_shell_parsing() {
     let dir = temp_dir();
     let command = if cfg!(windows) {
