@@ -7,6 +7,6 @@
 ## Build and Tests
 All builds and tests are run via Cargo:
 ```bash
-cargo build --release --manifest-path rust/Cargo.toml --features ui-egui
+cargo build --release --manifest-path rust/Cargo.toml
 cargo test --manifest-path rust/Cargo.toml
 ```

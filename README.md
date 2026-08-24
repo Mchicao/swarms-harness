@@ -112,11 +112,6 @@ cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_e
 cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
-Optional low-resource native observer:
-
-```bash
-cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
-```
 
 See `docs/RUST_RUNTIME.md` for the full architecture, thinking levels, session
 affinity, and telemetry documentation.
@@ -217,8 +212,7 @@ python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --glo
 ```
 
 Run-state files are the read-only integration boundary used by observability
-tools and the optional native UI; see `docs/STATE_CONTRACT.md` and
-`docs/SWARM_UI.md`.
+tools; see `docs/STATE_CONTRACT.md`.
 
 Optional editable install:
 

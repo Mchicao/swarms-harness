@@ -10,7 +10,7 @@ metadata:
 ## Activation Contract
 
 Use for SWARMS workflow contracts and operations. Read `AGENTS.md` only when
-editing the Rust runtime/UI; workbook operation uses this skill and references.
+editing the Rust runtime; workbook operation uses this skill and references.
 
 ## Hard Rules
 
@@ -33,7 +33,7 @@ editing the Rust runtime/UI; workbook operation uses this skill and references.
 | Parallel writers | Separate worktrees or disjoint writable paths |
 | Prior run interrupted | Use `--resume`; never combine with `--force` |
 | Route unavailable | Report blocker; do not silently substitute |
-| Runtime/UI code changes | Load `AGENTS.md` and run every Rust gate |
+| Runtime code changes | Load `AGENTS.md` and run every Rust gate |
 
 ## Execution Steps
 
@@ -44,7 +44,6 @@ editing the Rust runtime/UI; workbook operation uses this skill and references.
 3. Run one coordinator with explicit global/provider caps.
 4. After it exits, inspect terminal report, task states, readable logs and
    required artifacts. Distinguish requested from effective routes.
-5. For UI observation, launch `swarms-ui` separately against the target run.
 
 ## Output Contract
 

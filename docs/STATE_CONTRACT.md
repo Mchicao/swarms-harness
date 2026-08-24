@@ -1,7 +1,7 @@
 # Run state and control contract v1
 
-The local UI observes a SWARMS run and may append explicit user steer prompts;
-it never writes coordinator snapshots, claims tasks, launches workers or mutates
+Read-only observers can inspect a SWARMS run, while explicit steering clients may append user prompts;
+consumers never write coordinator snapshots, claim tasks, launch workers, or mutate
 plans. Python and Rust publish the same observed files under `.agent/swarm/runs/<run_id>/`:
 
 - `workflow.json`: run identity, project, runtime, workspace, limits and heartbeat interval.
@@ -51,7 +51,7 @@ Consumers may rely on these fields:
 
 `agent_id` is the stable plan identity. `parent_task_id` is optional and
 references another task's `source_id`; `null` means a root agent. `subagents`
-lists direct child `agent_id` values. These fields describe UI nesting only.
+lists direct child `agent_id` values. These fields describe presentation nesting only.
 `needs` remains the execution DAG and must not be inferred from the visual
 hierarchy.
 
@@ -63,7 +63,7 @@ fan-out but hides identifiers, and `reported` only when machine-readable logs
 provide explicit child IDs. In the latter case, adapters may append those IDs
 to `provider_subagents`; the two child lists remain separate.
 
-The UI should treat a running task as stale when `last_progress_unix_ms` is
+Observers may treat a running task as stale when `last_progress_unix_ms` is
 older than `workflow.json.heartbeat_interval_seconds`; it falls back to the
 coordinator heartbeat for historical runs. `stale` is visual only and never
 cancels or changes the task status. Unknown fields must be ignored for forward
@@ -79,9 +79,8 @@ Each line in `events.jsonl` is independent JSON with `event`,
 such as the ISO timestamp, model, provider, error or return code.
 
 Readers should tail complete newline-terminated records and retry a snapshot
-read if an atomic replacement races with the filesystem watcher. Opening task
-details or child-agent panels belongs entirely to the UI process; it must not
-signal or foreground worker processes.
+read if an atomic replacement races with the filesystem watcher. Read-only consumers must not signal, foreground, or otherwise control worker
+processes when presenting task details or child-agent data.
 
 ## Steering mailbox
 
@@ -92,11 +91,8 @@ delivered instruction becomes a subsequent provider turn, never stdin
 injection into the current CLI process. Unsupported or missing sessions are
 recorded as `rejected` without falsifying delivery.
 
-The intended observer is a separate, feature-gated native Rust binary so the
-coordinator remains lightweight when no UI is requested. This contract does
-not require Node, a browser, WebView, HTTP server, UI framework, or new runtime
-dependency; those choices stay outside the coordinator until the frontend
-brief is approved.
+The state contract is UI-framework agnostic. Observers may be native, terminal,
+web, or external tools without adding a dependency to the coordinator.
 
 ## Resume semantics
 

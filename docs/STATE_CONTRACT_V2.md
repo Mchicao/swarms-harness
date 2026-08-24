@@ -6,7 +6,7 @@ Tracks: R-003, R-007, R-011, R-012, R-020
 
 ## Purpose
 
-This contract defines the durable interface between the runtime, observer UI, recovery logic, reporting, and external tooling. Producers and readers must not rely on undocumented fields or silently reinterpret corrupt/missing data.
+This contract defines the durable interface between the runtime, observers, recovery logic, reporting, and external tooling. Producers and readers must not rely on undocumented fields or silently reinterpret corrupt/missing data.
 
 Machine-readable schemas live in `schemas/state-v2/`.
 
@@ -155,7 +155,7 @@ A fixed `.tmp` name is prohibited because concurrent writers can collide.
 - The runtime reports the original path, parsing category, quarantine path, and recovery decision.
 - Corrupt session state is never silently replaced by an empty session map.
 - Resume fails closed when checkpoint identity cannot be proven.
-- UI readers may continue rendering other valid tasks but must surface corruption visibly.
+- Readers may continue processing other valid tasks but must surface corruption visibly.
 
 ## Steering durability
 
@@ -185,7 +185,7 @@ Required fixtures:
 Required tests:
 
 - Rust producer output validates against JSON Schema;
-- UI reader loads every golden task/run fixture;
+- state reader loads every golden task/run fixture;
 - writer atomicity fault injection at each write/flush/rename step;
 - concurrent steering writers/claimers;
 - deterministic report serialization;
@@ -193,4 +193,4 @@ Required tests:
 
 ## Acceptance gate
 
-The existing `STATE_CONTRACT.md` must be replaced or marked historical only after Rust producers, UI readers, reports, and golden tests all implement this v2 contract. Documentation alone does not close the finding.
+The existing `STATE_CONTRACT.md` must be replaced or marked historical only after Rust producers, state readers, reports, and golden tests all implement this v2 contract. Documentation alone does not close the finding.

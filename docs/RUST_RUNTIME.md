@@ -45,7 +45,7 @@ does not affect scheduling, quotas, run paths, or checkpoint identity.
 El runtime Rust no aplica deadlines ni mata workers por tiempo. Los campos
 históricos `default_timeout_seconds` y `timeout_seconds` se aceptan para leer
 planes anteriores, pero no se ejecutan. Cada heartbeat observa el tamaño y la
-modificación de `worker.log`; la UI marca una tarea `stale` si no hay progreso,
+modificación de `worker.log`; un consumidor puede marcar una tarea `stale` si no hay progreso,
 sin cambiar su estado ni cancelar el proceso.
 
 En Windows, los workers reales abren por defecto una consola de sólo lectura
@@ -58,7 +58,7 @@ Set `$env:SWARMS_TERMINAL_BACKEND = "herdr"` before `swarms-rs run` to show
 real-worker logs in persistent Herd panes instead of separate PowerShell
 windows. SWARMS still owns worker processes, retries, quotas and raw logs;
 Herd is the observable terminal surface. The task snapshot records its Herd
-session and pane ID, which `swarms-ui` displays. If Herd is unavailable, the
+session and pane ID, which external observers may display. If Herd is unavailable, the
 runtime falls back to the native Windows console. Set `SWARMS_HERDR_BIN` or
 `SWARMS_HERDR_SESSION` only when the default executable/session must change.
 | `adapter.rs` | Native adapters: mock, CLI command builders, OpenAI-compat HTTP, session/usage parsing |
@@ -248,15 +248,3 @@ Python scripts (`scripts/swarm.py`, `scripts/workflow_runtime.py`, etc.) remain
 as legacy benchmark and telemetry tools. No Rust code invokes Python. The
 public runtime path is exclusively Rust.
 
-## Native observer UI
-
-The optional `swarms-ui` binary reads the Rust runtime state contract without
-starting workers or changing workflow state:
-
-```powershell
-cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
-```
-
-It uses Glow without WGPU, caches the flattened tree, caps events at 500 and the
-selected log at 256 KiB with virtualized lines, and polls filesystem metadata at 1 Hz while active or
-0.2 Hz while idle. See `docs/SWARM_UI.md`.
