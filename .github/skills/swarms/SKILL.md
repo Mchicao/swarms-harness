@@ -1,6 +1,6 @@
 ---
 name: swarms
-description: Operate and extend the native Rust SWARMS runtime and observer UI. Use when creating a SWARMS workflow contract, configuring routes and quotas, reviewing or running a plan, resuming a run, observing worker progress, or troubleshooting SWARMS in this repository.
+description: Operate and extend the native Rust SWARMS runtime. Use when creating a SWARMS workflow contract, configuring routes and quotas, reviewing or running a plan, resuming a run, observing worker progress, or troubleshooting SWARMS in this repository.
 ---
 
 # SWARMS
@@ -15,8 +15,8 @@ Create a plan JSON with a goal, optional project identity, budget policy and
 ordered stages. Every task must declare an id, role, route, bounded scope,
 dependencies, allowed artifacts, tools policy and deterministic verification.
 
-- Use `needs` for execution dependencies; do not infer dependencies from UI
-  nesting or task names.
+- Use `needs` for execution dependencies; do not infer dependencies from
+  presentation nesting or task names.
 - Make concurrent writers use separate worktrees or disjoint writable paths.
   SWARMS isolates its own prompts, logs and results, not a target repo worktree
   per task.
@@ -47,18 +47,6 @@ not poll its artifacts from the coordinator while it is active.
 
 Use `--resume` with an existing run id after interruption. It preserves only
 matching Rust checkpoints. Never combine `--resume` and `--force`.
-
-## Observe without cancelling
-
-Launch the native observer separately when the user needs a dashboard:
-
-```powershell
-cargo run --release --manifest-path rust/Cargo.toml --bin swarms-ui --features ui-egui -- --run-id <run-id>
-```
-
-The UI is read-only except for explicit steering. It never starts workers or
-mutates plan/state snapshots. A task is `stale` when `worker.log` stops growing
-or changing; stale is an investigation signal, never an automatic kill.
 
 On Windows, real CLI workers open a visible PowerShell console that tails their
 `worker.log` while the worker and coordinator remain in the background. Set

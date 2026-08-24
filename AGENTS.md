@@ -39,11 +39,6 @@ Priority order:
 4. reproducible local verification;
 5. safe open-source defaults.
 
-### UI Observability & Performance Objective
-
-The target of the UI is to provide Swarm observability, RAM/resource usage monitoring, and interactive steering of active runs. 
-The UI must achieve this with **minimal resource overhead** (low CPU, minimal RAM, and optimized GPU usage). Do not add heavy rendering loops, unnecessary allocations, or continuous polling/refreshing of unchanged directories. Keep the egui UI frame-rate and layout updates lightweight.
-
 ## Role Policy
 
 - Planner: GLM 5.2 by default; Codex/OpenAI/Anthropic-style premium routes only when explicitly justified and configured.
@@ -128,8 +123,6 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 - `rust/src/adapter.rs`: native adapters (mock, CLI builders, OpenAI-compat HTTP, session/usage parsing).
 - `rust/src/session.rs`: session affinity store.
 - `rust/src/telemetry.rs`: usage normalisation, task state, report generation.
-- `rust/src/ui_main.rs`: low-overhead egui/Glow observability UI.
-- `rust/src/ui_bin.rs`: native `swarms-ui` binary entry point.
 - `config/role_policy.json`: planner/critic/programmer/verifier policy.
 - `docs/workflow_plan_example.json`: working plan example.
 - `docs/workflow_plan_scaling_example.json`: parallel scaling plan example (Gemini 3.7 Flash Medium).
@@ -138,9 +131,6 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 Never run Claude Code, Codex, Gemini, OpenCode, or paid APIs unless the user explicitly asks and local config enables them. Never commit `.env`, `config/*.local.json`, auth files, telemetry traces, generated reports, `.agent/`, worktrees, or worker prompt/log/status artifacts.
 
-## Windows NTFS File Watcher Caveat
-
-On Windows (NTFS), modifying a file inside a directory (such as updating task files under `tasks/`) **does not change the parent directory's modification timestamp**. To ensure the UI updates reactively, do not check the directory metadata alone; use a deep scan (`modified_dir_or_files`) to find the maximum modification time among the files inside the folder.
 
 ## External Contribution
 
