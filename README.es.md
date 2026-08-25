@@ -25,12 +25,12 @@ SWARMS es un orquestador local-first que te permite decidir **qué modelo planif
 - **11× Más Barato que Claude Fable 5**: Supera a Claude Fable 5 con el mismo nivel de precisión costando **11 veces menos** (~$0.50/tarea vs ~$5.50/tarea).
 - **4× Más Barato que Codex GPT-5.6 Sol**.
 
-### 2. DeepSWE Benchmark (Scaling Open-Weight con GLM)
+### 2. DeepSWE Benchmark (Investigación Together AI · Zain Hasan)
 - **Single-shot**: GLM (69.0%) vs Claude Fable 5 (69.7%).
 - **2 Candidatos (Pass@2)**: GLM alcanza **81.1%** (superando el 77.1% de Fable 5).
 - **4 Candidatos (Pass@4)**: GLM domina con **87.6%** (frente al 84.1% de Fable 5) con un costo ~10× inferior.
 
-> Inspirado en el [estudio de auto-verificación LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21).
+> Fuentes: [Investigación DeepSWE de Together AI por Zain Hasan (@zainhas)](https://x.com/zainhas/status/2091297526347677701) y el [estudio de auto-verificación LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21).
 
 ---
 
