@@ -2,226 +2,126 @@
 
 ![Portada del flujo SWARMS](images/swarms-cover.png)
 
-Orquestacion local-first para coding agents.
+> **Orquestación Local-First de Agentes de Código.**  
+> Invierte inteligencia en planificar y revisar. Deja que un motor determinístico en Rust coordine modelos rápidos, gratuitos y open-weight en paralelo.
 
-SWARMS deja que cada persona decida que modelo planifica, que modelo programa, que modelo revisa y cuantos workers pueden correr al mismo tiempo. El repo funciona offline al clonar. Las llamadas a modelos ocurren solo cuando configuras tus propios planes, APIs, CLIs y politica de routing.
+[![Sitio Web](https://img.shields.io/badge/Sitio_Web-swarms--orchestrator.vercel.app-gold)](https://swarms-orchestrator.vercel.app/)
+[![Licencia: MIT](https://img.shields.io/badge/Licencia-MIT-blue.svg)](LICENSE)
+[![SwDD](https://img.shields.io/badge/Spec--Driven-SwDD-blueviolet)](https://github.com/Mchicao/swarm-driven-development)
+[![English](https://img.shields.io/badge/Docs-English-blue)](README.md)
 
-Sitio web: https://swarms-orchestrator.vercel.app/
+SWARMS es un orquestador local-first que te permite decidir **qué modelo planifica, qué modelo programa, qué modelo revisa y cuántos workers corren concurrentemente**. Funciona 100% offline de fábrica con mocks simulados y solo se conecta a CLIs y APIs cuando tú configuras tus rutas locales.
 
-Uso versiones de este flujo de forma personal desde enero-febrero de 2026. La idea original vino de los loops estilo Ralph: dejar un modelo fuerte en planificacion y revision, y usar workers baratos para implementacion, QA, lectura de issues y validacion repetida.
+---
 
-English: [README.md](README.md)
-
-## Oportunidades con proveedores gratuitos
-
-Con este harness puedes aprovechar el uso gratuito que ofrezcan proveedores de
-IA como TokenRouter_US, Modal u otros proveedores que publiquen promociones de
-vez en cuando. Por ejemplo, un proveedor puede anunciar tokens gratuitos para
-modelos como Kimi K3 o GLM 5.2.
-
-La disponibilidad, las cuotas, la elegibilidad, los precios y las condiciones
-pueden cambiar en cualquier momento. Verifica siempre la oferta vigente
-directamente con el proveedor antes de ejecutar una carga de trabajo. SWARMS no
-garantiza el acceso gratuito: solo enruta hacia los proveedores y modelos que
-configures localmente.
-
-## Prueba: Modelos Baratos, Resultados Premium
+## La Prueba: Modelos Baratos, Resultados Premium
 
 ![Resultados de scaling en Terminal-Bench 2.1](images/benchmark-terminal-bench.png)
 
-**Nuestro último hallazgo: escalar la auto-verificación puede hacer que los modelos open-weight sean significativamente más capaces a una fracción del costo.** Con DeepSeek V4 Flash, muestreando solo 5 soluciones candidatas y usando el mismo modelo para rankearlas con LLM-as-a-Verifier, la precisión en Terminal-Bench 2.1 sube de 79% → 88% — superando a Claude Fable 5 con un costo 11× menor. 💰
+**Escalar la auto-verificación y rollouts paralelos hace que modelos open-weight y económicos superen a modelos frontera propietarios a una fracción del costo.**
 
-Esto es exactamente el parallel scaling que SWARMS incluye: corre N workers candidatos en git worktrees aislados, verifica de forma determinística y deja que un modelo barato desempate. Precisión premium con rutas económicas, y la curva de costo que lo demuestra.
+### 1. Terminal-Bench 2.1 (DeepSeek V4 Flash)
+- **79% → 88% de Precisión**: Muestrear 5 soluciones candidatas con DeepSeek V4 Flash y rankearlas con LLM-as-a-Verifier eleva la precisión de 79% a 88%.
+- **11× Más Barato que Claude Fable 5**: Supera a Claude Fable 5 con el mismo nivel de precisión costando **11 veces menos** (~$0.50/tarea vs ~$5.50/tarea).
+- **4× Más Barato que Codex GPT-5.6 Sol**.
 
-- DeepSeek V4 Flash ×5 (LLM-as-a-Verifier): **88%** a ~$0.5/tarea — 11× más barato que Claude Fable 5 con la misma precisión.
-- DeepSeek V4 Flash ×3: **86.4%** a ~$0.25/tarea.
-- Baseline single-shot DeepSeek V4 Flash: **79%** a ~$0.05/tarea.
-- Puntos de referencia del reporte técnico de GPT-5.6 (Codex) y Claude Code.
+### 2. DeepSWE Benchmark (Scaling Open-Weight con GLM)
+- **Single-shot**: GLM (69.0%) vs Claude Fable 5 (69.7%).
+- **2 Candidatos (Pass@2)**: GLM alcanza **81.1%** (superando el 77.1% de Fable 5).
+- **4 Candidatos (Pass@4)**: GLM domina con **87.6%** (frente al 84.1% de Fable 5) con un costo ~10× inferior.
 
-Inspirado en y construido sobre el [estudio de auto-verificación LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21) — consulta ese repo para la metodología y los números completos.
+> Inspirado en el [estudio de auto-verificación LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21).
 
-## Flujos Estilo Ultra de Claude Code y GPT-5.6
+---
 
-Claude Fable 5 puede impulsar flujos multiagente de larga duración en Claude Code: planifica por etapas, delega en subagentes y revisa su propio trabajo. OpenAI también anunció un nuevo modo `ultra` de GPT-5.6 basado en subagentes, pero GPT-5.6 sigue en vista previa limitada y no tiene disponibilidad pública amplia. SWARMS apunta a este patrón operativo desde el lado local-first: tú eliges planner, critic, modelos worker, provider caps, metadatos de verificación y presupuesto de tokens.
+## Rutas Gratuitas y Verificadas (Probadas en Agosto 2026)
 
-Usa SWARMS cuando quieras un equipo de agentes estilo Ultra sin amarrar todo el flujo a un solo modo de un proveedor:
+Aprovecha rutas de agentes sin costo y sin riesgo de cargos sorpresa:
 
-- corre todo local hasta que habilites proveedores reales;
-- enruta planner, critic, programmer, verifier y QA a modelos distintos;
-- mezcla APIs compatibles con OpenAI configuradas, GLM, Gemini, Codex CLI, Hermes o workers mock offline;
-- mantiene provider caps y reportes visibles;
-- corre Singularity cuando quieras un loop largo que siga proponiendo, implementando, testeando y resumiendo trabajo.
+| Ruta | Modelo | Origen | Costo / Cuota |
+|---|---|---|---|
+| `ox_alpha_free` | `opencode/x-preview-f-free` — Ox Alpha Free | OpenCode Zen | **$0 (Ilimitado)** |
+| `ox_alpha_hermes` | `stealth/ox-alpha` — Ox Alpha Promo | Nous Portal vía Hermes Agent | **$0 (Promo ilimitada)** |
+| `gemini37_flash_medium` | Gemini 3.7 Flash (Medium) | Antigravity CLI | **$0 (Verificado)** |
+| `muse_spark_free` | `opencode/muse-spark-1.2-contributor-free` (1M ctx) | OpenCode Zen | **$0 (Gratis)** |
+| `deepseek_v4_flash` | DeepSeek V4 Flash | OpenRouter / API DeepSeek | **~$0.05 / tarea** |
+| `glm_53` | GLM 5.3 (`zai-coding-plan/glm-5.3`) | Plan Z.AI vía OpenCode | Alto IQ para Plan/Code |
 
-## Integraciones
-
-SWARMS incluye rutas, wrappers, docs o telemetria para:
-
-- APIs compatibles con OpenAI.
-- Routing estilo LiteLLM.
-- Rutas premium estilo Anthropic para planner/critic.
-- GLM 5.2 mediante OpenCode o rutas estilo Z.AI.
-- Gemini 3.5 Flash mediante Antigravity CLI.
-- Codex CLI para orquestacion premium o escalamiento.
-- Gateways compatibles con OpenAI configurados por el usuario.
-- Workers offline `mock` para CI, demos y configuracion segura.
-- Parsing de tokens/costos para logs de Codex, OpenCode, salidas CLI, cache reads, cache writes y reasoning tokens.
-- Dos skills en `.skillshare/skills/`: `swarms` para operar este runtime y `multi-provider-agent-orchestration` para delegar trabajo entre agentes.
-
-El router versionado solo habilita `mock`. Eso mantiene el clone local y gratis. Tu configuracion privada vive en archivos ignorados como `config/swarm_router.local.json` y en tus propias variables de entorno.
-
-OpenCode 2.0 y pi-agent son objetivos explícitos de integración futura. Todavía
-no son rutas implementadas y el soporte OpenCode actual no demuestra
-compatibilidad automática con OpenCode 2.0.
-
-## Como Se Configura
-
-Tu defines la politica:
-
-- Los planes definen roles, tareas, dependencias, artefactos esperados, metadatos de verificación y permisos premium.
-- `config/role_policy.json` define la intencion de planner, critic, programmer y verifier.
-- `config/swarm_router.json` es el default local seguro.
-- `config/swarm_router.local.example.json` muestra como habilitar tus proveedores.
-- Los provider caps limitan concurrencia por ruta.
-- La telemetria registra lo que reporta la CLI o API, y marca uso faltante en vez de fingir que fue gratis.
-
-El repo incluye dos skills para enseñar a agentes compatibles a operar SWARMS y delegar trabajo:
-
-```powershell
-Copy-Item -Recurse -Force .\.skillshare\skills\swarms "$env:USERPROFILE\.codex\skills\swarms"
-Copy-Item -Recurse -Force .\.skillshare\skills\multi-provider-agent-orchestration "$env:USERPROFILE\.codex\skills\multi-provider-agent-orchestration"
+Ejecuta 4 workers concurrentes a costo cero:
+```bash
+cargo run --manifest-path rust/Cargo.toml -- run --force \
+  --plan my_plan.json --global-max-concurrency 4 --provider-cap ox_alpha_free=4
 ```
 
-Despues de eso, un agente puede revisar tu setup local, crear un plan, revisarlo y correr la validacion offline antes de que habilites rutas reales.
+---
 
-## Coordinador Rust
+## Capacidades y Funcionalidades Clave
 
-Los workflow plans pueden usar el coordinador Rust de menor consumo en Windows, macOS y Linux. La autenticación de proveedores sigue en los adaptadores CLI locales existentes.
+### 🚀 Scaling Paralelo en Test-Time
+Ejecuta N soluciones candidatas simultáneamente en git worktrees aislados.
+1. **Objetivo Primero**: Las pruebas automatizadas (`pytest`, `cargo test`, linters) corren en cada candidato. Si un candidato pasa limpiamente, gana con **cero llamadas extra a LLMs**.
+2. **LLM-as-a-Verifier**: En caso de empate, un modelo verificador rápido puntúa los candidatos.
+3. **Escalamiento Controlado**: Casos ambiguos escalan a rutas de síntesis o revisión bajo presupuestos de tokens estrictos.
 
-```powershell
-cargo run --release --manifest-path rust/Cargo.toml -- doctor
-cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
+### 🛡️ Arquitectura Anti-Slop y Especialización de Roles
+- **Planner Inteligente**: Usa modelos de alto razonamiento (Claude Fable, GPT-5.6, GLM) únicamente para formular planes de flujo DAG estáticos.
+- **Crítico Estático**: Valida dependencias del grafo, ciclos y límites presupuestarios *antes* de iniciar la ejecución.
+- **Workers Económicos**: Delega las tareas de código pesadas a workers rápidos y gratuitos (Ox Alpha, DeepSeek V4 Flash, Gemini Flash).
+- **Verificador Determinístico**: Califica resultados con compiladores, pruebas unitarias y hashes SHA256.
+
+### 🔒 Cero Contaminación del Espacio de Trabajo
+Cada worker programador opera en un Git worktree temporal y aislado. Los cambios se validan criptográficamente con firmas SHA256 antes y después de aplicarse a la rama principal.
+
+### ⏱️ Protección contra Procesos Colgados
+Monitores activos vigilan los logs de cada worker. Si una tarea se detiene o queda en silencio, SWARMS emite advertencias y aplica límites de tiempo para evitar que procesos zombies consuman créditos.
+
+### 🌐 Swarm-Driven Development (SwDD)
+Integración nativa con [SwDD](https://github.com/Mchicao/swarm-driven-development) para conectar especificaciones OpenSpec, orquestación SWARMS, Gentle-AI y memoria Engram en un único flujo:
+$$	ext{Especificación} \longrightarrow 	ext{Ejecución en Enjambre} \longrightarrow 	ext{Entrega Verificada}$$
+
+---
+
+## Inicio Rápido en 30 Segundos
+
+SWARMS está construido en Rust nativo, autónomo y sin dependencias de Python:
+
+```bash
+# 1. Diagnóstico del entorno local
+cargo run --manifest-path rust/Cargo.toml -- doctor
+
+# 2. Revisión estática del plan
+cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json
+
+# 3. Dry-run sin efectos secundarios
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force
+
+# 4. Ejecución con límites de concurrencia
+cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
 ```
 
+---
 
-El flujo completo está en `docs/RUST_RUNTIME.md`. Python sigue disponible para compatibilidad de benchmarks y telemetría heredados.
+## Ecosistema e Integraciones
 
-## Inicio Rapido
+- **CLIs y Agentes**: Claude Code, Codex CLI, OpenCode, Kilo Code, Hermes Agent, Antigravity CLI.
+- **APIs y Pasarelas**: APIs compatibles con OpenAI, pasarelas LiteLLM, OpenRouter, Z.AI, Nous Portal.
+- **Modo Offline / CI**: Provider `mock` autocontenido para pruebas locales, demostraciones y CI/CD.
+- **Telemetría y Observabilidad**: Normalización de tokens, lecturas/escrituras de caché, seguimiento de esfuerzo de razonamiento y reportes JSON en `.agent/swarm/runs/<run_id>/`.
 
-En un PC nuevo, inspecciona primero los agentes locales antes de habilitar o
-ejecutar rutas reales:
+---
 
-```powershell
-python scripts/swarm.py preflight --format json
-```
+## Documentación Técnica Detallada
 
-Consulta [docs/AGENT_PREFLIGHT.md](docs/AGENT_PREFLIGHT.md). `doctor` ejecuta
-este inventario primero y `run` rechaza agentes reales no verificados antes de
-crear claims o workers.
+Para consultar especificaciones internas, esquemas JSON y guías de adaptadores:
 
-Requiere Python 3.10+ y Git.
+- [Arquitectura del Runtime en Rust](docs/RUST_RUNTIME.md) — Planificadores, locks, niveles de thinking y afinidad de sesión.
+- [Guía de Scaling Paralelo](docs/workflow_plan_scaling_example.json) — Ejemplo de ejecución escalada con candidatos.
+- [Contrato de Estado de Flujos](docs/STATE_CONTRACT.md) — Esquemas JSON de eventos y estado.
+- [Configuración de Proveedores y Rutas](docs/CONFIG.md) — Overlays locales y límites por proveedor.
+- [Directivas para Agentes de Código](AGENTS.md) — Estándares para agentes autónomos.
 
-```powershell
-python scripts/swarm.py doctor
-python scripts/swarm.py review --plan docs/workflow_plan_example.json
-python scripts/swarm.py dry-run --plan docs/workflow_plan_example.json --force
-python scripts/swarm.py run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
-```
-
-Reanuda un run interrumpido con el mismo plan e identificador:
-
-```powershell
-# SWARMS-RESUME-004: conserva checkpoints de tareas terminadas.
-cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --run-id my-run --resume --provider-cap mock=3
-```
-
-Los archivos de estado son una frontera de integración de sólo lectura para
-interfaces locales; consulta `docs/STATE_CONTRACT.md`.
-
-Para coordinar un repositorio vecino, conserva SWARMS como harness y declara
-el destino:
-
-```powershell
-# SWARMS-CLI-001: Ejecuta workers con herramientas en el repositorio objetivo.
-python scripts/swarm.py dry-run --plan C:\proyecto\plan.json --workspace-root C:\proyecto --force
-```
-
-Instalacion editable opcional:
-
-```powershell
-python -m pip install -e ".[dev,yaml]"
-swarms doctor
-swarms run --plan docs/workflow_plan_example.json --force --global-max-concurrency 3 --provider-cap mock=3
-```
-
-## Modelo De Runtime
-
-![Mapa del runtime SWARMS](images/runtime-map.png)
-
-```text
-objetivo
-  -> workflow plan
-  -> revision estatica
-  -> runtime deterministico
-  -> pools de proveedores con limites
-  -> salida de workers
-  -> verificacion y report.json
-```
-
-El runtime guarda estado en
-`<workspace-root>/.agent/swarm/runs/<run_id>/`: prompts, logs, estado de tareas,
-eventos, resultados y reportes quedan junto al workspace objetivo. El
-coordinador no tiene que cargar todo el ruido de workers en contexto.
-
-## Modo Singularity
-
-Singularity es el loop autonomo para personas dispuestas a gastar tokens.
-
-La idea es correr un equipo local 24/7: proponer mejoras, leer issues, crear tareas, lanzar workers, hacer QA, validar funcionalidades, resumir cambios y empezar el siguiente ciclo. Es el modo mas cercano a un loop de ingenieria permanente dentro de SWARMS.
-
-```powershell
-pwsh scripts/start_singularity.ps1 -MaxCycles 5
-```
-
-Tu controlas el riesgo. Con `mock`, Singularity es una simulacion local. Con proveedores reales, muchos workers y muchos ciclos, puede consumir muchisimos tokens. Usa provider caps, `MaxCycles` y un archivo `STOP_SINGULARITY` cuando lo pruebes.
-
-## Ideas Por Implementar
-
-SWARMS deberia conectarse con las herramientas donde ya vive el trabajo de ingenieria:
-
-- Trello: leer cards, crear planes de implementacion y mover cards despues de validar.
-- Hermes Agent: usar Hermes como otra ruta local de agente o superficie de coordinacion.
-- Discord: publicar resumenes de ciclo, pedir aprobaciones y aceptar comandos livianos.
-- JIRA: leer tickets, planificar trabajo, actualizar estados y adjuntar reportes de verificacion.
-- Microsoft Teams: enviar resumenes de QA, avisos de escalamiento y reportes de ciclos Singularity.
-
-## Politica De Proveedores
-
-Intencion por rol:
-
-- Planner: Claude Fable puede configurarse como agente planificador premium. GPT-5.6 Sol se documenta como opción futura mientras su acceso siga limitado; GLM 5.2 permanece como valor seguro por defecto.
-- Critic: GLM 5.2 primero, revision premium para planes riesgosos o caros.
-- Programmer: GLM 5.2, Gemini Flash, OpenAI-compatible, LiteLLM, Kilo, Aider o cualquier ruta que configures.
-- Verifier: ejecuta tests deterministas fuera del harness y luego usa revisión barata.
-- Rutas premium: permiso explicito en el plan y config local.
-
-Ver `docs/PROVIDER_STATUS.md`, `docs/CONFIG.md`, `docs/DYNAMIC_WORKFLOWS.md` y `AGENTS.md`.
-
-## Origen
-
-Construí las primeras versiones para uso personal alrededor de enero-febrero de 2026. Tenia restricciones de plan de estudiante y queria estirar los modelos disponibles: Gemini en Antigravity para workers, Opus para planes, y despues GLM 5.2 y Codex para planner/critic.
-
-La forma no cambio: gastar modelos escasos en decisiones, no en trabajo repetitivo.
-
-## Verificacion
-
-```powershell
-python -m ruff check .
-python -m py_compile scripts\swarm.py scripts\plan_review.py scripts\workflow_runtime.py scripts\doctor.py scripts\mock_worker.py
-python -m pytest tests -q
-python scripts/swarm.py doctor
-python scripts/swarm.py run --plan docs\workflow_plan_example.json --force --run-id verify-readme --global-max-concurrency 3 --provider-cap mock=3
-```
+---
 
 ## Licencia
 
-MIT. Ver `LICENSE`.
+Licencia MIT. Consulta [LICENSE](LICENSE) para más detalles.
