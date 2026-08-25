@@ -57,25 +57,25 @@ cargo run --manifest-path rust/Cargo.toml -- run --force \
 
 ## Capacidades y Funcionalidades Clave
 
-### 🚀 Scaling Paralelo en Test-Time
+### Scaling Paralelo en Test-Time
 Ejecuta N soluciones candidatas simultáneamente en git worktrees aislados.
 1. **Objetivo Primero**: Las pruebas automatizadas (`pytest`, `cargo test`, linters) corren en cada candidato. Si un candidato pasa limpiamente, gana con **cero llamadas extra a LLMs**.
 2. **LLM-as-a-Verifier**: En caso de empate, un modelo verificador rápido puntúa los candidatos.
 3. **Escalamiento Controlado**: Casos ambiguos escalan a rutas de síntesis o revisión bajo presupuestos de tokens estrictos.
 
-### 🛡️ Arquitectura Anti-Slop y Especialización de Roles
+### Arquitectura Anti-Slop y Especialización de Roles
 - **Planner Inteligente**: Usa modelos de alto razonamiento (Claude Fable, GPT-5.6, GLM) únicamente para formular planes de flujo DAG estáticos.
 - **Crítico Estático**: Valida dependencias del grafo, ciclos y límites presupuestarios *antes* de iniciar la ejecución.
 - **Workers Económicos**: Delega las tareas de código pesadas a workers rápidos y gratuitos (Ox Alpha, DeepSeek V4 Flash, Gemini Flash).
 - **Verificador Determinístico**: Califica resultados con compiladores, pruebas unitarias y hashes SHA256.
 
-### 🔒 Cero Contaminación del Espacio de Trabajo
+### Cero Contaminación del Espacio de Trabajo
 Cada worker programador opera en un Git worktree temporal y aislado. Los cambios se validan criptográficamente con firmas SHA256 antes y después de aplicarse a la rama principal.
 
-### ⏱️ Protección contra Procesos Colgados
+### Protección contra Procesos Colgados
 Monitores activos vigilan los logs de cada worker. Si una tarea se detiene o queda en silencio, SWARMS emite advertencias y aplica límites de tiempo para evitar que procesos zombies consuman créditos.
 
-### 🌐 Swarm-Driven Development (SwDD)
+### Swarm-Driven Development (SwDD)
 Integración nativa con [SwDD](https://github.com/Mchicao/swarm-driven-development) para conectar especificaciones OpenSpec, orquestación SWARMS, Gentle-AI y memoria Engram en un único flujo:
 $$	ext{Especificación} \longrightarrow 	ext{Ejecución en Enjambre} \longrightarrow 	ext{Entrega Verificada}$$
 

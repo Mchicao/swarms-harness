@@ -57,25 +57,25 @@ cargo run --manifest-path rust/Cargo.toml -- run --force \
 
 ## Core Capabilities & Features
 
-### 🚀 Parallel Test-Time Scaling
+### Parallel Test-Time Scaling
 Run N candidate solutions simultaneously in parallel across isolated Git worktrees.
 1. **Objective First**: Automated tests (`pytest`, `cargo test`, linters) run per candidate. If exactly one candidate passes, it wins with **zero extra LLM calls**.
 2. **LLM-as-a-Verifier**: On ties, a fast verifier model scores candidates.
 3. **Escalation**: Ambiguous cases escalate to a synthesis or review route within strictly bounded token budgets.
 
-### 🛡️ Anti-Slop Architecture & Role Specialization
+### Anti-Slop Architecture & Role Specialization
 - **Smart Planner**: Spend high-intelligence models (Claude Fable, GPT-5.6, GLM) strictly on formulating DAG workflow plans.
 - **Static Critic**: Validates DAG dependencies, cycles, routes, and budget constraints *before* any execution begins.
 - **Budget Programmer Workers**: Offload heavy coding sub-tasks to ultra-fast, zero-cost workers (Ox Alpha, DeepSeek V4 Flash, Gemini Flash).
 - **Deterministic Verifier**: Grade code with objective compiler checks, unit tests, and SHA256 integrity hashes.
 
-### 🔒 Zero Workspace Contamination
+### Zero Workspace Contamination
 Every programmer worker operates inside a detached, temporary Git worktree. Changes are cryptographically verified with SHA256 pre/post signatures before being merged to the primary workspace.
 
-### ⏱️ Runaway & Silent-Hang Protection
+### Runaway & Silent-Hang Protection
 Active log watchers monitor worker stdout and file activity. If a task goes silent or hangs, SWARMS triggers immediate warnings and enforces timeouts, preventing zombie processes from burning your API credits.
 
-### 🌐 Swarm-Driven Development (SwDD)
+### Swarm-Driven Development (SwDD)
 Integrate with [SwDD](https://github.com/Mchicao/swarm-driven-development) to connect OpenSpec specifications, SWARMS execution, Gentle-AI orchestration, and Engram memory behind a unified workflow:
 $$	ext{Specification} \longrightarrow 	ext{Swarm Execution} \longrightarrow 	ext{Receipt-Backed Delivery}$$
 
