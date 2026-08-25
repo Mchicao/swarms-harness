@@ -47,6 +47,21 @@ cargo run --manifest-path rust/Cargo.toml -- run --force \
   --plan my_plan.json --global-max-concurrency 4 --provider-cap ox_alpha_free=4
 ```
 
+## Proof: Cheap Models, Premium Results
+
+![Terminal-Bench 2.1 scaling results](images/benchmark-terminal-bench.png)
+
+**Our latest finding: scaling self-verification can make open-weight models significantly more capable at a fraction of the cost.** With DeepSeek V4 Flash, sampling just 5 candidate solutions and using the same model to rank them with LLM-as-a-Verifier improves Terminal-Bench 2.1 accuracy from 79% → 88% — outperforming Claude Fable 5 while costing 11× less. 💰
+
+This is exactly the parallel scaling SWARMS ships: run N candidate workers in isolated git worktrees, verify deterministically, and let a cheap model act as the tie-breaker. Premium accuracy from budget routes, with the cost curve to prove it.
+
+- DeepSeek V4 Flash ×5 (LLM-as-a-Verifier): **88%** at ~$0.5/task — 11× cheaper than Claude Fable 5 at the same accuracy.
+- DeepSeek V4 Flash ×3: **86.4%** at ~$0.25/task.
+- Baseline single-shot DeepSeek V4 Flash: **79%** at ~$0.05/task.
+- Reference points from the GPT-5.6 technical report (Codex) and Claude Code.
+
+Inspired by and building on the [LLM-as-a-Verifier self-verification study](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21) — see that repo for methodology and raw numbers.
+
 ## Claude Code and GPT-5.6 Ultra-Style Workflows
 
 Claude Fable 5 can power long-running, multi-agent workflows in Claude Code by planning across stages, delegating to subagents, and checking its own work. OpenAI has also announced a new GPT-5.6 `ultra` mode built around subagents, but GPT-5.6 remains in limited preview rather than broad public availability. SWARMS targets this operating pattern from the local-first side: you choose the planner, critic, worker models, provider caps, verification metadata, and token budget.
@@ -124,9 +139,8 @@ the best one, and only spend more compute when the result is uncertain.
 
 The evidence says this works: on DeepSWE, GLM trails Fable on a single shot
 (69.7 vs 69.0) but passes it with 2 shots (81.1 vs 77.1) and 4 shots (87.6 vs
-84.1) — at a fraction of the price. Similarly, sampling 5 DeepSeek V4 Flash
-solutions and self-verifying with LLM-as-a-Verifier lifted Terminal-Bench 2.1
-from 79% to 88%, beating Claude Fable 5 while being ~11× cheaper.
+84.1) — at a fraction of the price. The Terminal-Bench 2.1 result at the top of
+this README shows the same effect in detail.
 
 ```text
 Task

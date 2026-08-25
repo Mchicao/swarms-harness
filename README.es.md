@@ -25,6 +25,21 @@ directamente con el proveedor antes de ejecutar una carga de trabajo. SWARMS no
 garantiza el acceso gratuito: solo enruta hacia los proveedores y modelos que
 configures localmente.
 
+## Prueba: Modelos Baratos, Resultados Premium
+
+![Resultados de scaling en Terminal-Bench 2.1](images/benchmark-terminal-bench.png)
+
+**Nuestro último hallazgo: escalar la auto-verificación puede hacer que los modelos open-weight sean significativamente más capaces a una fracción del costo.** Con DeepSeek V4 Flash, muestreando solo 5 soluciones candidatas y usando el mismo modelo para rankearlas con LLM-as-a-Verifier, la precisión en Terminal-Bench 2.1 sube de 79% → 88% — superando a Claude Fable 5 con un costo 11× menor. 💰
+
+Esto es exactamente el parallel scaling que SWARMS incluye: corre N workers candidatos en git worktrees aislados, verifica de forma determinística y deja que un modelo barato desempate. Precisión premium con rutas económicas, y la curva de costo que lo demuestra.
+
+- DeepSeek V4 Flash ×5 (LLM-as-a-Verifier): **88%** a ~$0.5/tarea — 11× más barato que Claude Fable 5 con la misma precisión.
+- DeepSeek V4 Flash ×3: **86.4%** a ~$0.25/tarea.
+- Baseline single-shot DeepSeek V4 Flash: **79%** a ~$0.05/tarea.
+- Puntos de referencia del reporte técnico de GPT-5.6 (Codex) y Claude Code.
+
+Inspirado en y construido sobre el [estudio de auto-verificación LLM-as-a-Verifier](https://github.com/llm-as-a-verifier/llm-as-a-verifier#self-verification-terminal-bench-21) — consulta ese repo para la metodología y los números completos.
+
 ## Flujos Estilo Ultra de Claude Code y GPT-5.6
 
 Claude Fable 5 puede impulsar flujos multiagente de larga duración en Claude Code: planifica por etapas, delega en subagentes y revisa su propio trabajo. OpenAI también anunció un nuevo modo `ultra` de GPT-5.6 basado en subagentes, pero GPT-5.6 sigue en vista previa limitada y no tiene disponibilidad pública amplia. SWARMS apunta a este patrón operativo desde el lado local-first: tú eliges planner, critic, modelos worker, provider caps, metadatos de verificación y presupuesto de tokens.
