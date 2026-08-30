@@ -16,14 +16,17 @@ SWARMS separates route names from provider execution. A route can exist in code,
 | `codex` | Reserved premium | Disabled | Must require explicit user approval and premium policy. |
 | `claude` | Reserved premium | Disabled | Must require explicit user approval and premium policy. |
 | `opus` | Reserved premium | Disabled | Planning/escalation only; not enabled by default. |
+| `opencode_v2` | Implemented route | Disabled | OpenCode V2 beta (`opencode2`). Flag surface verified with `opencode2 run --help` (0.0.0-beta-17823); JSON usage scraping reuses the V1 shape and is not yet verified against a live run. Coexists with the V1 `glm52` route. |
+| `pi_agent` | Implemented route | Disabled | Pi coding agent (pi.dev). Flags verified with `pi --help` (0.73.1): headless `-p --mode json`, `--model provider/id`, `--thinking`, `--session`, tool policies via `--no-tools`/`--tools read`. Needs a provider API key; no ACP surface. |
 
 ## Future Provider Targets
 
-The user wants future support for **OpenCode 2.0** and **pi-agent**. Neither is
-implemented or treated as compatible with an existing route today. Promotion
-to supported requires a versioned adapter contract, exact CLI/API discovery,
-session/resume and steering tests, usage telemetry, workspace/sandbox review,
-offline fixtures and an opt-in local configuration example.
+Promotion of the routes above to locally enabled still requires per-machine
+verification: a live smoke run, session/resume and steering checks, usage
+telemetry capture, and an opt-in local configuration entry. The OpenCode V2
+beta may shift its JSON event contract before GA; re-verify
+`opencode_session`/usage scraping against a real run before trusting its
+telemetry.
 
 ## Rules For Real Providers
 

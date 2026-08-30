@@ -283,8 +283,15 @@ def agy_complete(
     if model:
         cmd += ["--model", model]
     cmd += ["--print", prompt]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        cwd=cwd,
+    )
     # stdout is usually empty in headless mode; keep it as a first attempt.
     direct = (proc.stdout or "").strip()
     if direct:

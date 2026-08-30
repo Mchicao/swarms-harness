@@ -18,6 +18,8 @@ Reserved route names:
 - `codex`
 - `claude`
 - `local_tests`
+- `opencode_v2`
+- `pi_agent`
 
 Premium routes must remain disabled by default. A plan that requests `codex`, `claude`, `opus`, or `gpt-5.5` fails static review unless `review_policy.premium_allowed` is explicitly true and local provider config allows it.
 

@@ -54,6 +54,8 @@ Per-task `thinking` controls reasoning depth. Only verified adapter flags are us
 
 - Codex: `model_reasoning_effort` via `-c` (minimal/low/medium/high/ultra).
 - OpenCode/Kilo: `--variant` (minimal/low/medium/high/max).
+- OpenCode V2 (`opencode2`): variant rides the model string (`provider/model#variant`, minimal/low/medium/high/max); `run` has no `--variant`/`--pure` flags.
+- Pi (`pi`): `--thinking` (minimal/low/medium/high/xhigh); `max` maps to `xhigh`.
 - Hermes/agy: not supported — review rejects non-default thinking.
 - OpenAI-compat: only when route config declares `thinking_field`.
 

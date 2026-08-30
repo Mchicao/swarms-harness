@@ -257,6 +257,40 @@
       "scarcity": 0.10,
       "strengths": ["agentic", "operator", "tools", "citations", "verifiable", "multi-step"],
       "weaknesses": ["needs perch login", "starter token allowance", "no session reuse"]
+    },
+    "opencode_v2": {
+      "_doc": "OpenCode V2 beta (binary opencode2, npm @opencode-ai/cli dist-tag next). Coexists with the V1 opencode wrapper: same auth and provider/model ids, but the reasoning variant rides the model string (provider/model#variant) and run has no --pure flag. Flag surface verified with `opencode2 run --help` (0.0.0-beta-17823); the beta may still shift. Enable in config/swarm_router.local.json after a local smoke test.",
+      "enabled": false,
+      "provider": "opencode",
+      "model": "zai-coding-plan/glm-5.2",
+      "variant": "high",
+      "canonical_model": "glm-5.2",
+      "wrapper": "opencode2",
+      "quota_key": "zai:coding",
+      "fallback_routes": ["glm52", "mock"],
+      "health_key": "opencode",
+      "metric_key": "opencode2",
+      "relative_cost": 0.20,
+      "quality": 0.78,
+      "scarcity": 0.25,
+      "strengths": ["backend", "frontend", "refactor", "debug", "tests", "api", "multi-file"],
+      "weaknesses": ["beta: APIs may shift", "usage scraping unverified against a live run"]
+    },
+    "pi_agent": {
+      "_doc": "Pi coding agent (pi.dev; npm @mariozechner/pi-coding-agent, succeeded by @earendil-works/pi-coding-agent; binary `pi`). Headless via -p --mode json; session resume via --session; thinking via --thinking (max maps to xhigh). Model is provider/id resolved by pi itself (see `pi --list-models`); auth via the provider's env vars. Flag surface verified with `pi --help` (0.73.1). The pinned model is an example: change it in config/swarm_router.local.json to a provider you have a key for. No ACP surface: CLI batch only.",
+      "enabled": false,
+      "provider": "pi_cli",
+      "model": "anthropic/claude-sonnet-4-5",
+      "canonical_model": "pi-agent",
+      "wrapper": "pi",
+      "fallback_routes": ["mock"],
+      "health_key": "pi_cli",
+      "metric_key": "pi",
+      "relative_cost": 0.55,
+      "quality": 0.75,
+      "scarcity": 0.30,
+      "strengths": ["agentic", "minimal", "extensions", "sessions", "multi-provider", "headless"],
+      "weaknesses": ["needs a provider API key", "no ACP surface", "no sandbox flags (tool allowlist only)"]
     }
   }
 }

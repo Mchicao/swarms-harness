@@ -55,10 +55,12 @@ pub enum AdapterKind {
     Codex,
     Claude,
     OpenCode,
+    OpenCode2,
     Kilo,
     Hermes,
     Agy,
     Perch,
+    Pi,
     OpenAiCompat,
 }
 
@@ -69,10 +71,12 @@ impl AdapterKind {
             "codex" => Some(Self::Codex),
             "claude" => Some(Self::Claude),
             "opencode" => Some(Self::OpenCode),
+            "opencode2" => Some(Self::OpenCode2),
             "kilo" => Some(Self::Kilo),
             "hermes" => Some(Self::Hermes),
             "gemini" => Some(Self::Agy),
             "perch" => Some(Self::Perch),
+            "pi" => Some(Self::Pi),
             "openai_compat" => Some(Self::OpenAiCompat),
             _ => None,
         }
@@ -82,7 +86,7 @@ impl AdapterKind {
     pub fn supports_thinking(&self) -> bool {
         matches!(
             self,
-            Self::Codex | Self::OpenCode | Self::Kilo | Self::Perch
+            Self::Codex | Self::OpenCode | Self::OpenCode2 | Self::Kilo | Self::Perch | Self::Pi
         )
     }
 
@@ -90,15 +94,18 @@ impl AdapterKind {
     pub fn supports_session_reuse(&self) -> bool {
         matches!(
             self,
-            Self::Codex | Self::Claude | Self::OpenCode | Self::Kilo
+            Self::Codex | Self::Claude | Self::OpenCode | Self::OpenCode2 | Self::Kilo | Self::Pi
         )
     }
 
     /// ACP is a provider process transport, not a property of the model.
-    /// Mock and HTTP routes stay on their existing native paths; Perch has no
-    /// ACP surface at all (CLI batch only).
+    /// Mock and HTTP routes stay on their existing native paths; Perch and Pi
+    /// have no ACP surface at all (CLI batch only).
     pub fn supports_acp(&self) -> bool {
-        !matches!(self, Self::Mock | Self::OpenAiCompat | Self::Perch)
+        !matches!(
+            self,
+            Self::Mock | Self::OpenAiCompat | Self::Perch | Self::Pi
+        )
     }
 }
 
@@ -166,10 +173,12 @@ pub fn build_cli_command(
         AdapterKind::Codex => build_codex(task, prompt_text, thinking, session_id),
         AdapterKind::Claude => build_claude(task, prompt_text, session_id),
         AdapterKind::OpenCode => build_opencode(task, prompt_text, thinking, session_id),
+        AdapterKind::OpenCode2 => build_opencode2(task, prompt_text, thinking, session_id),
         AdapterKind::Kilo => build_kilo(task, prompt_text, thinking, session_id),
         AdapterKind::Hermes => build_hermes(task, prompt_text, provider_name),
         AdapterKind::Agy => build_agy(task, prompt_text),
         AdapterKind::Perch => build_perch(prompt_text, thinking),
+        AdapterKind::Pi => build_pi(task, prompt_text, thinking, session_id),
         _ => Err(format!("not a CLI adapter: {kind:?}")),
     }
 }
@@ -197,8 +206,14 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
             AdapterKind::Agy | AdapterKind::Codex | AdapterKind::Claude | AdapterKind::Hermes => {
                 return None
             }
-            // Perch has no documented ACP subcommand; CLI batch only.
-            AdapterKind::Mock | AdapterKind::OpenAiCompat | AdapterKind::Perch => return None,
+            // OpenCode V2 has no verified `opencode2 acp` subcommand in the
+            // beta; an explicit command is required for an intentional launch.
+            AdapterKind::OpenCode2 => return None,
+            // Perch and Pi have no documented ACP subcommand; CLI batch only.
+            AdapterKind::Mock
+            | AdapterKind::OpenAiCompat
+            | AdapterKind::Perch
+            | AdapterKind::Pi => return None,
         },
     };
     args.extend(config.args.iter().cloned());
@@ -328,6 +343,104 @@ fn build_opencode_family(
     })
 }
 
+/// OpenCode V2 beta (`opencode2`, npm `@opencode-ai/cli` dist-tag `next`).
+/// Coexists with V1: same `run` surface except the reasoning variant rides
+/// the model string (`provider/model#variant`) and `run` has no `--pure`
+/// flag — read-only is simply the absence of `--auto`. Flags verified with
+/// `opencode2 run --help` (0.0.0-beta-17823).
+fn build_opencode2(
+    task: &Task,
+    prompt_text: &str,
+    thinking: ThinkingLevel,
+    session_id: Option<&str>,
+) -> Result<CliSpec> {
+    let program = which("opencode2").unwrap_or_else(|| "opencode2".to_string());
+    let mut args = vec!["run".to_string()];
+
+    if !task.provider.model.is_empty() {
+        let mut model = task.provider.model.clone();
+        if !thinking.is_default() {
+            model.push('#');
+            model.push_str(thinking.as_str());
+        }
+        args.push("-m".to_string());
+        args.push(model);
+    }
+    args.push("--format".to_string());
+    args.push("json".to_string());
+    if task.spec.allows_workspace_write() {
+        args.push("--auto".to_string());
+    }
+    if let Some(sid) = session_id {
+        args.push("--session".to_string());
+        args.push(sid.to_string());
+    }
+    args.push(prompt_text.to_string());
+
+    Ok(CliSpec {
+        program,
+        args,
+        env: Vec::new(),
+    })
+}
+
+/// Pi coding agent (pi.dev; npm `@mariozechner/pi-coding-agent`, succeeded by
+/// `@earendil-works/pi-coding-agent`; binary `pi`). Headless: `-p` prints and
+/// exits, `--mode json` emits JSONL events (session header first, cumulative
+/// usage on message updates). Flags verified with `pi --help` (0.73.1).
+fn build_pi(
+    task: &Task,
+    prompt_text: &str,
+    thinking: ThinkingLevel,
+    session_id: Option<&str>,
+) -> Result<CliSpec> {
+    let program = which("pi").unwrap_or_else(|| "pi".to_string());
+    let mut args = vec!["--mode".to_string(), "json".to_string(), "-p".to_string()];
+
+    if !task.provider.model.is_empty() {
+        args.push("--model".to_string());
+        args.push(task.provider.model.clone());
+    }
+    if let Some(level) = pi_thinking(thinking) {
+        args.push("--thinking".to_string());
+        args.push(level.to_string());
+    }
+    match task.spec.tools_policy.as_str() {
+        // pi's built-in toolset is read/bash/edit/write; policies map to its
+        // tool flags instead of a sandbox flag.
+        "none" => args.push("--no-tools".to_string()),
+        "read-only" => {
+            args.push("--tools".to_string());
+            args.push("read".to_string());
+        }
+        _ => {}
+    }
+    if let Some(sid) = session_id {
+        args.push("--session".to_string());
+        args.push(sid.to_string());
+    }
+    args.push(prompt_text.to_string());
+
+    Ok(CliSpec {
+        program,
+        args,
+        env: Vec::new(),
+    })
+}
+
+/// pi tops out at `xhigh`; the `max` level maps up to it (like perch maps
+/// max onto `high`).
+fn pi_thinking(thinking: ThinkingLevel) -> Option<&'static str> {
+    match thinking {
+        ThinkingLevel::Auto => None,
+        ThinkingLevel::Minimal => Some("minimal"),
+        ThinkingLevel::Low => Some("low"),
+        ThinkingLevel::Medium => Some("medium"),
+        ThinkingLevel::High => Some("high"),
+        ThinkingLevel::Max => Some("xhigh"),
+    }
+}
+
 fn build_hermes(task: &Task, prompt_text: &str, provider_name: &str) -> Result<CliSpec> {
     let program = which("hermes").unwrap_or_else(|| "hermes".to_string());
     let mut args = vec!["chat".to_string(), "-Q".to_string()];
@@ -449,7 +562,10 @@ pub fn parse_session_id(kind: AdapterKind, output: &str) -> Option<String> {
             }
             None
         }
-        AdapterKind::OpenCode | AdapterKind::Kilo | AdapterKind::Claude => {
+        AdapterKind::OpenCode
+        | AdapterKind::OpenCode2
+        | AdapterKind::Kilo
+        | AdapterKind::Claude => {
             // Try as a single JSON object first, then as JSONL.
             if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
                 if let Some(id) = find_id_recursive(&v, &["sessionID", "session_id", "session"]) {
@@ -465,6 +581,24 @@ pub fn parse_session_id(kind: AdapterKind, output: &str) -> Option<String> {
                     if let Some(id) = find_id_recursive(&v, &["sessionID", "session_id", "session"])
                     {
                         return Some(id);
+                    }
+                }
+            }
+            None
+        }
+        // The first JSONL line is a session header: {"type":"session","id":...}.
+        // `id` alone is too generic for the recursive key search, so match the
+        // event type explicitly.
+        AdapterKind::Pi => {
+            for line in trimmed.lines() {
+                let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+                    continue;
+                };
+                if v.get("type").and_then(Value::as_str) == Some("session") {
+                    if let Some(id) = v.get("id").and_then(Value::as_str) {
+                        if !id.is_empty() {
+                            return Some(id.to_string());
+                        }
                     }
                 }
             }
@@ -505,13 +639,20 @@ fn find_id_recursive(v: &Value, keys: &[&str]) -> Option<String> {
 
 /// Parse token telemetry exposed by structured CLI output.
 ///
-/// OpenCode/Kilo emit one JSON object per step with `part.tokens`; Codex emits
-/// JSONL events with a `usage` object. Unknown shapes remain `missing` rather
-/// than being reported as zero usage.
+/// OpenCode/OpenCode2/Kilo emit one JSON object per step with `part.tokens`;
+/// Codex emits JSONL events with a `usage` object. Pi reports cumulative
+/// usage snapshots on message updates, so the latest snapshot wins instead of
+/// a sum. Unknown shapes remain `missing` rather than being reported as zero
+/// usage.
 pub fn parse_cli_usage(kind: AdapterKind, output: &str) -> Usage {
     if !matches!(
         kind,
-        AdapterKind::Codex | AdapterKind::OpenCode | AdapterKind::Kilo | AdapterKind::Claude
+        AdapterKind::Codex
+            | AdapterKind::OpenCode
+            | AdapterKind::OpenCode2
+            | AdapterKind::Kilo
+            | AdapterKind::Claude
+            | AdapterKind::Pi
     ) {
         return Usage::missing();
     }
@@ -532,17 +673,15 @@ pub fn parse_cli_usage(kind: AdapterKind, output: &str) -> Usage {
             .or_else(|| value.pointer("/event/usage"));
         let Some(usage) = usage else { continue };
         found = true;
-        totals[0] += usage_u64(usage, &["input", "input_tokens", "prompt_tokens"]);
-        totals[1] += usage
-            .pointer("/cache/read")
-            .and_then(Value::as_u64)
-            .unwrap_or_else(|| usage_u64(usage, &["cached_input_tokens", "cache_read_tokens"]));
-        totals[2] += usage
-            .pointer("/cache/write")
-            .and_then(Value::as_u64)
-            .unwrap_or_else(|| usage_u64(usage, &["cache_write_tokens"]));
-        totals[3] += usage_u64(usage, &["output", "output_tokens", "completion_tokens"]);
-        totals[4] += usage_u64(usage, &["reasoning", "reasoning_tokens"]);
+        let numbers = usage_numbers(usage);
+        if kind == AdapterKind::Pi {
+            // Cumulative snapshots: the latest one is the run total.
+            totals = numbers;
+        } else {
+            for (total, number) in totals.iter_mut().zip(numbers) {
+                *total += number;
+            }
+        }
     }
     if !found {
         return Usage::missing();
@@ -554,6 +693,29 @@ pub fn parse_cli_usage(kind: AdapterKind, output: &str) -> Usage {
         output: totals[3].to_string(),
         reasoning: totals[4].to_string(),
     }
+}
+
+/// Extract `[input, cache_read, cache_write, output, reasoning]` from a usage
+/// object, accepting the snake_case, OpenCode, and pi camelCase key shapes.
+fn usage_numbers(usage: &Value) -> [u64; 5] {
+    [
+        usage_u64(usage, &["input", "input_tokens", "prompt_tokens"]),
+        usage
+            .pointer("/cache/read")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| {
+                usage_u64(
+                    usage,
+                    &["cached_input_tokens", "cache_read_tokens", "cacheRead"],
+                )
+            }),
+        usage
+            .pointer("/cache/write")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| usage_u64(usage, &["cache_write_tokens", "cacheWrite"])),
+        usage_u64(usage, &["output", "output_tokens", "completion_tokens"]),
+        usage_u64(usage, &["reasoning", "reasoning_tokens"]),
+    ]
 }
 
 /// Parse usage objects embedded in ACP updates without inventing zeros when

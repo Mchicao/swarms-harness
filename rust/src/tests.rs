@@ -439,6 +439,194 @@ fn perch_command_is_model_neutral_and_maps_effort() {
 }
 
 #[test]
+fn opencode_v2_command_pins_variant_in_model_string() {
+    let mut task = make_task("oc2", &[], "oc");
+    task.provider.wrapper = "opencode2".to_string();
+
+    let spec = adapter::build_cli_command(
+        AdapterKind::OpenCode2,
+        &task,
+        "code",
+        ThinkingLevel::Max,
+        Some("sid-v2"),
+        "opencode",
+    )
+    .unwrap();
+
+    assert!(spec.program.contains("opencode2"));
+    assert!(spec.args.contains(&"run".to_string()));
+    let model = spec.args.iter().position(|arg| arg == "-m").unwrap();
+    assert_eq!(
+        spec.args.get(model + 1).map(String::as_str),
+        Some("zai-coding-plan/glm-5.2#max")
+    );
+    assert!(spec.args.contains(&"--format".to_string()));
+    assert!(spec.args.contains(&"json".to_string()));
+    assert!(spec.args.contains(&"--session".to_string()));
+    assert!(spec.args.contains(&"sid-v2".to_string()));
+    // V2 dropped both flags: variant rides the model string, read-only is
+    // the absence of --auto.
+    assert!(!spec.args.contains(&"--variant".to_string()));
+    assert!(!spec.args.contains(&"--pure".to_string()));
+    assert_eq!(spec.args.last().map(String::as_str), Some("code"));
+}
+
+#[test]
+fn opencode_v2_auto_only_for_workspace_write() {
+    let mut task = make_task("oc2-ro", &[], "oc");
+    task.provider.wrapper = "opencode2".to_string();
+
+    let read_only = adapter::build_cli_command(
+        AdapterKind::OpenCode2,
+        &task,
+        "code",
+        ThinkingLevel::default(),
+        None,
+        "opencode",
+    )
+    .unwrap();
+    assert!(!read_only.args.contains(&"--auto".to_string()));
+
+    task.spec.tools_policy = "workspace-write".to_string();
+    let writing = adapter::build_cli_command(
+        AdapterKind::OpenCode2,
+        &task,
+        "code",
+        ThinkingLevel::default(),
+        None,
+        "opencode",
+    )
+    .unwrap();
+    assert!(writing.args.contains(&"--auto".to_string()));
+}
+
+#[test]
+fn pi_command_maps_model_thinking_and_session() {
+    let mut task = make_task("pi", &[], "mock");
+    task.provider.provider = "pi_cli".to_string();
+    task.provider.wrapper = "pi".to_string();
+    task.provider.model = "anthropic/claude-sonnet-4-5".to_string();
+
+    let spec = adapter::build_cli_command(
+        AdapterKind::Pi,
+        &task,
+        "do work",
+        ThinkingLevel::Max,
+        Some("pi-sess-1"),
+        "pi_cli",
+    )
+    .unwrap();
+
+    assert!(spec.program.contains("pi"));
+    assert!(spec.args.contains(&"--mode".to_string()));
+    assert!(spec.args.contains(&"json".to_string()));
+    assert!(spec.args.contains(&"-p".to_string()));
+    let model = spec.args.iter().position(|arg| arg == "--model").unwrap();
+    assert_eq!(
+        spec.args.get(model + 1).map(String::as_str),
+        Some("anthropic/claude-sonnet-4-5")
+    );
+    // pi tops out at xhigh; max maps up to it.
+    let thinking = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--thinking")
+        .unwrap();
+    assert_eq!(
+        spec.args.get(thinking + 1).map(String::as_str),
+        Some("xhigh")
+    );
+    assert!(spec.args.contains(&"--session".to_string()));
+    assert!(spec.args.contains(&"pi-sess-1".to_string()));
+    assert_eq!(spec.args.last().map(String::as_str), Some("do work"));
+
+    // Default thinking never passes the flag.
+    let auto = adapter::build_cli_command(
+        AdapterKind::Pi,
+        &task,
+        "do work",
+        ThinkingLevel::Auto,
+        None,
+        "pi_cli",
+    )
+    .unwrap();
+    assert!(!auto.args.contains(&"--thinking".to_string()));
+}
+
+#[test]
+fn pi_tools_policy_maps_tool_flags() {
+    let mut task = make_task("pi-tools", &[], "mock");
+    task.provider.provider = "pi_cli".to_string();
+    task.provider.wrapper = "pi".to_string();
+    task.provider.model = "anthropic/claude-sonnet-4-5".to_string();
+
+    // make_task defaults to tools_policy "none".
+    let none = adapter::build_cli_command(
+        AdapterKind::Pi,
+        &task,
+        "work",
+        ThinkingLevel::default(),
+        None,
+        "pi_cli",
+    )
+    .unwrap();
+    assert!(none.args.contains(&"--no-tools".to_string()));
+
+    task.spec.tools_policy = "read-only".to_string();
+    let read_only = adapter::build_cli_command(
+        AdapterKind::Pi,
+        &task,
+        "work",
+        ThinkingLevel::default(),
+        None,
+        "pi_cli",
+    )
+    .unwrap();
+    let tools = read_only
+        .args
+        .iter()
+        .position(|arg| arg == "--tools")
+        .unwrap();
+    assert_eq!(
+        read_only.args.get(tools + 1).map(String::as_str),
+        Some("read")
+    );
+    assert!(!read_only.args.contains(&"--no-tools".to_string()));
+
+    task.spec.tools_policy = "workspace-write".to_string();
+    let writing = adapter::build_cli_command(
+        AdapterKind::Pi,
+        &task,
+        "work",
+        ThinkingLevel::default(),
+        None,
+        "pi_cli",
+    )
+    .unwrap();
+    assert!(!writing.args.contains(&"--no-tools".to_string()));
+    assert!(!writing.args.contains(&"--tools".to_string()));
+}
+
+#[test]
+fn pi_and_opencode_v2_capabilities() {
+    assert_eq!(AdapterKind::from_wrapper("pi"), Some(AdapterKind::Pi));
+    assert_eq!(
+        AdapterKind::from_wrapper("opencode2"),
+        Some(AdapterKind::OpenCode2)
+    );
+    // The V1 wrapper must keep resolving to the V1 adapter.
+    assert_eq!(
+        AdapterKind::from_wrapper("opencode"),
+        Some(AdapterKind::OpenCode)
+    );
+    assert!(AdapterKind::Pi.supports_thinking());
+    assert!(AdapterKind::Pi.supports_session_reuse());
+    assert!(!AdapterKind::Pi.supports_acp());
+    assert!(AdapterKind::OpenCode2.supports_thinking());
+    assert!(AdapterKind::OpenCode2.supports_session_reuse());
+}
+
+#[test]
 fn claude_command_is_resumable_and_permission_safe_by_default() {
     let mut task = make_task("claude", &[], "mock");
     task.provider.provider = "claude_cli".to_string();
@@ -586,6 +774,35 @@ fn opencode_usage_includes_cache_tokens() {
     assert_eq!(usage.cache_write, "2");
     assert_eq!(usage.output, "7");
     assert_eq!(usage.reasoning, "3");
+}
+
+#[test]
+fn pi_session_id_from_session_header() {
+    let output = "{\"type\":\"session\",\"version\":3,\"id\":\"pi-uuid-1\",\"timestamp\":\"2026-08-24T00:00:00Z\",\"cwd\":\"/repo\"}\n{\"type\":\"agent_start\"}";
+    let id = adapter::parse_session_id(AdapterKind::Pi, output);
+    assert_eq!(id.as_deref(), Some("pi-uuid-1"));
+
+    // A bare `id` on a non-session event must never be picked up.
+    assert_eq!(
+        adapter::parse_session_id(
+            AdapterKind::Pi,
+            r#"{"type":"message_update","id":"not-a-session"}"#
+        ),
+        None
+    );
+}
+
+#[test]
+fn pi_usage_takes_latest_cumulative_snapshot() {
+    // pi reports cumulative usage per message update; summing would
+    // overcount, so the latest snapshot must win.
+    let output = "{\"type\":\"message_update\",\"usage\":{\"input\":10,\"output\":5,\"cacheRead\":0,\"cacheWrite\":0}}\n{\"type\":\"message_update\",\"usage\":{\"input\":25,\"output\":9,\"cacheRead\":40,\"cacheWrite\":3}}";
+    let usage = adapter::parse_cli_usage(AdapterKind::Pi, output);
+    assert_eq!(usage.input, "25");
+    assert_eq!(usage.cache_read, "40");
+    assert_eq!(usage.cache_write, "3");
+    assert_eq!(usage.output, "9");
+    assert_eq!(usage.reasoning, "0");
 }
 
 #[test]

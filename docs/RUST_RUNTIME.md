@@ -69,17 +69,19 @@ runtime falls back to the native Windows console. Set `SWARMS_HERDR_BIN` or
 
 Per-task `thinking` controls reasoning depth. Only verified adapter flags are used:
 
-| Level | Codex | OpenCode/Kilo | Hermes | agy | OpenAI-compat |
-|---|---|---|---|---|---|
-| `auto` | (default) | (default) | n/a | n/a | n/a |
-| `minimal` | `model_reasoning_effort=minimal` | `--variant minimal` | not supported | not supported | via `thinking_field` |
-| `low` | `model_reasoning_effort=low` | `--variant low` | not supported | not supported | via `thinking_field` |
-| `medium` | `model_reasoning_effort=medium` | `--variant medium` | not supported | not supported | via `thinking_field` |
-| `high` | `model_reasoning_effort=high` | `--variant high` | not supported | not supported | via `thinking_field` |
-| `max` | `model_reasoning_effort=ultra` | `--variant max` | not supported | not supported | via `thinking_field` |
+| Level | Codex | OpenCode/Kilo | OpenCode2 | Pi | Hermes | agy | OpenAI-compat |
+|---|---|---|---|---|---|---|---|
+| `auto` | (default) | (default) | (default) | (default) | n/a | n/a | n/a |
+| `minimal` | `model_reasoning_effort=minimal` | `--variant minimal` | `provider/model#minimal` | `--thinking minimal` | not supported | not supported | via `thinking_field` |
+| `low` | `model_reasoning_effort=low` | `--variant low` | `provider/model#low` | `--thinking low` | not supported | not supported | via `thinking_field` |
+| `medium` | `model_reasoning_effort=medium` | `--variant medium` | `provider/model#medium` | `--thinking medium` | not supported | not supported | via `thinking_field` |
+| `high` | `model_reasoning_effort=high` | `--variant high` | `provider/model#high` | `--thinking high` | not supported | not supported | via `thinking_field` |
+| `max` | `model_reasoning_effort=ultra` | `--variant max` | `provider/model#max` | `--thinking xhigh` | not supported | not supported | via `thinking_field` |
 
 Review fails with `thinking_not_supported` if a non-default level is set on an
-adapter without a verified flag.
+adapter without a verified flag. OpenCode2 pins the variant inside the model
+string because the V2 `run` command has no `--variant` flag; pi tops out at
+`xhigh`, so `max` maps up to it.
 
 ## Session affinity
 
@@ -108,8 +110,9 @@ Tasks can reuse provider sessions to leverage prompt caching:
   adapter, and workspace must match. `on_missing: new` or `fail`.
 
 Session reuse is only supported for adapters that expose structured session IDs
-in their output: Codex (`thread_id` in JSONL), OpenCode/Kilo (`sessionID` in
-JSON events). Hermes and agy do not expose reliably parseable session IDs in
+in their output: Codex (`thread_id` in JSONL), OpenCode/OpenCode2/Kilo
+(`sessionID` in JSON events), Pi (`id` in the leading `{"type":"session"}`
+event header). Hermes and agy do not expose reliably parseable session IDs in
 headless mode; review rejects `mode: reuse` for those adapters.
 
 Same-key tasks are serialised by the scheduler to prevent concurrent

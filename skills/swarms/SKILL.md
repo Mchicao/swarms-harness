@@ -23,7 +23,7 @@ editing the Rust runtime; workbook operation uses this skill and references.
 - Use mock unless real configured providers are explicitly authorized.
 - Treat `run` as blocking. Do not poll its files while it is active.
 - Never commit credentials, local routers, `.agent/`, prompts, logs or reports.
-- OpenCode 2.0 and pi-agent are roadmap targets, not supported routes today.
+- OpenCode V2 (`opencode2`) and Pi (`pi`) are implemented routes, disabled by default; verify the CLI locally (`opencode2 run --help`, `pi --version`) before enabling per machine.
 
 ## Decision Gates
 
