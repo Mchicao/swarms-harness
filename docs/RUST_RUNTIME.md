@@ -245,6 +245,8 @@ Without `--resume` or `--force`, an existing run id is rejected.
   are `"missing"` — never fabricated zeros.
 - Hermes/agy: `"missing"` (no structured usage in headless mode).
 
+AGY print-mode workers pass `--print-timeout` explicitly. The default is `30m` because Antigravity 1.1.x otherwise aborts non-interactive turns after five minutes; set `AGY_PRINT_TIMEOUT` (Go duration syntax, for example `20m` or `45m`) for a machine-local override. Each worker also uses `--new-project`. Use a provider cap of **2** for sustained Gemini concurrency: a local 3-worker smoke run completed only 2/3 because AGY 1.1.23 workers race while writing shared MCP state under `~/.gemini/antigravity-cli/mcp`. A cap of 3 is therefore burst/experimental until AGY isolates that state per process.
+
 ## Python compatibility
 
 Python scripts (`scripts/swarm.py`, `scripts/workflow_runtime.py`, etc.) remain

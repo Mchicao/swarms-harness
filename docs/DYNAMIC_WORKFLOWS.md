@@ -44,7 +44,7 @@ The target is many logical workers with bounded live concurrency:
   "provider_concurrency": {
     "mock": 64,
     "glm52": 6,
-    "gemini_flash": 3,
+    "gemini_flash": 2,
     "codex": 1,
     "claude": 0
   }

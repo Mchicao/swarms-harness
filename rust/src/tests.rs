@@ -730,6 +730,14 @@ fn agy_print_prompt_follows_session_options() {
     );
     let model_index = spec.args.iter().position(|arg| arg == "--model").unwrap();
     assert!(model_index < print_index);
+    let timeout_index = spec
+        .args
+        .iter()
+        .position(|arg| arg == "--print-timeout")
+        .unwrap();
+    assert!(timeout_index < print_index);
+    let expected_timeout = std::env::var("AGY_PRINT_TIMEOUT").unwrap_or_else(|_| "30m".to_string());
+    assert_eq!(spec.args.get(timeout_index + 1), Some(&expected_timeout));
 }
 
 #[test]

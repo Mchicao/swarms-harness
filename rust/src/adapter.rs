@@ -489,7 +489,7 @@ fn build_hermes(task: &Task, prompt_text: &str, provider_name: &str) -> Result<C
 
 fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
     let program = which("agy").unwrap_or_else(|| "agy".to_string());
-    // Evita que agy reutilice el proyecto implícito de otra ejecución.
+    // Keep each SWARMS worker isolated from any implicit Antigravity project.
     let mut args = vec!["--new-project".to_string()];
 
     if !task.provider.model.is_empty() {
@@ -503,6 +503,14 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
     } else {
         args.push("--sandbox".to_string());
     }
+
+    // agy 1.1.x defaults print mode to five minutes. Real coding/review turns
+    // routinely exceed that and were being killed by the CLI even though the
+    // SWARMS runtime itself has no elapsed-time timeout.
+    let print_timeout = env::var("AGY_PRINT_TIMEOUT").unwrap_or_else(|_| "30m".to_string());
+    args.push("--print-timeout".to_string());
+    args.push(print_timeout);
+
     // agy consumes the token following --print as the non-interactive prompt.
     // Keep every session option before it; otherwise --model becomes the prompt.
     args.push("--print".to_string());
