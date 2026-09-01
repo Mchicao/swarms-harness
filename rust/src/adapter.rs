@@ -496,12 +496,29 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
         args.push("--model".to_string());
         args.push(task.provider.model.clone());
     }
-    if task.spec.allows_workspace_write() {
-        args.push("--mode".to_string());
-        args.push("accept-edits".to_string());
-        args.push("--dangerously-skip-permissions".to_string());
-    } else {
-        args.push("--sandbox".to_string());
+    match task.spec.tools_policy.as_str() {
+        "read-only" => {
+            // AGY print mode otherwise emits repository tool calls without
+            // executing them. `plan` enables tool execution while the sandbox
+            // keeps the worker read-only.
+            args.push("--mode".to_string());
+            args.push("plan".to_string());
+            args.push("--sandbox".to_string());
+        }
+        "workspace-write" => {
+            args.push("--mode".to_string());
+            args.push("accept-edits".to_string());
+            args.push("--sandbox".to_string());
+        }
+        "full" => {
+            args.push("--mode".to_string());
+            args.push("accept-edits".to_string());
+            // `full` auto-approves requests, but the terminal sandbox still
+            // bounds the worker to the declared workspace.
+            args.push("--dangerously-skip-permissions".to_string());
+            args.push("--sandbox".to_string());
+        }
+        _ => args.push("--sandbox".to_string()),
     }
 
     // agy 1.1.x defaults print mode to five minutes. Real coding/review turns

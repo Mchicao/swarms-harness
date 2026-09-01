@@ -88,6 +88,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
     let spec = TaskSpec {
         id: id.to_string(),
         route: route.to_string(),
+        strict_route: false,
         task: format!("task {id}"),
         role: "general".to_string(),
         needs: needs.iter().map(|s| s.to_string()).collect(),
@@ -701,6 +702,53 @@ fn agy_full_policy_accepts_edits() {
         .args
         .windows(2)
         .any(|args| args == ["--mode", "accept-edits"]));
+    assert!(spec.args.contains(&"--sandbox".to_string()));
+    assert!(spec
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+}
+
+#[test]
+fn agy_read_only_policy_enables_plan_tools_inside_sandbox() {
+    let mut task = make_task("agy-read", &[], "mock");
+    task.spec.tools_policy = "read-only".to_string();
+    let spec = adapter::build_cli_command(
+        AdapterKind::Agy,
+        &task,
+        "inspect",
+        ThinkingLevel::Auto,
+        None,
+        "antigravity_cli",
+    )
+    .unwrap();
+    assert!(spec.args.windows(2).any(|args| args == ["--mode", "plan"]));
+    assert!(spec.args.contains(&"--sandbox".to_string()));
+    assert!(!spec
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+}
+
+#[test]
+fn agy_workspace_write_policy_enables_edits_inside_sandbox() {
+    let mut task = make_task("agy-write", &[], "mock");
+    task.spec.tools_policy = "workspace-write".to_string();
+    let spec = adapter::build_cli_command(
+        AdapterKind::Agy,
+        &task,
+        "edit",
+        ThinkingLevel::Auto,
+        None,
+        "antigravity_cli",
+    )
+    .unwrap();
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|args| args == ["--mode", "accept-edits"]));
+    assert!(spec.args.contains(&"--sandbox".to_string()));
+    assert!(!spec
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
 }
 
 #[test]
@@ -1680,6 +1728,7 @@ fn review_rejects_thinking_on_hermes() {
         spec: TaskSpec {
             id: "t".to_string(),
             route: "hermes".to_string(),
+            strict_route: false,
             task: "x".to_string(),
             role: "general".to_string(),
             needs: Vec::new(),
@@ -2194,6 +2243,128 @@ fn in_progress_task_consumes_global_route_serial_and_session_capacity() {
         &quotas,
     );
     assert!(route_blocked.selected.is_empty());
+}
+
+#[test]
+fn strict_route_waits_instead_of_spilling_to_fallback() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "stages":[{"name":"parallel","parallel":true,"tasks":[
+            {"id":"a","route":"primary","strict_route":true,"task":"a"},
+            {"id":"b","route":"primary","strict_route":true,"task":"b"}
+        ]}]
+    }))
+    .unwrap();
+    let mut primary = mock_provider();
+    primary.fallback_routes = vec!["backup".to_string()];
+    let router = Router {
+        fallback_route: Some("backup".to_string()),
+        aliases: HashMap::new(),
+        role_routes: HashMap::new(),
+        quota_policy: QuotaPolicy::default(),
+        providers: HashMap::from([
+            ("primary".to_string(), primary),
+            ("backup".to_string(), mock_provider()),
+        ]),
+    };
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let states = tasks
+        .iter()
+        .map(|task| {
+            (
+                task.id.clone(),
+                crate::telemetry::TaskState::new(
+                    &task.id,
+                    &task.source_id,
+                    &task.stage,
+                    &task.spec.route,
+                ),
+            )
+        })
+        .collect();
+    let quotas = crate::quota::QuotaGuard::load(std::path::Path::new("."), &router.quota_policy);
+    let ready = runtime::find_ready(
+        &tasks,
+        &states,
+        2,
+        &HashMap::from([("primary".to_string(), 1), ("backup".to_string(), 1)]),
+        &plan,
+        &router,
+        &quotas,
+    );
+    assert_eq!(ready.selected.len(), 1);
+    assert_eq!(ready.selected[0].effective_route, "primary");
+}
+
+#[test]
+fn strict_route_blocks_on_quota_instead_of_changing_model_family() {
+    let dir = temp_dir();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    fs::write(
+        dir.join("quota.json"),
+        json!({
+            "generated_at_epoch": now,
+            "quotas": {"chatgpt:chat": {"windows": {"opaque": 4.0}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "stages":[{"tasks":[{
+            "id":"chat","route":"chatgpt","strict_route":true,"task":"review"
+        }]}]
+    }))
+    .unwrap();
+    let mut requested = mock_provider();
+    requested.quota_key = Some("chatgpt:chat".to_string());
+    requested.fallback_routes = vec!["glm".to_string()];
+    let router = Router {
+        fallback_route: Some("glm".to_string()),
+        aliases: HashMap::new(),
+        role_routes: HashMap::new(),
+        quota_policy: QuotaPolicy {
+            enabled: true,
+            snapshot_path: dir.join("quota.json").to_string_lossy().to_string(),
+            min_remaining_percent: 10.0,
+            max_age_seconds: 60,
+            on_unknown: OnUnknownQuota::Block,
+        },
+        providers: HashMap::from([
+            ("chatgpt".to_string(), requested),
+            ("glm".to_string(), mock_provider()),
+        ]),
+    };
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let states = tasks
+        .iter()
+        .map(|task| {
+            (
+                task.id.clone(),
+                crate::telemetry::TaskState::new(
+                    &task.id,
+                    &task.source_id,
+                    &task.stage,
+                    &task.spec.route,
+                ),
+            )
+        })
+        .collect();
+    let quotas = crate::quota::QuotaGuard::load(&dir, &router.quota_policy);
+    let ready = runtime::find_ready(
+        &tasks,
+        &states,
+        1,
+        &HashMap::from([("chatgpt".to_string(), 1), ("glm".to_string(), 1)]),
+        &plan,
+        &router,
+        &quotas,
+    );
+    assert!(ready.selected.is_empty());
+    assert_eq!(ready.blocked.len(), 1);
+    assert!(ready.blocked[0].1.contains("4.0%"));
+    fs::remove_dir_all(dir).ok();
 }
 
 #[test]

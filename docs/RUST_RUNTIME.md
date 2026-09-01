@@ -245,7 +245,9 @@ Without `--resume` or `--force`, an existing run id is rejected.
   are `"missing"` — never fabricated zeros.
 - Hermes/agy: `"missing"` (no structured usage in headless mode).
 
-AGY print-mode workers pass `--print-timeout` explicitly. The default is `30m` because Antigravity 1.1.x otherwise aborts non-interactive turns after five minutes; set `AGY_PRINT_TIMEOUT` (Go duration syntax, for example `20m` or `45m`) for a machine-local override. Each worker also uses `--new-project`. Use a provider cap of **2** for sustained Gemini concurrency: a local 3-worker smoke run completed only 2/3 because AGY 1.1.23 workers race while writing shared MCP state under `~/.gemini/antigravity-cli/mcp`. A cap of 3 is therefore burst/experimental until AGY isolates that state per process.
+Provider identity can be made contractual per task with `"strict_route": true`. In that mode quota, health, or concurrency constraints wait/block the task instead of substituting a provider fallback. Use it for cross-family reviews, model experiments, or any task where the requested model itself is part of the evidence.
+
+AGY print-mode workers pass `--print-timeout` explicitly. The default is `30m` because Antigravity 1.1.x otherwise aborts non-interactive turns after five minutes; set `AGY_PRINT_TIMEOUT` (Go duration syntax, for example `20m` or `45m`) for a machine-local override. Each worker also uses `--new-project`. AGY 1.1.23 needs an execution mode for repository tool calls: SWARMS maps `read-only` to `--mode plan --sandbox` and writable policies to `--mode accept-edits --sandbox`; `full` additionally auto-approves permission prompts. Without `--mode`, print mode can emit a tool call and then wait forever for a tool result. Use a provider cap of **2** for sustained Gemini concurrency: a local 3-worker smoke run completed only 2/3 because AGY 1.1.23 workers race while writing shared MCP state under `~/.gemini/antigravity-cli/mcp`. A cap of 3 is therefore burst/experimental until AGY isolates that state per process.
 
 ## Python compatibility
 

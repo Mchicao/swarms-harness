@@ -219,6 +219,7 @@ fn task_checkpoint_key_for_definition(
         "stage": task.stage,
         "stage_parallel": task.stage_parallel,
         "route": task.spec.route,
+        "strict_route": task.spec.strict_route,
         "effective_route": task.effective_route,
         "provider": task.provider.provider,
         "model": task.provider.model,
@@ -417,9 +418,11 @@ pub(crate) fn find_ready(
         }
 
         let mut candidates = vec![task.effective_route.as_str()];
-        candidates.extend(task.provider.fallback_routes.iter().map(String::as_str));
-        if let Some(fallback) = router.fallback_route.as_deref() {
-            candidates.push(fallback);
+        if !task.spec.strict_route {
+            candidates.extend(task.provider.fallback_routes.iter().map(String::as_str));
+            if let Some(fallback) = router.fallback_route.as_deref() {
+                candidates.push(fallback);
+            }
         }
         let mut reasons = Vec::new();
         let mut capacity_wait = false;

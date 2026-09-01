@@ -548,6 +548,10 @@ pub fn is_valid_tools_policy(value: &str) -> bool {
 pub struct TaskSpec {
     pub id: String,
     pub route: String,
+    /// When true, provider identity is contractual: quota/capacity failures block
+    /// the task instead of silently substituting a fallback model family.
+    #[serde(default)]
+    pub strict_route: bool,
     pub task: String,
     #[serde(default = "default_role")]
     pub role: String,
