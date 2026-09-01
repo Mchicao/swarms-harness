@@ -13,7 +13,7 @@ use crate::telemetry::{self, Report, TaskState, TaskStatus, Usage};
 use crate::{claude_stream, codex_app_server, opencode_server};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,6 +28,118 @@ type Result<T> = std::result::Result<T, String>;
 
 const MAX_DEP_CONTEXT_CHARS: usize = 12_000;
 const WORKER_CONSOLE_FINISHED_SENTINEL: &str = "__SWARMS_WORKER_FINISHED__";
+
+/// Process-scoped exclusive ownership of one `(workspace_root, run_id)`.
+///
+/// The lock lives in the OS temp directory, keyed by the canonical workspace,
+/// so `--force` cannot delete it and scaling/worktree snapshots never copy a
+/// live locked file. The file itself may remain after exit; exclusivity is
+/// provided by the OS file handle and is released automatically on process exit.
+#[derive(Debug)]
+struct CoordinatorRunLock {
+    _file: File,
+}
+
+fn coordinator_lock_path(workspace_root: &Path, run_id: &str) -> PathBuf {
+    let canonical = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    #[cfg(windows)]
+    let stable_workspace = canonical.to_string_lossy().to_lowercase();
+    #[cfg(not(windows))]
+    let stable_workspace = canonical.to_string_lossy().into_owned();
+    std::env::temp_dir().join("swarms-rs-locks").join(format!(
+        "{:016x}-{run_id}.lock",
+        fnv1a64(stable_workspace.as_bytes())
+    ))
+}
+
+fn acquire_coordinator_run_lock(workspace_root: &Path, run_id: &str) -> Result<CoordinatorRunLock> {
+    let lock_path = coordinator_lock_path(workspace_root, run_id);
+    let lock_dir = lock_path
+        .parent()
+        .ok_or_else(|| format!("coordinator lock has no parent: {}", lock_path.display()))?;
+    fs::create_dir_all(lock_dir).map_err(|e| format!("{}: {e}", lock_dir.display()))?;
+    let mut file = open_coordinator_lock_file(&lock_path)?;
+    file.set_len(0)
+        .map_err(|e| format!("reset coordinator lock {}: {e}", lock_path.display()))?;
+    writeln!(file, "pid={}", std::process::id())
+        .map_err(|e| format!("write coordinator lock {}: {e}", lock_path.display()))?;
+    file.flush()
+        .map_err(|e| format!("flush coordinator lock {}: {e}", lock_path.display()))?;
+    Ok(CoordinatorRunLock { _file: file })
+}
+
+#[cfg(windows)]
+fn open_coordinator_lock_file(path: &Path) -> Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(path)
+    {
+        Ok(file) => Ok(file),
+        Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => Err(format!(
+            "coordinator already active for run lock {}",
+            path.display()
+        )),
+        Err(error) => Err(format!("open coordinator lock {}: {error}", path.display())),
+    }
+}
+
+#[cfg(unix)]
+fn open_coordinator_lock_file(path: &Path) -> Result<File> {
+    use std::os::fd::AsRawFd;
+
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| format!("open coordinator lock {}: {e}", path.display()))?;
+    // SAFETY: `file` owns a valid descriptor for the duration of this call and
+    // remains alive in `CoordinatorRunLock` until the coordinator exits.
+    if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
+        Ok(file)
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Err(format!(
+                "coordinator already active for run lock {}",
+                path.display()
+            ))
+        } else {
+            Err(format!("lock coordinator file {}: {error}", path.display()))
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+fn open_coordinator_lock_file(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("coordinator already active for run lock {}", path.display())
+            } else {
+                format!("open coordinator lock {}: {error}", path.display())
+            }
+        })
+}
 
 #[derive(Clone, Debug)]
 struct WorkerTerminal {
@@ -402,7 +514,7 @@ pub(crate) fn find_ready(
         if dep_failed {
             blocked.push((
                 task.id.clone(),
-                "dependency failed — blocking downstream task".to_string(),
+                "dependency failed Ã¢â‚¬â€ blocking downstream task".to_string(),
             ));
             continue;
         }
@@ -503,6 +615,7 @@ pub fn execute(
     resume: bool,
 ) -> Result<Report> {
     let run_dir = workspace_root.join(".agent/swarm/runs").join(run_id);
+    let _coordinator_lock = acquire_coordinator_run_lock(workspace_root, run_id)?;
     let mut states = init_states(&run_dir, tasks, plan, force, resume)?;
     for state in states.values() {
         save_task_state(&run_dir, state)?;
@@ -2765,6 +2878,49 @@ pub fn dry_run(
     let report_value = serde_json::to_value(&report).map_err(|e| e.to_string())?;
     write_json_value(&run_dir.join("report.json"), &report_value)?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod coordinator_lock_tests {
+    use super::*;
+
+    #[test]
+    fn same_workspace_and_run_id_has_exactly_one_live_coordinator() {
+        let workspace = std::env::temp_dir().join(format!(
+            "swarms-coordinator-lock-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+
+        let first = acquire_coordinator_run_lock(&workspace, "same-run").unwrap();
+        let second = acquire_coordinator_run_lock(&workspace, "same-run").unwrap_err();
+        assert!(second.contains("coordinator already active"));
+
+        drop(first);
+        acquire_coordinator_run_lock(&workspace, "same-run").unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn same_run_id_in_different_workspaces_does_not_conflict() {
+        let base = std::env::temp_dir().join(format!(
+            "swarms-coordinator-lock-workspaces-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        let left = base.join("left");
+        let right = base.join("right");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+
+        let _left_lock = acquire_coordinator_run_lock(&left, "same-run").unwrap();
+        let _right_lock = acquire_coordinator_run_lock(&right, "same-run").unwrap();
+
+        drop(_left_lock);
+        drop(_right_lock);
+        fs::remove_dir_all(base).unwrap();
+    }
 }
 
 #[cfg(test)]
