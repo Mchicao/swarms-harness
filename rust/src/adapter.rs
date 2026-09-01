@@ -61,6 +61,7 @@ pub enum AdapterKind {
     Agy,
     Perch,
     Pi,
+    ChatGptChat,
     OpenAiCompat,
 }
 
@@ -77,6 +78,7 @@ impl AdapterKind {
             "gemini" => Some(Self::Agy),
             "perch" => Some(Self::Perch),
             "pi" => Some(Self::Pi),
+            "chatgpt_chat" => Some(Self::ChatGptChat),
             "openai_compat" => Some(Self::OpenAiCompat),
             _ => None,
         }
@@ -94,7 +96,13 @@ impl AdapterKind {
     pub fn supports_session_reuse(&self) -> bool {
         matches!(
             self,
-            Self::Codex | Self::Claude | Self::OpenCode | Self::OpenCode2 | Self::Kilo | Self::Pi
+            Self::Codex
+                | Self::Claude
+                | Self::OpenCode
+                | Self::OpenCode2
+                | Self::Kilo
+                | Self::Pi
+                | Self::ChatGptChat
         )
     }
 
@@ -104,7 +112,7 @@ impl AdapterKind {
     pub fn supports_acp(&self) -> bool {
         !matches!(
             self,
-            Self::Mock | Self::OpenAiCompat | Self::Perch | Self::Pi
+            Self::Mock | Self::OpenAiCompat | Self::Perch | Self::Pi | Self::ChatGptChat
         )
     }
 }
@@ -213,7 +221,8 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
             AdapterKind::Mock
             | AdapterKind::OpenAiCompat
             | AdapterKind::Perch
-            | AdapterKind::Pi => return None,
+            | AdapterKind::Pi
+            | AdapterKind::ChatGptChat => return None,
         },
     };
     args.extend(config.args.iter().cloned());
@@ -916,6 +925,221 @@ def test_empty_input_has_no_shards(tmp_path: Path):
     assert compress(source, packed) == []
     assert packed.exists()
 ";
+
+// ---------------------------------------------------------------------------
+// ChatGPT Web worker broker adapter
+// ---------------------------------------------------------------------------
+
+pub struct ChatGptChatOutput {
+    pub content: String,
+    pub worker_id: String,
+}
+
+fn chatgpt_broker_base_url(provider: &Provider) -> Result<String> {
+    if let Some(url) = &provider.base_url {
+        return Ok(url.trim_end_matches('/').to_string());
+    }
+    if let Some(env_name) = &provider.base_url_env {
+        if let Ok(value) = env::var(env_name) {
+            if !value.trim().is_empty() {
+                return Ok(value.trim_end_matches('/').to_string());
+            }
+        }
+    }
+    if let Ok(value) = env::var("CHATGPT_CHAT_BROKER_URL") {
+        if !value.trim().is_empty() {
+            return Ok(value.trim_end_matches('/').to_string());
+        }
+    }
+    Ok("http://127.0.0.1:8771".to_string())
+}
+
+fn chatgpt_broker_token(provider: &Provider) -> Result<String> {
+    let key_env = provider
+        .key_env
+        .as_deref()
+        .unwrap_or("CHATGPT_CHAT_BROKER_TOKEN");
+    let token = env::var(key_env)
+        .map_err(|_| format!("ChatGPT broker token not set in env var {key_env}"))?;
+    if token.len() < 24 {
+        return Err(format!(
+            "ChatGPT broker token in {key_env} is missing or too short"
+        ));
+    }
+    Ok(token)
+}
+
+fn validate_chatgpt_broker_url(url: &str) -> Result<()> {
+    if let Some(rest) = url.strip_prefix("https://") {
+        if rest.contains('@') {
+            return Err("ChatGPT broker URL must not contain embedded credentials".to_string());
+        }
+        return Ok(());
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        if matches!(host, "localhost" | "127.0.0.1" | "::1") && !rest.contains('@') {
+            return Ok(());
+        }
+    }
+    Err(
+        "ChatGPT broker URL must use HTTPS; plaintext HTTP is accepted only on loopback"
+            .to_string(),
+    )
+}
+
+fn broker_request(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    token: &str,
+    body: Option<Value>,
+) -> Result<Value> {
+    let request = match method {
+        "GET" => agent.get(url),
+        "POST" => agent.post(url),
+        other => return Err(format!("unsupported ChatGPT broker HTTP method {other}")),
+    }
+    .set("Authorization", &format!("Bearer {token}"))
+    .set("Content-Type", "application/json");
+    let response = match body {
+        Some(payload) => request.send_json(payload),
+        None => request.call(),
+    }
+    .map_err(|error| format!("ChatGPT broker request {method} {url} failed: {error}"))?;
+    let value: Value = response
+        .into_json()
+        .map_err(|error| format!("ChatGPT broker returned invalid JSON: {error}"))?;
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("ChatGPT broker rejected request")
+            .to_string());
+    }
+    Ok(value)
+}
+
+pub fn execute_chatgpt_chat(
+    task: &Task,
+    prompt: &str,
+    session_id: Option<&str>,
+    workspace: &Path,
+) -> Result<ChatGptChatOutput> {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let base_url = chatgpt_broker_base_url(&task.provider)?;
+    validate_chatgpt_broker_url(&base_url)?;
+    let token = chatgpt_broker_token(&task.provider)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(20))
+        .timeout_write(Duration::from_secs(20))
+        .build();
+
+    let worker_prompt = format!(
+        "{prompt}\n\nExecution workspace: {}\nUse the connected Controla mi PC tools when filesystem, shell, browser, or validation work is required. Stay inside this workspace unless the task explicitly names another target. Complete the whole task rather than stopping at a progress summary.",
+        workspace.display()
+    );
+
+    let (worker_id, target_generation) = if let Some(worker_id) = session_id {
+        let url = format!("{base_url}/v1/agents/{worker_id}/message");
+        let response = broker_request(
+            &agent,
+            "POST",
+            &url,
+            &token,
+            Some(json!({"text": worker_prompt})),
+        )?;
+        let generation = response
+            .get("generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "ChatGPT broker message response omitted generation".to_string())?;
+        (worker_id.to_string(), generation)
+    } else {
+        let url = format!("{base_url}/v1/agents/spawn");
+        let response = broker_request(
+            &agent,
+            "POST",
+            &url,
+            &token,
+            Some(json!({
+                "tasks": [{"task": worker_prompt, "label": task.id, "goal": worker_prompt}],
+                "external_owner": format!("swarms:{}", task.id)
+            })),
+        )?;
+        let worker = response
+            .get("workers")
+            .and_then(Value::as_array)
+            .and_then(|workers| workers.first())
+            .ok_or_else(|| "ChatGPT broker spawn response omitted worker".to_string())?;
+        let worker_id = worker
+            .get("worker_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "ChatGPT broker spawn response omitted worker_id".to_string())?;
+        let generation = worker
+            .get("generation")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        (worker_id.to_string(), generation)
+    };
+
+    let timeout_seconds = env::var("CHATGPT_CHAT_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(3600)
+        .clamp(30, 21_600);
+    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    let status_url = format!("{base_url}/v1/agents/{worker_id}");
+    while Instant::now() < deadline {
+        let response = broker_request(&agent, "GET", &status_url, &token, None)?;
+        let worker = response
+            .get("worker")
+            .ok_or_else(|| "ChatGPT broker status response omitted worker".to_string())?;
+        let generation = worker
+            .get("generation")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let state = worker
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let error = worker.get("error").and_then(Value::as_str).unwrap_or("");
+        if state == "failed" {
+            return Err(if error.is_empty() {
+                format!("ChatGPT worker {worker_id} failed")
+            } else {
+                format!("ChatGPT worker {worker_id} failed: {error}")
+            });
+        }
+        if generation >= target_generation && matches!(state, "sleeping" | "finished") {
+            if let Some(goal) = worker.get("goal") {
+                let goal_status = goal.get("status").and_then(Value::as_str).unwrap_or("");
+                if matches!(goal_status, "exhausted" | "user_stopped") {
+                    return Err(format!(
+                        "ChatGPT worker {worker_id} stopped before its goal completed ({goal_status})"
+                    ));
+                }
+            }
+            let content = worker
+                .get("result")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if content.trim().is_empty() {
+                return Err(format!(
+                    "ChatGPT worker {worker_id} finished without a final result"
+                ));
+            }
+            return Ok(ChatGptChatOutput { content, worker_id });
+        }
+        thread::sleep(Duration::from_millis(750));
+    }
+    Err(format!(
+        "ChatGPT worker {worker_id} did not finish within {timeout_seconds}s"
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // OpenAI-compatible HTTP adapter

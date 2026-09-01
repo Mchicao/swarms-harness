@@ -627,6 +627,21 @@ fn pi_and_opencode_v2_capabilities() {
 }
 
 #[test]
+fn chatgpt_chat_capabilities_are_session_reusable_but_not_cli_or_acp() {
+    assert_eq!(
+        AdapterKind::from_wrapper("chatgpt_chat"),
+        Some(AdapterKind::ChatGptChat)
+    );
+    assert!(AdapterKind::ChatGptChat.supports_session_reuse());
+    assert!(!AdapterKind::ChatGptChat.supports_thinking());
+    assert!(!AdapterKind::ChatGptChat.supports_acp());
+    assert!(
+        adapter::build_acp_command(AdapterKind::ChatGptChat, &model::AcpConfig::default())
+            .is_none()
+    );
+}
+
+#[test]
 fn claude_command_is_resumable_and_permission_safe_by_default() {
     let mut task = make_task("claude", &[], "mock");
     task.provider.provider = "claude_cli".to_string();

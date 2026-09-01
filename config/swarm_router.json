@@ -27,7 +27,9 @@
     "antigravity": "gemini_flash",
     "gemini37": "gemini37_flash_medium",
     "gemini37_medium": "gemini37_flash_medium",
-    "codex": "codex"
+    "codex": "codex",
+    "chatgpt": "chatgpt_chat",
+    "chatgpt_chat": "chatgpt_chat"
   },
   "role_routes": {
     "backend": "mock",
@@ -54,6 +56,25 @@
       "scarcity": 0.0,
       "strengths": ["offline", "test", "doctor", "ci", "demo", "cheap"],
       "weaknesses": ["real coding", "reasoning", "unknown tasks"]
+    },
+    "chatgpt_chat": {
+      "_doc": "Real ChatGPT Web worker via chatgpt-pc-mcp companion broker. Disabled by default; uses the logged-in ChatGPT product rather than an API. Configure CHATGPT_CHAT_BROKER_TOKEN and optionally CHATGPT_CHAT_BROKER_URL.",
+      "enabled": false,
+      "provider": "chatgpt_chat",
+      "model": "chatgpt-web",
+      "canonical_model": "chatgpt-web",
+      "wrapper": "chatgpt_chat",
+      "key_env": "CHATGPT_CHAT_BROKER_TOKEN",
+      "base_url_env": "CHATGPT_CHAT_BROKER_URL",
+      "quota_key": "chatgpt:chat",
+      "fallback_routes": ["mock"],
+      "health_key": "chatgpt_chat",
+      "metric_key": "chatgpt_chat",
+      "relative_cost": 0.0,
+      "quality": 0.90,
+      "scarcity": 0.65,
+      "strengths": ["agentic", "long-running", "review", "coding", "browser", "computer-use", "session-reuse"],
+      "weaknesses": ["requires companion extension", "subscription quota is opaque", "browser UI can change"]
     },
     "glm52": {
       "enabled": false,

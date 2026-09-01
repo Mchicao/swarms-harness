@@ -1,8 +1,9 @@
 //! swarms-rs — self-contained deterministic SWARMS workflow coordinator.
 
 use std::env;
+use std::io::Read;
 use std::path::Path;
-use swarms_runtime::{cli, config, model::Router, review, runtime};
+use swarms_runtime::{cli, config, model::Router, observer, review, runtime};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -22,6 +23,23 @@ fn run() -> Result<()> {
 
     if args.command == "doctor" {
         return print_doctor(&root, &router);
+    }
+
+    if args.command == "observe" {
+        let mut prompt = String::new();
+        std::io::stdin()
+            .read_to_string(&mut prompt)
+            .map_err(|e| format!("read observer prompt from stdin: {e}"))?;
+        let route = args
+            .observer_route
+            .as_deref()
+            .ok_or_else(|| "observe route missing".to_string())?;
+        let output = observer::run(&router, route, &prompt, args.observer_thinking)?;
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(|e| e.to_string())?
+        );
+        return Ok(());
     }
 
     let workspace_root = cli::resolve_workspace_root(

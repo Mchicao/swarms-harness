@@ -125,3 +125,5 @@ For developers seeking low-level runtime internals, schema specifications, and a
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
+
+- [ChatGPT Web Worker Provider](docs/CHATGPT_CHAT_PROVIDER.md) ? Real ChatGPT worker chats through chatgpt-pc-mcp, with resumable session affinity.

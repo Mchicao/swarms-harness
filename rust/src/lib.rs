@@ -7,6 +7,7 @@ pub mod cli;
 pub mod codex_app_server;
 pub mod config;
 pub mod model;
+pub mod observer;
 pub mod opencode_server;
 pub mod quota;
 pub mod resources;

@@ -1395,6 +1395,16 @@ pub(crate) fn execute_adapter(
                 transport: "http".to_string(),
             })
         }
+        AdapterKind::ChatGptChat => {
+            let out = adapter::execute_chatgpt_chat(task, prompt, session_id, root)?;
+            let _ = fs::write(work_dir.join("worker.log"), &out.content);
+            Ok(AdapterExec {
+                output: out.content,
+                usage: Usage::missing(),
+                session_id: Some(out.worker_id),
+                transport: "chatgpt_chat_broker".to_string(),
+            })
+        }
         _ => {
             let spec = adapter::build_cli_command(
                 kind,

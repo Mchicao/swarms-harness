@@ -19,13 +19,17 @@ pub struct Args {
     pub router_config: Option<PathBuf>,
     /// `singularity` only: number of bounded coordinator cycles to run.
     pub max_cycles: u32,
+    /// `observe` only: configured route used as the read-only meta-observer.
+    pub observer_route: Option<String>,
+    /// `observe` only: reasoning depth passed through verified adapter flags.
+    pub observer_thinking: model::ThinkingLevel,
 }
 
 pub fn parse_args() -> Result<Args> {
     let mut values = std::env::args().skip(1);
     let command = values
         .next()
-        .ok_or("usage: swarms-rs <doctor|review|dry-run|run|singularity> --plan <file>")?;
+        .ok_or("usage: swarms-rs <doctor|review|dry-run|run|singularity|observe> [options]")?;
 
     if command == "doctor" {
         return Ok(Args {
@@ -39,6 +43,61 @@ pub fn parse_args() -> Result<Args> {
             caps: HashMap::new(),
             router_config: None,
             max_cycles: 0,
+            observer_route: None,
+            observer_thinking: model::ThinkingLevel::Auto,
+        });
+    }
+
+    if command == "observe" {
+        let mut route = None;
+        let mut router_config = None;
+        let mut thinking = model::ThinkingLevel::Low;
+        while let Some(arg) = values.next() {
+            match arg.as_str() {
+                "--route" => {
+                    route = Some(values.next().ok_or("--route needs a value".to_string())?)
+                }
+                "--router-config" => {
+                    router_config = Some(PathBuf::from(
+                        values
+                            .next()
+                            .ok_or("--router-config needs a path".to_string())?,
+                    ))
+                }
+                "--thinking" => {
+                    let value = values
+                        .next()
+                        .ok_or("--thinking needs a value".to_string())?;
+                    thinking = match value.as_str() {
+                        "auto" => model::ThinkingLevel::Auto,
+                        "minimal" => model::ThinkingLevel::Minimal,
+                        "low" => model::ThinkingLevel::Low,
+                        "medium" => model::ThinkingLevel::Medium,
+                        "high" => model::ThinkingLevel::High,
+                        "max" => model::ThinkingLevel::Max,
+                        _ => {
+                            return Err(
+                                "--thinking must be auto|minimal|low|medium|high|max".to_string()
+                            )
+                        }
+                    };
+                }
+                other => return Err(format!("unknown observe argument: {other}")),
+            }
+        }
+        return Ok(Args {
+            command,
+            plan: PathBuf::new(),
+            run_id: make_run_id(),
+            force: false,
+            resume: false,
+            workspace_root: None,
+            global_cap: None,
+            caps: HashMap::new(),
+            router_config,
+            max_cycles: 0,
+            observer_route: Some(route.ok_or("--route is required for observe")?),
+            observer_thinking: thinking,
         });
     }
 
@@ -130,6 +189,8 @@ pub fn parse_args() -> Result<Args> {
         caps,
         router_config,
         max_cycles,
+        observer_route: None,
+        observer_thinking: model::ThinkingLevel::Auto,
     })
 }
 
