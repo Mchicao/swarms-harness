@@ -766,7 +766,9 @@ pub(crate) fn build_task_prompt(
     let dep_context = dependency_outputs(run_dir, task, all_tasks, states);
     let task_text = format!(
         "{}\n\nWORKSPACE BOUNDARY: {}. Work only within this directory. \
-         Do not write or create artifacts outside it; allowed paths are relative to this workspace.",
+         Do not write or create artifacts outside it; allowed paths are relative to this workspace. \
+         Provider configuration, credentials, and tool state outside this workspace are out of scope. \
+         If a tool denies access to an external path, continue with repository contents instead of treating that denial as a blocker.",
         task.spec.task,
         workspace_root.display()
     );
@@ -1061,7 +1063,15 @@ pub(crate) fn run_task(
 
                 if let Err(e) = check_artifacts_with_snapshot(root, task, Some(&artifact_snapshot))
                 {
-                    return failed_state(task, thinking, started, attempt, &e, &exec.usage);
+                    let mut state = failed_state(task, thinking, started, attempt, &e, &exec.usage);
+                    attach_session_context(
+                        &mut state,
+                        session_reused || session_resume_count > 0,
+                        new_session_id.clone().or_else(|| active_session_id.clone()),
+                        session_resume_count,
+                        Some(exec.transport.clone()),
+                    );
+                    return state;
                 }
 
                 let (verified, verify_error) = run_verify_commands(task, root, &work_dir);
@@ -1072,6 +1082,13 @@ pub(crate) fn run_task(
                         .unwrap_or("verification command failed");
                     let mut state =
                         failed_state(task, thinking, started, attempt, err, &exec.usage);
+                    attach_session_context(
+                        &mut state,
+                        session_reused || session_resume_count > 0,
+                        new_session_id.clone().or_else(|| active_session_id.clone()),
+                        session_resume_count,
+                        Some(exec.transport.clone()),
+                    );
                     state.verified = Some(false);
                     state.verify_error = verify_error;
                     return state;
@@ -1090,6 +1107,13 @@ pub(crate) fn run_task(
                         attempt,
                         "role requires verification but none passed",
                         &exec.usage,
+                    );
+                    attach_session_context(
+                        &mut state,
+                        session_reused || session_resume_count > 0,
+                        new_session_id.clone().or_else(|| active_session_id.clone()),
+                        session_resume_count,
+                        Some(exec.transport.clone()),
                     );
                     state.verified = verified;
                     state.verify_error = verify_error;
@@ -2618,6 +2642,22 @@ pub(crate) fn success_state(
         ended_at: Some(now_iso()),
         checkpoint_key: None,
         scaling: None,
+    }
+}
+
+fn attach_session_context(
+    state: &mut TaskState,
+    session_reused: bool,
+    session_id: Option<String>,
+    session_resume_count: u32,
+    transport: Option<String>,
+) {
+    state.session_created = !session_reused && session_id.is_some();
+    state.session_reused = session_reused;
+    state.session_resume_count = session_resume_count;
+    state.session_id = session_id;
+    if transport.is_some() {
+        state.transport = transport;
     }
 }
 

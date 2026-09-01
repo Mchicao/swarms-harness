@@ -752,6 +752,12 @@ fn task_prompt_binds_the_declared_workspace() {
     );
     assert!(prompt.contains("WORKSPACE BOUNDARY: C:\\workspaces\\target"));
     assert!(prompt.contains("Do not write or create artifacts outside it"));
+    assert!(prompt.contains(
+        "Provider configuration, credentials, and tool state outside this workspace are out of scope"
+    ));
+    assert!(prompt.contains(
+        "continue with repository contents instead of treating that denial as a blocker"
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -2284,6 +2290,34 @@ fn review_errors_when_feature_role_lacks_verification() {
             .any(|f| { f.code == "missing_verification" && f.severity == Severity::Error }));
         assert!(!result.ok);
     }
+}
+
+#[test]
+fn review_rejects_declared_artifacts_without_workspace_write() {
+    let plan = serde_json::from_value::<model::Plan>(json!({
+        "stages": [{"tasks": [{
+            "id": "writer",
+            "route": "mock",
+            "task": "write the declared artifact",
+            "role": "programmer",
+            "tools_policy": "read-only",
+            "artifacts": ["docs/result.md"],
+            "verify": ["rustc --version"]
+        }]}]
+    }))
+    .unwrap();
+    let mut router = mock_router();
+    let provider = router.providers.get_mut("mock").unwrap();
+    provider.provider = "codex_cli".to_string();
+    provider.wrapper = "codex".to_string();
+    provider.model = "gpt-test".to_string();
+    let tasks = crate::config::build_tasks(&plan, &router).unwrap();
+    let result = review_plan(&plan, &router, &tasks);
+    assert!(result.findings.iter().any(|finding| {
+        finding.severity == crate::review::Severity::Error
+            && finding.code == "artifacts_require_workspace_write"
+            && finding.task_id.as_deref() == Some("writer")
+    }));
 }
 
 #[test]

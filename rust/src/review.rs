@@ -294,6 +294,26 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
             });
         }
 
+        // The runtime requires every declared artifact to be created or modified
+        // by the task. A read-only task can therefore never satisfy a non-empty
+        // artifact contract; reject that contradiction before consuming model quota.
+        if provider.wrapper != "mock"
+            && !task.spec.artifacts.is_empty()
+            && !task.spec.allows_workspace_write()
+        {
+            findings.push(Finding {
+                severity: Severity::Error,
+                code: "artifacts_require_workspace_write".to_string(),
+                message: format!(
+                    "task '{}' declares {} artifact(s) but tools_policy '{}' cannot modify the workspace",
+                    task.source_id,
+                    task.spec.artifacts.len(),
+                    task.spec.tools_policy
+                ),
+                task_id: Some(task.source_id.clone()),
+            });
+        }
+
         // Premium routes: prefer the typed provider cost_class; fall back to the
         // route-name substring heuristic only when no cost_class is declared.
         let is_premium = match provider.cost_class {
