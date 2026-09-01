@@ -83,6 +83,12 @@ adapter without a verified flag. OpenCode2 pins the variant inside the model
 string because the V2 `run` command has no `--variant` flag; pi tops out at
 `xhigh`, so `max` maps up to it.
 
+## ChatGPT worker hosts
+
+ChatGPT Web routes can pin a logical execution host with provider `host_id`. This keeps host choice in the deterministic router rather than guessing from the currently active browser. For a host such as `desktop-main`, the native adapter resolves `CHATGPT_CHAT_BROKER_URL_DESKTOP_MAIN` and `CHATGPT_CHAT_BROKER_TOKEN_DESKTOP_MAIN` unless the provider supplies explicit `base_url`/`base_url_env`/`key_env`. The generic `CHATGPT_CHAT_BROKER_URL` and `CHATGPT_CHAT_BROKER_TOKEN` remain the single-host fallback.
+
+Define one route per available ChatGPT host (for example `chatgpt_desktop` and `chatgpt_dell`) with the same `chatgpt_chat` wrapper and different `host_id` values. A coordinator can then assign tasks to a host by choosing the corresponding route while session affinity keeps follow-up turns on that host. Broker tokens stay in environment variables and must never be committed.
+
 ## Session affinity
 
 Tasks can reuse provider sessions to leverage prompt caching:

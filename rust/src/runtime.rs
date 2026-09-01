@@ -336,6 +336,7 @@ fn task_checkpoint_key_for_definition(
         "provider": task.provider.provider,
         "model": task.provider.model,
         "wrapper": task.provider.wrapper,
+        "host_id": task.provider.host_id,
         "role": task.spec.role,
         "task": task.spec.task,
         "needs": task.spec.needs,
@@ -975,6 +976,20 @@ fn readable_worker_output(content: &str) -> String {
 // Single task execution (with retries)
 // ---------------------------------------------------------------------------
 
+fn session_adapter_identity(task: &Task) -> String {
+    if task.provider.wrapper == "chatgpt_chat" {
+        if let Some(host_id) = task
+            .provider
+            .host_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return format!("chatgpt_chat@{host_id}");
+        }
+    }
+    task.provider.wrapper.clone()
+}
+
 pub(crate) fn run_task(
     root: &Path,
     run_dir: &Path,
@@ -989,12 +1004,13 @@ pub(crate) fn run_task(
     let started = Instant::now();
 
     let session_config = task.spec.effective_session(plan);
+    let session_adapter = session_adapter_identity(task);
     let session_decision = session::decide(
         &session_config,
         session_store,
         &task.effective_route,
         &task.provider.model,
-        &task.provider.wrapper,
+        &session_adapter,
         &root.to_string_lossy(),
     );
 
@@ -1046,7 +1062,7 @@ pub(crate) fn run_task(
                             provider_session_id: sid.clone(),
                             route: task.effective_route.clone(),
                             model: task.provider.model.clone(),
-                            adapter: task.provider.wrapper.clone(),
+                            adapter: session_adapter.clone(),
                             workspace: root.to_string_lossy().to_string(),
                             created_at: session::now_iso(),
                             reused_count: 0,
@@ -1271,7 +1287,7 @@ pub(crate) fn run_task(
                             provider_session_id: session_id,
                             route: task.effective_route.clone(),
                             model: task.provider.model.clone(),
-                            adapter: task.provider.wrapper.clone(),
+                            adapter: session_adapter.clone(),
                             workspace: root.to_string_lossy().to_string(),
                             created_at: session::now_iso(),
                             reused_count: 1,

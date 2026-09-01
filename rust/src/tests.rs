@@ -26,6 +26,7 @@ fn mock_provider() -> Provider {
         canonical_model: None,
         wrapper: "mock".to_string(),
         cost_class: None,
+        host_id: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -60,6 +61,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             canonical_model: None,
             wrapper: "codex".to_string(),
             cost_class: None,
+            host_id: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -77,6 +79,7 @@ fn make_task(id: &str, needs: &[&str], route: &str) -> Task {
             canonical_model: None,
             wrapper: "opencode".to_string(),
             cost_class: None,
+            host_id: None,
             key_env: None,
             base_url: None,
             base_url_env: None,
@@ -338,6 +341,7 @@ fn hermes_no_thinking_flag() {
         canonical_model: None,
         wrapper: "hermes".to_string(),
         cost_class: None,
+        host_id: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -625,6 +629,19 @@ fn pi_and_opencode_v2_capabilities() {
     assert!(!AdapterKind::Pi.supports_acp());
     assert!(AdapterKind::OpenCode2.supports_thinking());
     assert!(AdapterKind::OpenCode2.supports_session_reuse());
+}
+
+#[test]
+fn chatgpt_provider_deserializes_explicit_execution_host() {
+    let provider: Provider = serde_json::from_value(json!({
+        "enabled": true,
+        "provider": "chatgpt_chat",
+        "model": "chatgpt-web",
+        "wrapper": "chatgpt_chat",
+        "host_id": "desktop-main"
+    }))
+    .unwrap();
+    assert_eq!(provider.host_id.as_deref(), Some("desktop-main"));
 }
 
 #[test]
@@ -1716,6 +1733,7 @@ fn review_rejects_thinking_on_hermes() {
         canonical_model: None,
         wrapper: "hermes".to_string(),
         cost_class: None,
+        host_id: None,
         key_env: None,
         base_url: None,
         base_url_env: None,
@@ -2773,6 +2791,7 @@ fn provider_with_cost(route: &str, cost_class: model::CostClass) -> Provider {
         canonical_model: None,
         wrapper: "mock".to_string(),
         cost_class: Some(cost_class),
+        host_id: None,
         key_env: None,
         base_url: None,
         base_url_env: None,

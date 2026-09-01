@@ -320,7 +320,11 @@ pub struct Provider {
     /// kept for backward compatibility.
     #[serde(default)]
     pub cost_class: Option<CostClass>,
-    /// OpenAI-compat: env var holding the API key.
+    /// Optional logical execution host for remote-capable providers such as ChatGPT Web.
+    /// Host-specific broker URL/token environment variables may be derived from this value.
+    #[serde(default)]
+    pub host_id: Option<String>,
+    /// OpenAI-compat / broker: env var holding the API key or bearer token.
     #[serde(default)]
     pub key_env: Option<String>,
     /// OpenAI-compat: explicit base URL.

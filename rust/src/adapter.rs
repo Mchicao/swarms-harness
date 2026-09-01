@@ -960,12 +960,40 @@ pub struct ChatGptChatOutput {
     pub worker_id: String,
 }
 
+fn chatgpt_host_env_suffix(host_id: &str) -> String {
+    host_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn chatgpt_broker_base_url(provider: &Provider) -> Result<String> {
     if let Some(url) = &provider.base_url {
         return Ok(url.trim_end_matches('/').to_string());
     }
     if let Some(env_name) = &provider.base_url_env {
         if let Ok(value) = env::var(env_name) {
+            if !value.trim().is_empty() {
+                return Ok(value.trim_end_matches('/').to_string());
+            }
+        }
+    }
+    if let Some(host_id) = provider
+        .host_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let env_name = format!(
+            "CHATGPT_CHAT_BROKER_URL_{}",
+            chatgpt_host_env_suffix(host_id)
+        );
+        if let Ok(value) = env::var(&env_name) {
             if !value.trim().is_empty() {
                 return Ok(value.trim_end_matches('/').to_string());
             }
@@ -980,9 +1008,20 @@ fn chatgpt_broker_base_url(provider: &Provider) -> Result<String> {
 }
 
 fn chatgpt_broker_token(provider: &Provider) -> Result<String> {
+    let derived_key_env = provider
+        .host_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|host_id| {
+            format!(
+                "CHATGPT_CHAT_BROKER_TOKEN_{}",
+                chatgpt_host_env_suffix(host_id)
+            )
+        });
     let key_env = provider
         .key_env
         .as_deref()
+        .or(derived_key_env.as_deref())
         .unwrap_or("CHATGPT_CHAT_BROKER_TOKEN");
     let token = env::var(key_env)
         .map_err(|_| format!("ChatGPT broker token not set in env var {key_env}"))?;
@@ -1091,7 +1130,8 @@ pub fn execute_chatgpt_chat(
             &token,
             Some(json!({
                 "tasks": [{"task": worker_prompt, "label": task.id, "goal": worker_prompt}],
-                "external_owner": format!("swarms:{}", task.id)
+                "external_owner": format!("swarms:{}", task.id),
+                "host_id": task.provider.host_id
             })),
         )?;
         let worker = response
