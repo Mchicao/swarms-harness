@@ -103,7 +103,7 @@ pub fn prepare_command(command: &mut Command) -> Result<(), String> {
                 extern "C" {
                     fn setpgid(pid: i32, pgid: i32) -> i32;
                 }
-                if unsafe { setpgid(0, 0) } == 0 {
+                if setpgid(0, 0) == 0 {
                     Ok(())
                 } else {
                     Err(std::io::Error::last_os_error())
