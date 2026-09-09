@@ -153,10 +153,9 @@ fn dag_self_dependency() {
 }
 
 #[test]
-fn legacy_timeout_fields_never_create_a_worker_deadline() {
+fn worker_timeout_is_opt_in_with_task_override_and_plan_fallback() {
     let mut task = make_task("long", &[], "mock");
-    task.spec.timeout_seconds = Some(1);
-    let plan = model::Plan {
+    let mut plan = model::Plan {
         schema_version: None,
         goal: None,
         project: None,
@@ -168,10 +167,21 @@ fn legacy_timeout_fields_never_create_a_worker_deadline() {
         session: None,
         execution: model::ExecutionConfig::default(),
         terminal: model::TerminalConfig::default(),
-        default_timeout_seconds: Some(1),
+        default_timeout_seconds: Some(30),
         default_max_attempts: None,
         scaling: None,
     };
+
+    assert_eq!(task.spec.effective_timeout(&plan), Some(30));
+
+    task.spec.timeout_seconds = Some(5);
+    assert_eq!(task.spec.effective_timeout(&plan), Some(5));
+
+    task.spec.timeout_seconds = Some(0);
+    assert_eq!(task.spec.effective_timeout(&plan), None);
+
+    task.spec.timeout_seconds = None;
+    plan.default_timeout_seconds = Some(0);
     assert_eq!(task.spec.effective_timeout(&plan), None);
 }
 
