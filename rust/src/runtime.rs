@@ -2652,38 +2652,6 @@ pub(crate) fn check_artifacts_with_snapshot(
 /// completion gate open indefinitely.
 const VERIFY_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
-/// Compatibility helper retained for focused tests and callers. Production
-/// verification uses `ProcessSupervisor` below so timeouts reap descendants.
-pub(crate) fn wait_bounded(
-    program: &str,
-    child: &mut std::process::Child,
-    deadline: Duration,
-    on_still_running: Option<&dyn Fn()>,
-) -> Result<std::process::ExitStatus> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {
-                if started.elapsed() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "process '{}' exceeded the {}s deadline and was killed",
-                        program,
-                        deadline.as_secs()
-                    ));
-                }
-                if let Some(callback) = on_still_running {
-                    callback();
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("wait '{}': {e}", program)),
-        }
-    }
-}
-
 pub(crate) fn run_verify_commands(
     task: &Task,
     root: &Path,
