@@ -41,6 +41,25 @@ struct CoordinatorRunLock {
     _file: File,
 }
 
+#[cfg(unix)]
+impl Drop for CoordinatorRunLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        const LOCK_UN: i32 = 8;
+        extern "C" {
+            fn flock(fd: i32, operation: i32) -> i32;
+        }
+
+        // SAFETY: the guard owns a valid descriptor until this Drop returns.
+        // Unlock explicitly so a sequential coordinator does not depend on
+        // descriptor-close timing (or on duplicates inherited during spawn).
+        unsafe {
+            let _ = flock(self._file.as_raw_fd(), LOCK_UN);
+        }
+    }
+}
+
 fn coordinator_lock_path(workspace_root: &Path, run_id: &str) -> PathBuf {
     let canonical = workspace_root
         .canonicalize()
