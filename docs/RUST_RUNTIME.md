@@ -38,19 +38,42 @@ does not affect scheduling, quotas, run paths, or checkpoint identity.
 | `model.rs` | Domain types: Plan, Task, Provider, ThinkingLevel, SessionConfig |
 | `quota.rs` | Read-only external quota snapshot and freshness/threshold guard |
 | `review.rs` | Static plan validation: DAG, routes, thinking, session, artifacts |
-| `runtime.rs` | Scheduler: DAG waves, retries, progreso observable, resume, verify, artifacts |
+| `runtime.rs` | Continuous scheduler, retries, observable progress, resume, verify, artifacts |
+| `process_supervisor.rs` | CLI/verification deadlines, idle/output bounds and process-tree termination |
+| `adapter.rs` | Native adapters: mock, CLI command builders, OpenAI-compat HTTP, session/usage parsing |
+| `session.rs` | Session affinity store: persist, validate, reuse, lock |
+| `telemetry.rs` | Usage normalisation, task state, report generation |
 
 ## Long-running workers
 
-El runtime Rust no aplica deadlines ni mata workers por tiempo. Los campos
-históricos `default_timeout_seconds` y `timeout_seconds` se aceptan para leer
-planes anteriores, pero no se ejecutan. Cada heartbeat observa el tamaño y la
-modificación de `worker.log`; un consumidor puede marcar una tarea `stale` si no hay progreso,
-sin cambiar su estado ni cancelar el proceso.
+Worker deadlines are opt-in. `timeout_seconds` overrides
+`default_timeout_seconds`; when both are absent or zero, execution remains
+unbounded. This preserves long-running agent behavior while letting callers put
+a hard wall-clock bound around tasks that must not run indefinitely.
 
-En Windows, los workers reales abren por defecto una consola de sólo lectura
-que sigue `worker.log` mientras el coordinador continúa en segundo plano. Usa
-`$env:SWARMS_WORKER_CONSOLES = "hidden"` para suprimir esas ventanas.
+CLI-batch workers and deterministic verification commands run through the Rust
+process supervisor. On Unix, supervised workers execute in their own process
+group; on Windows, termination uses the process tree. A timeout therefore reaps
+descendants instead of only killing the wrapper process. Verification keeps its
+15-minute default deadline.
+
+The supervisor also bounds worker logs (`SWARMS_PROCESS_OUTPUT_LIMIT_BYTES`,
+default 64 MiB) and verification logs (`SWARMS_VERIFY_OUTPUT_LIMIT_BYTES`,
+default 16 MiB). Optional silent-worker termination can be enabled with
+`SWARMS_IDLE_TIMEOUT_SECONDS`; it is disabled by default because a reasoning
+agent may legitimately spend a long interval without emitting output.
+
+Timeout, idle-timeout, output-limit, and wait failures are recorded as distinct
+runtime error categories and are not retried automatically. Provider-specific
+transient failures retain the existing retry policy.
+
+Each heartbeat still observes the size and modification time of `worker.log`;
+a consumer may mark a task `stale` for presentation without changing task state.
+The stale signal is observability, not a cancellation policy.
+
+In Windows, real workers open a read-only console by default that follows
+`worker.log` while the coordinator continues in the background. Set
+`$env:SWARMS_WORKER_CONSOLES = "hidden"` to suppress those windows.
 
 ### Herd terminal backend
 
@@ -61,9 +84,6 @@ Herd is the observable terminal surface. The task snapshot records its Herd
 session and pane ID, which external observers may display. If Herd is unavailable, the
 runtime falls back to the native Windows console. Set `SWARMS_HERDR_BIN` or
 `SWARMS_HERDR_SESSION` only when the default executable/session must change.
-| `adapter.rs` | Native adapters: mock, CLI command builders, OpenAI-compat HTTP, session/usage parsing |
-| `session.rs` | Session affinity store: persist, validate, reuse, lock |
-| `telemetry.rs` | Usage normalisation, task state, report generation |
 
 ## Thinking levels
 
@@ -262,4 +282,3 @@ Retained Python scripts are legacy benchmark and telemetry tools (for example
 former workflow runtime (`scripts/swarm.py`, `scripts/workflow_runtime.py`,
 `scripts/plan_review.py`) is retired and deleted. No Rust code invokes Python.
 The public runtime path is exclusively Rust.
-
