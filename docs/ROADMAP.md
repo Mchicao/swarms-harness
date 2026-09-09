@@ -5,7 +5,7 @@ SWARMS is a public release of a personal workflow that has been in use since Jan
 ## Phase 0: Public Release
 
 - Keep `mock` as the only enabled provider in committed config.
-- Maintain the single public CLI in `scripts/swarm.py`.
+- Maintain the single public CLI in the native `swarms-rs` binary (`cargo run --manifest-path rust/Cargo.toml -- <command>`).
 - Keep CI fully offline.
 - Document provider status and limitations honestly.
 - Make plans reviewable before runtime execution.

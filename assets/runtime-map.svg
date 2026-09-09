@@ -14,7 +14,7 @@
     <text x="412" y="207" font-size="19" font-weight="800" fill="#101417" stroke="none">workflow_plan.json</text>
 
     <rect x="380" y="264" width="220" height="70" rx="10" fill="#dfe8e5"/>
-    <text x="421" y="307" font-size="19" font-weight="800" fill="#101417" stroke="none">plan_review.py</text>
+    <text x="421" y="307" font-size="19" font-weight="800" fill="#101417" stroke="none">swarms-rs review</text>
 
     <rect x="690" y="150" width="226" height="92" rx="10" fill="#d7e3f1"/>
     <text x="724" y="190" font-size="19" font-weight="800" fill="#101417" stroke="none">Provider pools</text>

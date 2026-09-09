@@ -25,12 +25,9 @@ Use stable job names and require:
 - `Rust (ubuntu-latest)`;
 - `Rust (windows-latest)`;
 - `Rust (macos-latest)`;
-- `Python legacy tests (3.10)` while Python remains supported;
-- `Python legacy tests (3.11)` while Python remains supported;
-- `Python legacy tests (3.12)` while Python remains supported;
 - `Cargo advisory audit` when dependency or security workflow files change.
 
-When an MSRV is declared, add a required `Rust MSRV` job. When Python support is removed, remove the Python required checks in the same change that removes the support metadata.
+When an MSRV is declared, add a required `Rust MSRV` job.
 
 ## Rust MSRV policy
 
@@ -46,7 +43,7 @@ Any dependency update that raises MSRV must be called out in its PR and release 
 
 ## Supply-chain policy
 
-- Dependabot covers Cargo, pip, and GitHub Actions.
+- Dependabot covers Cargo and GitHub Actions.
 - Rust locked dependencies are audited on dependency changes and weekly.
 - Add license/source policy (`cargo deny` or equivalent) after an explicit allow/deny policy is committed.
 - Pin third-party GitHub Actions to immutable commit SHAs. Keep the release/tag in a comment so automated updates remain understandable.

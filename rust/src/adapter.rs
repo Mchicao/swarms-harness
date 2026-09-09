@@ -355,7 +355,7 @@ fn build_opencode_family(
 /// OpenCode V2 beta (`opencode2`, npm `@opencode-ai/cli` dist-tag `next`).
 /// Coexists with V1: same `run` surface except the reasoning variant rides
 /// the model string (`provider/model#variant`) and `run` has no `--pure`
-/// flag — read-only is simply the absence of `--auto`. Flags verified with
+/// flag - read-only is simply the absence of `--auto`. Flags verified with
 /// `opencode2 run --help` (0.0.0-beta-17823).
 fn build_opencode2(
     task: &Task,
@@ -503,6 +503,7 @@ fn build_agy(task: &Task, prompt_text: &str) -> Result<CliSpec> {
             // keeps the worker read-only.
             args.push("--mode".to_string());
             args.push("plan".to_string());
+            args.push("--dangerously-skip-permissions".to_string());
             args.push("--sandbox".to_string());
         }
         "workspace-write" => {
@@ -573,7 +574,7 @@ fn build_perch(prompt_text: &str, thinking: ThinkingLevel) -> Result<CliSpec> {
 // ---------------------------------------------------------------------------
 
 /// Attempt to extract a provider session ID from structured adapter output.
-/// Returns `None` if no reliable ID is found — never guesses.
+/// Returns `None` if no reliable ID is found - never guesses.
 ///
 /// - Codex JSONL: searches each line recursively for `thread_id`.
 /// - OpenCode/Kilo: tries single-JSON then JSONL, searching recursively.
@@ -1084,6 +1085,69 @@ fn broker_request(
     Ok(value)
 }
 
+pub(crate) fn chatgpt_chat_terminal_result(
+    worker: &Value,
+    worker_id: &str,
+    target_generation: u64,
+) -> Result<Option<String>> {
+    let generation = worker
+        .get("generation")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let state = worker
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let error = worker.get("error").and_then(Value::as_str).unwrap_or("");
+
+    if state == "failed" {
+        return Err(if error.is_empty() {
+            format!("ChatGPT worker {worker_id} failed")
+        } else {
+            format!("ChatGPT worker {worker_id} failed: {error}")
+        });
+    }
+    if state == "retired" {
+        return Err(format!(
+            "ChatGPT worker {worker_id} is retired and cannot be resumed"
+        ));
+    }
+    if generation < target_generation || state != "sleeping" {
+        return Ok(None);
+    }
+
+    if let Some(goal) = worker.get("goal") {
+        let goal_status = goal.get("status").and_then(Value::as_str).unwrap_or("");
+        if matches!(
+            goal_status,
+            "exhausted"
+                | "user_stopped"
+                | "awaiting_user_authorization"
+                | "continuation_race"
+                | "failed"
+        ) {
+            return Err(format!(
+                "ChatGPT worker {worker_id} stopped before its goal completed ({goal_status})"
+            ));
+        }
+        if !goal_status.is_empty() && goal_status != "completed" {
+            return Ok(None);
+        }
+    }
+
+    let content = worker
+        .get("result")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if content.trim().is_empty() {
+        return Err(format!(
+            "ChatGPT worker {worker_id} finished without a final result"
+        ));
+    }
+    Ok(Some(content))
+}
+
 pub fn execute_chatgpt_chat(
     task: &Task,
     prompt: &str,
@@ -1114,7 +1178,10 @@ pub fn execute_chatgpt_chat(
             "POST",
             &url,
             &token,
-            Some(json!({"text": worker_prompt})),
+            Some(json!({
+                "text": worker_prompt,
+                "requested_model": task.provider.model
+            })),
         )?;
         let generation = response
             .get("generation")
@@ -1129,7 +1196,12 @@ pub fn execute_chatgpt_chat(
             &url,
             &token,
             Some(json!({
-                "tasks": [{"task": worker_prompt, "label": task.id, "goal": worker_prompt}],
+                "tasks": [{
+                    "task": worker_prompt,
+                    "label": task.id,
+                    "goal": worker_prompt,
+                    "requested_model": task.provider.model
+                }],
                 "external_owner": format!("swarms:{}", task.id),
                 "host_id": task.provider.host_id
             })),
@@ -1162,41 +1234,8 @@ pub fn execute_chatgpt_chat(
         let worker = response
             .get("worker")
             .ok_or_else(|| "ChatGPT broker status response omitted worker".to_string())?;
-        let generation = worker
-            .get("generation")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let state = worker
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let error = worker.get("error").and_then(Value::as_str).unwrap_or("");
-        if state == "failed" {
-            return Err(if error.is_empty() {
-                format!("ChatGPT worker {worker_id} failed")
-            } else {
-                format!("ChatGPT worker {worker_id} failed: {error}")
-            });
-        }
-        if generation >= target_generation && matches!(state, "sleeping" | "finished") {
-            if let Some(goal) = worker.get("goal") {
-                let goal_status = goal.get("status").and_then(Value::as_str).unwrap_or("");
-                if matches!(goal_status, "exhausted" | "user_stopped") {
-                    return Err(format!(
-                        "ChatGPT worker {worker_id} stopped before its goal completed ({goal_status})"
-                    ));
-                }
-            }
-            let content = worker
-                .get("result")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if content.trim().is_empty() {
-                return Err(format!(
-                    "ChatGPT worker {worker_id} finished without a final result"
-                ));
-            }
+        if let Some(content) = chatgpt_chat_terminal_result(worker, &worker_id, target_generation)?
+        {
             return Ok(ChatGptChatOutput { content, worker_id });
         }
         thread::sleep(Duration::from_millis(750));

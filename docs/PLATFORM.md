@@ -1,13 +1,14 @@
 # Platform Compatibility
 
-The public SWARMS flow is Rust-first. Python remains available for legacy
-compatibility, benchmarks, and telemetry tools.
+The public SWARMS flow is the native Rust binary. Retained Python scripts are
+legacy benchmark and telemetry tools; the workflow runtime and CLI never
+invoke Python.
 
 ## Supported
 
-- Windows with Python 3.10+ and Git
-- macOS with Python 3.10+ and Git
-- Linux with Python 3.10+ and Git
+- Windows with Git
+- macOS with Git
+- Linux with Git
 
 Run the native runtime:
 
@@ -23,5 +24,6 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 ## Legacy Compatibility
 
-The old `scripts/parallel_swarm.ps1` adapter is no longer part of the public
-flow. Use the Rust runtime for workflow execution.
+The old `scripts/parallel_swarm.ps1` and `scripts/swarm.py` runtimes are no
+longer part of the public flow. Use the Rust runtime for workflow execution;
+the installers build and install the native `swarms-rs` binary as `swarm`.

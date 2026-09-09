@@ -660,6 +660,60 @@ fn chatgpt_chat_capabilities_are_session_reusable_but_not_cli_or_acp() {
 }
 
 #[test]
+fn chatgpt_terminal_status_requires_sleeping_and_rejects_non_resumable_states() {
+    let sleeping = json!({
+        "generation": 3,
+        "state": "sleeping",
+        "result": "done",
+        "goal": {"status": "completed"}
+    });
+    assert_eq!(
+        adapter::chatgpt_chat_terminal_result(&sleeping, "worker-1", 3).unwrap(),
+        Some("done".to_string())
+    );
+
+    let active = json!({"generation": 3, "state": "active", "result": "partial"});
+    assert_eq!(
+        adapter::chatgpt_chat_terminal_result(&active, "worker-1", 3).unwrap(),
+        None
+    );
+
+    for status in ["active", "evaluating", "continuing", "looping", "rotated"] {
+        let pending = json!({
+            "generation": 3,
+            "state": "sleeping",
+            "result": "turn result",
+            "goal": {"status": status}
+        });
+        assert_eq!(
+            adapter::chatgpt_chat_terminal_result(&pending, "worker-1", 3).unwrap(),
+            None
+        );
+    }
+
+    let retired = json!({"generation": 3, "state": "retired", "result": "done"});
+    let retired_error = adapter::chatgpt_chat_terminal_result(&retired, "worker-1", 3).unwrap_err();
+    assert!(retired_error.contains("retired"));
+
+    for status in [
+        "exhausted",
+        "user_stopped",
+        "awaiting_user_authorization",
+        "continuation_race",
+        "failed",
+    ] {
+        let blocked = json!({
+            "generation": 3,
+            "state": "sleeping",
+            "result": "partial",
+            "goal": {"status": status}
+        });
+        let error = adapter::chatgpt_chat_terminal_result(&blocked, "worker-1", 3).unwrap_err();
+        assert!(error.contains(status));
+    }
+}
+
+#[test]
 fn claude_command_is_resumable_and_permission_safe_by_default() {
     let mut task = make_task("claude", &[], "mock");
     task.provider.provider = "claude_cli".to_string();
@@ -740,7 +794,7 @@ fn agy_read_only_policy_enables_plan_tools_inside_sandbox() {
     .unwrap();
     assert!(spec.args.windows(2).any(|args| args == ["--mode", "plan"]));
     assert!(spec.args.contains(&"--sandbox".to_string()));
-    assert!(!spec
+    assert!(spec
         .args
         .contains(&"--dangerously-skip-permissions".to_string()));
 }

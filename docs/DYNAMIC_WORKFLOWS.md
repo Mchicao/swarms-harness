@@ -8,7 +8,7 @@ Schema v2 plans are compiled natively by Rust into the ordinary deterministic DA
 
 ## GPT-5.6 Ultra-Style Runtime
 
-OpenAI describes GPT-5.6 `ultra` as a mode that uses subagents for complex work. SWARMS is the local-first version of that pattern: the user owns the plan, routing, provider caps, verification metadata, and token budget. Deterministic `verify` commands remain metadata today; callers must run them separately.
+OpenAI describes GPT-5.6 `ultra` as a mode that uses subagents for complex work. SWARMS is the local-first version of that pattern: the user owns the plan, routing, provider caps, verification commands, and token budget. Deterministic `verify` commands run inside each candidate worktree for scaled tasks and against the root workspace for ordinary tasks; the runtime never fabricates a verdict.
 
 This makes SWARMS useful when a user wants Ultra-style fan-out but needs:
 

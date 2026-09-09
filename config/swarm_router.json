@@ -58,11 +58,11 @@
       "weaknesses": ["real coding", "reasoning", "unknown tasks"]
     },
     "chatgpt_chat": {
-      "_doc": "Real ChatGPT Web worker via chatgpt-pc-mcp companion broker. Disabled by default; uses the logged-in ChatGPT product rather than an API. Configure CHATGPT_CHAT_BROKER_TOKEN and optionally CHATGPT_CHAT_BROKER_URL.",
+      "_doc": "Real ChatGPT Web worker via chatgpt-pc-mcp companion broker. GPT-5.6 Sol is selected and browser-verified on the standard Chat surface; model mismatch fails closed. Uses the logged-in ChatGPT product rather than an API. Configure CHATGPT_CHAT_BROKER_TOKEN and optionally CHATGPT_CHAT_BROKER_URL.",
       "enabled": false,
       "provider": "chatgpt_chat",
-      "model": "chatgpt-web",
-      "canonical_model": "chatgpt-web",
+      "model": "gpt-5.6-sol",
+      "canonical_model": "gpt-5.6-sol",
       "wrapper": "chatgpt_chat",
       "key_env": "CHATGPT_CHAT_BROKER_TOKEN",
       "base_url_env": "CHATGPT_CHAT_BROKER_URL",

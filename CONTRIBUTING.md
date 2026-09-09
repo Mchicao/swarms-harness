@@ -8,16 +8,16 @@ Thanks for considering a contribution. SWARMS is alpha software, so small, well-
 - Do not add secrets, tokens, local auth files, generated traces, or provider logs.
 - Do not enable paid providers in committed config.
 - Treat the native Rust binary as the public workflow runtime and CLI.
-- Treat Python modules as legacy support, telemetry, benchmark, migration, or compatibility tooling unless a change explicitly narrows that surface further.
+- Treat retained Python scripts as legacy benchmark and telemetry tooling only; no Rust code invokes Python, and no supported install or CI path depends on it.
 - Keep docs honest about experimental behavior and trust boundaries.
 
 ## Local Setup
 
-Install the Rust toolchain with `rustfmt` and `clippy`, then install Python development dependencies for the retained support tools:
+Install the Rust toolchain with `rustfmt` and `clippy`, and (only when touching retained benchmark/telemetry scripts) a Python 3.10+ interpreter with `pytest`:
 
 ```powershell
 rustup component add rustfmt clippy
-python -m pip install -e ".[dev,yaml]"
+python -m pip install pytest
 ```
 
 Run the native CLI from the repository root:
@@ -45,9 +45,6 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 Run these checks when changing retained Python tooling:
 
 ```powershell
-python -m py_compile scripts/swarm.py scripts/plan_review.py scripts/workflow_runtime.py scripts/doctor.py scripts/mock_worker.py
-python -m ruff check .
-python -m ruff format --check .
 python -m pytest tests -q
 ```
 

@@ -6,6 +6,7 @@
     "glm52": 6,
     "gemini_flash": 2,
     "codex": 1,
+    "chatgpt_chat": 2,
     "claude": 0
   },
   "defaults": {

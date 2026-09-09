@@ -2,12 +2,12 @@
 
 Read-only observers can inspect a SWARMS run, while explicit steering clients may append user prompts;
 consumers never write coordinator snapshots, claim tasks, launch workers, or mutate
-plans. Python and Rust publish the same observed files under `.agent/swarm/runs/<run_id>/`:
+plans. The Rust runtime publishes the observed files under `.agent/swarm/runs/<run_id>/`:
 
 - `workflow.json`: run identity, project, runtime, workspace, limits and heartbeat interval.
 - `tasks/*.json`: current task/agent snapshot, written atomically.
 - `events.jsonl`: append-only lifecycle stream.
-- `claims/*.lock`: Python compatibility claim ownership; diagnostic only.
+- `claims/*.lock`: claim ownership markers; diagnostic only.
 - `results/<task_id>/`: prompt, worker log, status and completion checkpoint.
 - `report.json` or `report-rs.json`: terminal summary.
 - `steering/<task_id>/inbox.jsonl`: user prompts claimed by the Rust runtime.
@@ -75,7 +75,7 @@ Each line in `events.jsonl` is independent JSON with `event`,
 `time_unix_ms`, and optional `task_id`. The current lifecycle events are
 `workflow_initialized`, `workflow_resumed`, `task_started`, `task_heartbeat`,
 `tasks_heartbeat`,
-`task_finished`, and `workflow_finished`. Python may include additional fields
+`task_finished`, and `workflow_finished`. Events may include additional fields
 such as the ISO timestamp, model, provider, error or return code.
 
 Readers should tail complete newline-terminated records and retry a snapshot
@@ -98,14 +98,11 @@ web, or external tools without adding a dependency to the coordinator.
 
 `--resume` requires an existing `run_id`. A completed task is skipped only when
 its Rust checkpoint matches the current task definition; unfinished, failed or
-changed tasks are requeued. Python preserves completed task snapshots and
-requeues every non-completed snapshot. `--force` and `--resume` are mutually
+changed tasks are requeued. Historical runs preserve completed task snapshots
+and requeue every non-completed snapshot. `--force` and `--resume` are mutually
 exclusive. Automatic retries remain out of scope.
 
 ```powershell
 # SWARMS-RESUME-001: Reanuda checkpoints sin borrar el run existente.
 cargo run --release --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --run-id my-run --resume
-
-# SWARMS-RESUME-002: Usa la misma semántica en el runtime Python de compatibilidad.
-python scripts/swarm.py run --plan docs/workflow_plan_example.json --run-id my-run --resume
 ```

@@ -24,12 +24,14 @@ git push -u origin main
 Before pushing, run:
 
 ```powershell
-python -m ruff check .
-python -m ruff format --check scripts\swarm.py scripts\plan_review.py scripts\workflow_runtime.py scripts\doctor.py scripts\mock_worker.py scripts\smart_router.py scripts\utils\token_telemetry.py tests
-python -m py_compile scripts\swarm.py scripts\plan_review.py scripts\workflow_runtime.py scripts\doctor.py scripts\mock_worker.py
+cargo fmt --manifest-path rust/Cargo.toml -- --check
+cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path rust/Cargo.toml --all-features
+cargo build --release --manifest-path rust/Cargo.toml --all-features
+cargo run --manifest-path rust/Cargo.toml -- doctor
+cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json
+cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --run-id verify-publish --global-max-concurrency 3 --provider-cap mock=3
 python -m pytest tests -q
-python scripts\swarm.py doctor
-python scripts\swarm.py run --plan docs\workflow_plan_example.json --force --run-id verify-publish --global-max-concurrency 3 --provider-cap mock=3
 ```
 
 ## Do Not Publish
@@ -45,5 +47,5 @@ python scripts\swarm.py run --plan docs\workflow_plan_example.json --force --run
 ## Suggested Repository Metadata
 
 - Description: `Quota-saving workflow harness for coding agents.`
-- Topics: `coding-agents`, `llm`, `workflow`, `orchestration`, `python`, `developer-tools`
+- Topics: `coding-agents`, `llm`, `workflow`, `orchestration`, `rust`, `developer-tools`
 - Website: `https://github.com/Mchicao`

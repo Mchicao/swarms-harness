@@ -83,6 +83,6 @@ Anthropic-style routes should be treated as premium planner, critic, or escalati
 
 Codex and Claude-style premium agents should stay disabled unless the user explicitly opts in.
 
-OpenCode 2.0 and pi-agent are future integration targets. They are not aliases
-for the current OpenCode adapter and must not be enabled until their CLI/API,
-session, steering, telemetry and sandbox behavior are validated.
+OpenCode 2.0 and pi-agent integrate through dedicated adapters. They are not
+aliases for the current OpenCode adapter; enable them only after validating
+their CLI/API, session, steering, telemetry and sandbox behavior locally.

@@ -14,17 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    from .paths import PROJECT_ROOT, WORKSPACE_ROOT
-except ImportError:  # pragma: no cover - direct script execution path.
-    PROJECT_ROOT = Path(__file__).resolve().parents[1]
-    WORKSPACE_ROOT = Path.cwd().resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = Path.cwd().resolve()
 
 CONTRACT_SCHEMA_VERSION = 1
 DEFAULT_RUNS_DIR = WORKSPACE_ROOT / ".agent" / "swarm" / "runs"
@@ -67,6 +65,19 @@ def read_json_safe(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
+
+
+def write_json_atomic(path: Path, data: Any) -> None:
+    """Atomically write ``data`` as UTF-8 JSON using only the standard library.
+
+    Used by tests and local tooling that fabricate checkpoint fixtures; the
+    observer never writes on its own.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _redact_secrets(text: str) -> str:
