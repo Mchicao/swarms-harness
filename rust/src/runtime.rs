@@ -6,6 +6,7 @@ use crate::model::{
     find_dependency_task, ExecutionFallback, ExecutionTransport, Plan, Router, SessionMode, Task,
     ThinkingLevel,
 };
+use crate::process_supervisor::{self, ProcessPolicy, ProcessTerminalReason};
 use crate::quota::QuotaGuard;
 use crate::session::{self, SessionDecision, SessionStore};
 use crate::steering::{self, AppliedSteer, SteeringMode};
@@ -320,6 +321,13 @@ fn task_checkpoint_key_with_attempts(task: &Task, plan: &Plan) -> String {
     task_checkpoint_key_for_definition(task, plan, true)
 }
 
+fn task_timeout_seconds(task: &Task, plan: &Plan) -> Option<u64> {
+    task.spec
+        .timeout_seconds
+        .or(plan.default_timeout_seconds)
+        .filter(|seconds| *seconds > 0)
+}
+
 fn task_checkpoint_key_for_definition(
     task: &Task,
     plan: &Plan,
@@ -347,7 +355,7 @@ fn task_checkpoint_key_for_definition(
         "session": session,
         "execution": plan.execution,
         "terminal": plan.terminal,
-        "execution_timeout": "disabled",
+        "execution_timeout_seconds": task_timeout_seconds(task, plan),
     });
     if include_max_attempts {
         definition["max_attempts"] = json!(task.spec.effective_max_attempts(plan));
@@ -515,7 +523,7 @@ pub(crate) fn find_ready(
         if dep_failed {
             blocked.push((
                 task.id.clone(),
-                "dependency failed Ã¢â‚¬â€ blocking downstream task".to_string(),
+                "dependency failed — blocking downstream task".to_string(),
             ));
             continue;
         }
@@ -915,7 +923,7 @@ pub(crate) fn dependency_outputs(
         match dep_state {
             Some(s) if s.status.is_completed() => {}
             _ => continue,
-        };
+        }
         let log = run_dir
             .join("results")
             .join(&dep_task.id)
@@ -1000,6 +1008,7 @@ pub(crate) fn run_task(
 ) -> TaskState {
     let thinking = task.spec.effective_thinking(plan);
     let max_attempts = task.spec.effective_max_attempts(plan).max(1);
+    let deadline = task_timeout_seconds(task, plan).map(Duration::from_secs);
     let work_dir = run_dir.join("results").join(&task.id);
     let started = Instant::now();
 
@@ -1044,6 +1053,7 @@ pub(crate) fn run_task(
             run_dir,
             &work_dir,
             &plan.execution,
+            deadline,
         );
 
         match exec_result {
@@ -1128,6 +1138,7 @@ pub(crate) fn run_task(
                             run_dir,
                             &work_dir,
                             &plan.execution,
+                            deadline,
                         );
                         match steered {
                             Ok(next) => {
@@ -1299,7 +1310,7 @@ pub(crate) fn run_task(
                         json!({"task_id": task.id, "attempt": attempt + 1}),
                     );
                 }
-                if attempt < max_attempts || recovered_retry {
+                if should_retry(&e) && (attempt < max_attempts || recovered_retry) {
                     let delay = retry_delay(&e, attempt);
                     append_event(
                         run_dir,
@@ -1332,13 +1343,13 @@ pub(crate) fn run_task(
     state
 }
 
-/// Returns a bounded retry delay without imposing an execution timeout.
-///
-/// OpenCode persists session state in one local SQLite database. Its CLI can
-/// briefly reject a concurrent startup with `database is locked`; waiting a few
-/// seconds lets the existing writer finish while preserving the configured
-/// worker concurrency for actual agent work. All other adapter failures retain
-/// the short exponential retry already used by the coordinator.
+fn should_retry(error: &str) -> bool {
+    !error.starts_with("runtime_timeout:")
+        && !error.starts_with("runtime_idle_timeout:")
+        && !error.starts_with("runtime_output_limit:")
+        && !error.starts_with("runtime_wait_failed:")
+}
+
 fn retry_delay(error: &str, attempt: u32) -> Duration {
     if is_transient_opencode_database_lock(error) {
         let seconds = 5u64 << (attempt.saturating_sub(1).min(3));
@@ -1350,7 +1361,15 @@ fn retry_delay(error: &str, attempt: u32) -> Duration {
 }
 
 fn retry_reason(error: &str) -> &'static str {
-    if is_transient_opencode_database_lock(error) {
+    if error.starts_with("runtime_timeout:") {
+        "runtime_timeout"
+    } else if error.starts_with("runtime_idle_timeout:") {
+        "runtime_idle_timeout"
+    } else if error.starts_with("runtime_output_limit:") {
+        "runtime_output_limit"
+    } else if error.starts_with("runtime_wait_failed:") {
+        "runtime_wait_failed"
+    } else if is_transient_opencode_database_lock(error) {
         "transient_opencode_database_lock"
     } else {
         "adapter_error"
@@ -1455,6 +1474,7 @@ pub(crate) fn execute_adapter(
     run_dir: &Path,
     work_dir: &Path,
     execution: &crate::model::ExecutionConfig,
+    deadline: Option<Duration>,
 ) -> Result<AdapterExec> {
     let kind = AdapterKind::from_wrapper(&task.provider.wrapper)
         .ok_or_else(|| format!("unsupported wrapper: {}", task.provider.wrapper))?;
@@ -1571,7 +1591,7 @@ pub(crate) fn execute_adapter(
                 &task.provider.provider,
             )?;
             let log_path = work_dir.join("worker.log");
-            let output = execute_cli(kind, spec, root, &log_path)?;
+            let output = execute_cli(kind, spec, root, &log_path, deadline)?;
             let usage = adapter::parse_cli_usage(kind, &output);
             Ok(AdapterExec {
                 output,
@@ -1778,7 +1798,13 @@ fn steering_continuation(
     }
 }
 
-fn execute_cli(kind: AdapterKind, spec: CliSpec, cwd: &Path, log_path: &Path) -> Result<String> {
+fn execute_cli(
+    kind: AdapterKind,
+    spec: CliSpec,
+    cwd: &Path,
+    log_path: &Path,
+    deadline: Option<Duration>,
+) -> Result<String> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1793,65 +1819,50 @@ fn execute_cli(kind: AdapterKind, spec: CliSpec, cwd: &Path, log_path: &Path) ->
     for (key, val) in &spec.env {
         cmd.env(key, val);
     }
+    process_supervisor::prepare_command(&mut cmd)?;
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn '{}': {e}", spec.program))?;
-    let mut terminal_event_seen_at = None;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let output = fs::read_to_string(log_path).unwrap_or_default();
-                if status.success() {
-                    return Ok(output);
-                }
-                let tail = tail_chars(&output, 2000);
-                return Err(format!(
-                    "process '{}' exited {:?}: {}",
-                    spec.program,
-                    status.code(),
-                    tail
-                ));
-            }
-            Ok(None) => {
-                if (matches!(kind, AdapterKind::OpenCode | AdapterKind::Kilo)
-                    && opencode_terminal_event_seen(log_path))
-                    || (kind == AdapterKind::Codex && codex_terminal_event_seen(log_path))
-                {
-                    let seen_at = terminal_event_seen_at.get_or_insert_with(Instant::now);
-                    if seen_at.elapsed() >= Duration::from_secs(3) {
-                        // Prefer the real exit status if the wrapper finished
-                        // during the grace period. Only reap a leaked wrapper
-                        // after the provider's explicit terminal event remains
-                        // the sole completion signal.
-                        match child.try_wait() {
-                            Ok(Some(status)) if status.success() => {
-                                return Ok(fs::read_to_string(log_path).unwrap_or_default());
-                            }
-                            Ok(Some(status)) => {
-                                let output = fs::read_to_string(log_path).unwrap_or_default();
-                                return Err(format!(
-                                    "process '{}' exited {:?}: {}",
-                                    spec.program,
-                                    status.code(),
-                                    tail_chars(&output, 2000)
-                                ));
-                            }
-                            Ok(None) => {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                                return Ok(fs::read_to_string(log_path).unwrap_or_default());
-                            }
-                            Err(error) => return Err(format!("wait '{}': {error}", spec.program)),
-                        }
-                    }
-                } else {
-                    terminal_event_seen_at = None;
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("wait '{}': {e}", spec.program)),
-        }
+    let completion = || {
+        (matches!(kind, AdapterKind::OpenCode | AdapterKind::Kilo)
+            && opencode_terminal_event_seen(log_path))
+            || (kind == AdapterKind::Codex && codex_terminal_event_seen(log_path))
+    };
+    let outcome = process_supervisor::wait_supervised(
+        &mut child,
+        log_path,
+        ProcessPolicy::worker(deadline),
+        Some(&completion),
+    );
+    let output = fs::read_to_string(log_path).unwrap_or_default();
+
+    match outcome.reason {
+        ProcessTerminalReason::Exited { success: true, .. }
+        | ProcessTerminalReason::ProviderCompleted => Ok(output),
+        ProcessTerminalReason::Exited { code, .. } => Err(format!(
+            "process '{}' exited {:?}: {}",
+            spec.program,
+            code,
+            tail_chars(&output, 2000)
+        )),
+        ProcessTerminalReason::TimedOut => Err(format!(
+            "runtime_timeout: process '{}' exceeded its {}ms deadline",
+            spec.program,
+            outcome.elapsed.as_millis()
+        )),
+        ProcessTerminalReason::IdleTimedOut => Err(format!(
+            "runtime_idle_timeout: process '{}' produced no log progress for the configured idle window",
+            spec.program
+        )),
+        ProcessTerminalReason::OutputLimitExceeded => Err(format!(
+            "runtime_output_limit: process '{}' exceeded the configured output limit",
+            spec.program
+        )),
+        ProcessTerminalReason::WaitFailed(error) => Err(format!(
+            "runtime_wait_failed: wait '{}': {error}",
+            spec.program
+        )),
     }
 }
 
@@ -2553,14 +2564,8 @@ pub(crate) fn check_artifacts_with_snapshot(
 /// completion gate open indefinitely.
 const VERIFY_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
-/// Poll a child process until it exits or `deadline` elapses. On timeout the
-/// child is killed and reaped so no descendant lingers holding the gate open.
-/// Returns `Ok(status)` on exit, or `Err` with a timeout message.
-///
-/// This is the single bounded-wait primitive shared by every short-lived
-/// deterministic command the coordinator runs (currently verification). It
-/// replaces open-ended `try_wait` loops that could block a task forever if a
-/// verifier hangs.
+/// Compatibility helper retained for focused tests and callers. Production
+/// verification uses `ProcessSupervisor` below so timeouts reap descendants.
 pub(crate) fn wait_bounded(
     program: &str,
     child: &mut std::process::Child,
@@ -2715,9 +2720,34 @@ fn execute_shell_bounded_status(
         .current_dir(cwd)
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(err));
+    process_supervisor::prepare_command(&mut command)?;
 
     let mut child = command.spawn().map_err(|e| format!("spawn verify: {e}"))?;
-    wait_bounded("verify", &mut child, deadline, None)
+    let outcome = process_supervisor::wait_supervised(
+        &mut child,
+        log_path,
+        ProcessPolicy::verification(deadline),
+        None,
+    );
+    match outcome.reason {
+        ProcessTerminalReason::Exited { .. } => outcome
+            .status
+            .ok_or_else(|| "verify process exited without status".to_string()),
+        ProcessTerminalReason::TimedOut => Err(format!(
+            "verify exceeded the {}s deadline and its process tree was terminated",
+            deadline.as_secs()
+        )),
+        ProcessTerminalReason::OutputLimitExceeded => {
+            Err("verify exceeded the configured output limit".to_string())
+        }
+        ProcessTerminalReason::IdleTimedOut => {
+            Err("verify exceeded the configured idle deadline".to_string())
+        }
+        ProcessTerminalReason::WaitFailed(error) => Err(format!("wait verify: {error}")),
+        ProcessTerminalReason::ProviderCompleted => {
+            Err("unexpected provider completion signal during verify".to_string())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3017,6 +3047,15 @@ mod auto_resume_tests {
         assert_eq!(retry_reason(error), "adapter_error");
         assert_eq!(retry_delay(error, 1), Duration::from_millis(100));
         assert_eq!(retry_delay(error, 8), Duration::from_millis(3200));
+    }
+
+    #[test]
+    fn supervisor_terminal_failures_are_not_retried_by_default() {
+        assert!(!should_retry("runtime_timeout: worker exceeded deadline"));
+        assert!(!should_retry("runtime_idle_timeout: worker stalled"));
+        assert!(!should_retry("runtime_output_limit: worker flooded logs"));
+        assert!(!should_retry("runtime_wait_failed: wait failed"));
+        assert!(should_retry("process 'provider' exited Some(1): unavailable"));
     }
 
     #[test]
