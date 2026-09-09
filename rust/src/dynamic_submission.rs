@@ -42,7 +42,7 @@ fn default_parallel() -> bool {
 
 #[derive(Debug)]
 pub enum SubmissionDecision {
-    Accepted { task: Task, file_name: String },
+    Accepted { task: Box<Task>, file_name: String },
     Rejected { file_name: String, error: String },
 }
 
@@ -242,7 +242,8 @@ pub fn drain_pending(
                         destination.display()
                     )
                 })?;
-                tasks.push(task.clone());
+                let task = Box::new(task);
+                tasks.push(task.as_ref().clone());
                 decisions.push(SubmissionDecision::Accepted { task, file_name });
             }
             Err(error) => {

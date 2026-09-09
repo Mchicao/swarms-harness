@@ -738,7 +738,7 @@ pub fn execute(
                     reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;
                     let task_id = task.id.clone();
                     let source_id = task.source_id.clone();
-                    tasks.push(task);
+                    tasks.push(*task);
                     update_workflow_task_count(&run_dir, tasks.len())?;
                     append_event(
                         &run_dir,
