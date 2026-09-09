@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum ProcessTerminalReason {
-    Exited { code: Option<i32>, success: bool },
+    Exited {
+        code: Option<i32>,
+        success: bool,
+    },
     ProviderCompleted,
     TimedOut,
     IdleTimedOut,
@@ -164,7 +167,10 @@ pub fn wait_supervised(
             };
         }
 
-        if policy.deadline.is_some_and(|deadline| started.elapsed() >= deadline) {
+        if policy
+            .deadline
+            .is_some_and(|deadline| started.elapsed() >= deadline)
+        {
             let _ = terminate_tree(child, policy.terminate_grace);
             return SupervisedOutcome {
                 reason: ProcessTerminalReason::TimedOut,
@@ -204,7 +210,11 @@ pub fn wait_supervised(
 }
 
 pub fn terminate_tree(child: &mut Child, grace: Duration) -> Result<(), String> {
-    if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+    if child
+        .try_wait()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
         return Ok(());
     }
 
@@ -223,7 +233,11 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) -> Result<(), String> 
         }
         let started = Instant::now();
         while started.elapsed() < grace {
-            if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+            if child
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(25));
@@ -298,7 +312,10 @@ mod tests {
         policy.terminate_grace = Duration::from_millis(50);
         let outcome = wait_supervised(&mut child, &log_path, policy, None);
 
-        assert!(matches!(outcome.reason, ProcessTerminalReason::TimedOut));
+        assert!(matches!(
+            outcome.reason,
+            ProcessTerminalReason::TimedOut
+        ));
         assert!(child.try_wait().unwrap().is_some());
         let _ = fs::remove_file(log_path);
     }
