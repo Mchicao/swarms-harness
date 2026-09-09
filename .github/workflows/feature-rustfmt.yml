@@ -1,0 +1,34 @@
+name: Feature rustfmt
+
+on:
+  push:
+    branches:
+      - feat/runtime-process-supervision
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/runtime-process-supervision
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format Rust
+        run: cargo fmt --manifest-path rust/Cargo.toml --all
+      - name: Commit formatting
+        shell: bash
+        run: |
+          if git diff --quiet -- '*.rs'; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.rs'
+          git commit -m 'style(runtime): apply rustfmt'
+          git push origin HEAD:feat/runtime-process-supervision
