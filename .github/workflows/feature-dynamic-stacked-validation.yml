@@ -45,3 +45,48 @@ jobs:
         run: cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force --run-id ci-dry
       - name: Mock E2E
         run: cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --run-id ci-e2e --global-max-concurrency 3 --provider-cap mock=3
+      - name: Dynamic submit queue and resume E2E
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          rm -rf .agent/swarm/runs/ci-dynamic bench_apps/reshard docs/bench_notes/reshard_plan.md bench_tests/test_bench_reshard.py
+          cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --run-id ci-dynamic --global-max-concurrency 3 --provider-cap mock=3
+          cat > "$RUNNER_TEMP/dynamic-submission.json" <<'JSON'
+          {
+            "submission_version": 1,
+            "stage": "Dynamic",
+            "parallel": true,
+            "task": {
+              "id": "postcheck",
+              "route": "mock",
+              "task": "Run pytest",
+              "role": "general",
+              "needs": ["tests"],
+              "tools_policy": "none",
+              "artifacts": [],
+              "verify": []
+            }
+          }
+          JSON
+          cargo run --manifest-path rust/Cargo.toml -- submit --workspace-root "$PWD" --run-id ci-dynamic --task-file "$RUNNER_TEMP/dynamic-submission.json"
+          python - <<'PY'
+          from pathlib import Path
+          run = Path('.agent/swarm/runs/ci-dynamic')
+          pending = list((run / 'submissions' / 'pending').glob('*.json'))
+          assert len(pending) == 1, f'expected one durable pending submission, got {pending}'
+          PY
+          cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --resume --run-id ci-dynamic --global-max-concurrency 3 --provider-cap mock=3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          run = Path('.agent/swarm/runs/ci-dynamic')
+          assert not list((run / 'submissions' / 'pending').glob('*.json'))
+          accepted = list((run / 'submissions' / 'accepted').glob('*.json'))
+          assert len(accepted) == 1, f'expected one accepted submission, got {accepted}'
+          states = [json.loads(path.read_text()) for path in (run / 'tasks').glob('*.json')]
+          dynamic = [state for state in states if state.get('source_id') == 'postcheck']
+          assert len(dynamic) == 1, f'expected one dynamic state, got {dynamic}'
+          assert dynamic[0].get('status') == 'completed', dynamic[0]
+          workflow = json.loads((run / 'workflow.json').read_text())
+          assert workflow.get('task_count') == 5, workflow
+          PY
