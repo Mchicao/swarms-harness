@@ -141,6 +141,9 @@ fn validate_and_build(
 /// Persist a submission into a run's pending queue. This does not grant it
 /// scheduler authority; admission happens inside `runtime::execute`. A queue
 /// may also be populated between attempts and consumed by the next `--resume`.
+///
+/// The JSON becomes visible to the scheduler only after it is fully written
+/// and synced: a non-JSON temporary file is atomically renamed into `pending`.
 pub fn enqueue_file(run_dir: &Path, source: &Path) -> Result<PathBuf> {
     if !run_dir.is_dir() {
         return Err(format!(
@@ -154,22 +157,33 @@ pub fn enqueue_file(run_dir: &Path, source: &Path) -> Result<PathBuf> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let file_name = format!(
-        "{nanos:020}-{}-{}.json",
+    let stem = format!(
+        "{nanos:020}-{}-{}",
         std::process::id(),
         crate::model::slug(&submission.task.id)
     );
-    let destination = queue_dir(run_dir, "pending").join(file_name);
+    let pending = queue_dir(run_dir, "pending");
+    let temporary = pending.join(format!(".{stem}.tmp"));
+    let destination = pending.join(format!("{stem}.json"));
     let content = fs::read(source).map_err(|error| format!("{}: {error}", source.display()))?;
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(&destination)
-        .map_err(|error| format!("{}: {error}", destination.display()))?;
+        .open(&temporary)
+        .map_err(|error| format!("{}: {error}", temporary.display()))?;
     file.write_all(&content)
-        .map_err(|error| format!("{}: {error}", destination.display()))?;
+        .map_err(|error| format!("{}: {error}", temporary.display()))?;
     file.sync_all()
-        .map_err(|error| format!("{}: {error}", destination.display()))?;
+        .map_err(|error| format!("{}: {error}", temporary.display()))?;
+    drop(file);
+    fs::rename(&temporary, &destination).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!(
+            "publish submission {} -> {}: {error}",
+            temporary.display(),
+            destination.display()
+        )
+    })?;
     Ok(destination)
 }
 
@@ -269,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_is_durable_even_when_a_previous_report_exists() {
+    fn enqueue_publishes_only_a_complete_json_file() {
         let run_dir = temp_run("enqueue");
         let source = run_dir.join("task.json");
         fs::write(
@@ -282,6 +296,12 @@ mod tests {
         let queued = enqueue_file(&run_dir, &source).unwrap();
         assert!(queued.exists());
         assert_eq!(parse_submission(&queued).unwrap().task.id, "follow-up");
+        let pending = queue_dir(&run_dir, "pending");
+        assert_eq!(sorted_json_files(&pending).unwrap(), vec![queued]);
+        assert!(!fs::read_dir(&pending)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("tmp")));
         fs::remove_dir_all(run_dir).unwrap();
     }
 
