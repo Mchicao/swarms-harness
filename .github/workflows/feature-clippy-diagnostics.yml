@@ -19,23 +19,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - name: Apply focused fixes
+      - name: Remove tests for retired helper
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          supervisor = Path('rust/src/process_supervisor.rs')
-          text = supervisor.read_text(encoding='utf-8')
-          text = text.replace('if unsafe { setpgid(0, 0) } == 0 {', 'if setpgid(0, 0) == 0 {')
-          supervisor.write_text(text, encoding='utf-8')
-
-          runtime = Path('rust/src/runtime.rs')
-          text = runtime.read_text(encoding='utf-8')
-          start = text.index('/// Compatibility helper retained for focused tests and callers.')
-          end = text.index('pub(crate) fn run_verify_commands(', start)
+          path = Path('rust/src/tests.rs')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('/// A child that exits quickly completes normally under a generous deadline.')
+          end = text.index('/// A verification command that hangs is rejected by execute_shell instead of', start)
           text = text[:start] + text[end:]
-          runtime.write_text(text, encoding='utf-8')
+          path.write_text(text, encoding='utf-8')
           PY
           cargo fmt --manifest-path rust/Cargo.toml --all
       - name: Capture Clippy output
@@ -48,5 +43,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add rust/src .github/clippy-diagnostics.txt
-          git commit -m 'fix(runtime): resolve process supervision clippy failures'
+          git commit -m 'test(runtime): remove obsolete bounded-wait helper tests'
           git push origin HEAD:feat/runtime-process-supervision
