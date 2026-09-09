@@ -1,0 +1,75 @@
+name: Feature dynamic runtime patch
+
+on:
+  push:
+    branches:
+      - feat/dynamic-task-submission
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/dynamic-task-submission
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Integrate durable dynamic queue into scheduler
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('rust/src/runtime.rs')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              if old not in text:
+                  raise SystemExit(f'anchor not found: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'use crate::adapter::{self, AdapterKind, CliSpec};\n',
+              'use crate::adapter::{self, AdapterKind, CliSpec};\nuse crate::dynamic_submission::{self, SubmissionDecision};\n',
+          )
+
+          replace_once(
+              '''    Ok(states)\n}\n\nfn task_checkpoint_key(task: &Task, plan: &Plan) -> String {''',
+              '''    Ok(states)\n}\n\nfn reconcile_dynamic_task_state(\n    run_dir: &Path,\n    states: &mut HashMap<String, TaskState>,\n    task: &Task,\n    plan: &Plan,\n) -> Result<()> {\n    let checkpoint_key = task_checkpoint_key(task, plan);\n    let legacy_checkpoint_key = task_checkpoint_key_with_attempts(task, plan);\n    let state = states.entry(task.id.clone()).or_insert_with(|| {\n        let mut state = TaskState::new(&task.id, &task.source_id, &task.stage, &task.spec.route);\n        state.effective_route = task.effective_route.clone();\n        state.provider = task.provider.provider.clone();\n        state.model = task.provider.model.clone();\n        state.role = task.spec.role.clone();\n        state.thinking = Some(task.spec.effective_thinking(plan));\n        state.checkpoint_key = Some(checkpoint_key.clone());\n        state\n    });\n    if state.effective_route.is_empty() {\n        state.effective_route = task.effective_route.clone();\n    }\n    let checkpoint_matches = state.checkpoint_key.as_deref() == Some(&checkpoint_key)\n        || state.checkpoint_key.as_deref() == Some(&legacy_checkpoint_key);\n    if !state.status.is_completed() || !checkpoint_matches {\n        state.status = TaskStatus::Pending;\n        state.error = None;\n        state.verified = None;\n        state.verify_error = None;\n        state.started_at = None;\n        state.heartbeat_unix_ms = None;\n        state.worker_log_bytes = 0;\n        state.last_progress_unix_ms = None;\n        state.worker_log_modified_unix_ms = None;\n        state.ended_at = None;\n    }\n    state.checkpoint_key = Some(checkpoint_key);\n    save_task_state(run_dir, state)\n}\n\nfn update_workflow_task_count(run_dir: &Path, task_count: usize) -> Result<()> {\n    let path = run_dir.join("workflow.json");\n    if !path.exists() {\n        return Ok(());\n    }\n    let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;\n    let mut workflow: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;\n    workflow["task_count"] = json!(task_count);\n    write_json_value(&path, &workflow)\n}\n\nfn task_checkpoint_key(task: &Task, plan: &Plan) -> String {''',
+          )
+
+          replace_once(
+              '''    let run_dir = workspace_root.join(".agent/swarm/runs").join(run_id);\n    let _coordinator_lock = acquire_coordinator_run_lock(workspace_root, run_id)?;\n    let mut states = init_states(&run_dir, tasks, plan, force, resume)?;\n    for state in states.values() {''',
+              '''    let run_dir = workspace_root.join(".agent/swarm/runs").join(run_id);\n    let _coordinator_lock = acquire_coordinator_run_lock(workspace_root, run_id)?;\n    let mut tasks = tasks.to_vec();\n    let mut states = init_states(&run_dir, &tasks, plan, force, resume)?;\n    if resume {\n        let accepted = dynamic_submission::load_accepted(&run_dir, plan, router, &tasks)?;\n        for task in accepted {\n            reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;\n            tasks.push(task);\n        }\n    }\n    for state in states.values() {''',
+          )
+
+          replace_once(
+              '''    loop {\n        let quotas = QuotaGuard::load(root, &router.quota_policy);\n        let ready = find_ready(tasks, &states, global_cap, caps, plan, router, &quotas);''',
+              '''    loop {\n        for decision in dynamic_submission::drain_pending(&run_dir, plan, router, &tasks)? {\n            match decision {\n                SubmissionDecision::Accepted { task, file_name } => {\n                    reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;\n                    let task_id = task.id.clone();\n                    let source_id = task.source_id.clone();\n                    tasks.push(task);\n                    update_workflow_task_count(&run_dir, tasks.len())?;\n                    append_event(\n                        &run_dir,\n                        "dynamic_task_accepted",\n                        json!({\n                            "task_id": task_id,\n                            "source_id": source_id,\n                            "submission": file_name,\n                            "task_count": tasks.len(),\n                        }),\n                    );\n                }\n                SubmissionDecision::Rejected { file_name, error } => {\n                    append_event(\n                        &run_dir,\n                        "dynamic_task_rejected",\n                        json!({"submission": file_name, "error": error}),\n                    );\n                }\n            }\n        }\n\n        let quotas = QuotaGuard::load(root, &router.quota_policy);\n        let ready = find_ready(&tasks, &states, global_cap, caps, plan, router, &quotas);''',
+          )
+
+          text = text.replace(
+              'build_task_prompt(&run_dir, workspace_root, task, tasks, &states)',
+              'build_task_prompt(&run_dir, workspace_root, task, &tasks, &states)',
+          )
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          cargo fmt --manifest-path rust/Cargo.toml --all
+      - name: Commit scheduler integration
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add rust/src
+          git commit -m 'feat(runtime): admit dynamic tasks during active runs'
+          git push origin HEAD:feat/dynamic-task-submission
