@@ -91,7 +91,7 @@ fn env_u64(name: &str) -> Option<u64> {
 /// Unix workers enter their own process group. Windows uses `taskkill /T` at
 /// termination time, which follows the process tree without requiring a new
 /// runtime dependency. Other platforms fall back to killing the direct child.
-pub fn prepare_command(command: &mut Command) -> Result<(), String> {
+pub fn prepare_command(_command: &mut Command) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -99,7 +99,7 @@ pub fn prepare_command(command: &mut Command) -> Result<(), String> {
         // SAFETY: pre_exec runs in the child immediately before exec. setpgid
         // is async-signal-safe and receives only constant scalar arguments.
         unsafe {
-            command.pre_exec(|| {
+            _command.pre_exec(|| {
                 extern "C" {
                     fn setpgid(pid: i32, pgid: i32) -> i32;
                 }
@@ -206,7 +206,7 @@ pub fn wait_supervised(
     }
 }
 
-pub fn terminate_tree(child: &mut Child, grace: Duration) -> Result<(), String> {
+pub fn terminate_tree(child: &mut Child, _grace: Duration) -> Result<(), String> {
     if child
         .try_wait()
         .map_err(|error| error.to_string())?
@@ -229,7 +229,7 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) -> Result<(), String> 
             let _ = kill(group, SIGTERM);
         }
         let started = Instant::now();
-        while started.elapsed() < grace {
+        while started.elapsed() < _grace {
             if child
                 .try_wait()
                 .map_err(|error| error.to_string())?
