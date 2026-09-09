@@ -100,10 +100,10 @@ pub fn prepare_command(command: &mut Command) -> Result<(), String> {
         // is async-signal-safe and receives only constant scalar arguments.
         unsafe {
             command.pre_exec(|| {
-                unsafe extern "C" {
+                extern "C" {
                     fn setpgid(pid: i32, pgid: i32) -> i32;
                 }
-                if setpgid(0, 0) == 0 {
+                if unsafe { setpgid(0, 0) } == 0 {
                     Ok(())
                 } else {
                     Err(std::io::Error::last_os_error())
@@ -210,7 +210,7 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) -> Result<(), String> 
 
     #[cfg(unix)]
     {
-        unsafe extern "C" {
+        extern "C" {
             fn kill(pid: i32, signal: i32) -> i32;
         }
         const SIGTERM: i32 = 15;
