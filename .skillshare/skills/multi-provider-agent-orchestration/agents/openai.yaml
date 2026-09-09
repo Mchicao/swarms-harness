@@ -1,4 +1,4 @@
 interface:
-  display_name: "Multi-provider orchestration"
-  short_description: "Delegate and integrate work across coding agents."
-  default_prompt: "Use $multi-provider-agent-orchestration to split this goal into safe, verifiable agent handoffs."
+  display_name: "Direct agent delegation"
+  short_description: "Delegate directly to coding agents without SWARMS runtime."
+  default_prompt: "Use $multi-provider-agent-orchestration to delegate this bounded task directly to the appropriate agent without using the SWARMS runtime."

@@ -1,4 +1,4 @@
 interface:
-  display_name: "SWARMS"
-  short_description: "Create and run native SWARMS workflows."
-  default_prompt: "Use $swarms to create a safe workflow contract and run the Rust coordinator."
+  display_name: "SWARMS runtime"
+  short_description: "Run durable multi-agent workflows through SWARMS."
+  default_prompt: "Use $swarms to create, validate and run this durable workflow through the native Rust SWARMS coordinator."

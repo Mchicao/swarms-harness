@@ -1,65 +1,101 @@
 ---
 name: swarms
-description: Operate and extend the native Rust SWARMS runtime. Use when creating a SWARMS workflow contract, configuring routes and quotas, reviewing or running a plan, resuming a run, observing worker progress, or troubleshooting SWARMS in this repository.
+description: "Operate the native Rust SWARMS runtime for durable multi-agent workflows: plan, review, dry-run, run, resume, provider caps, persisted state, observation, retries and scaling."
+license: MIT
+metadata:
+  author: SWARMS
+  version: "3.0"
 ---
 
-# SWARMS
+# SWARMS runtime
 
-Read `AGENTS.md` first. It is the project contract; the Rust binary is the
-only public workflow runtime. Python scripts are legacy telemetry and
-benchmark tools, not the default execution path.
+## Activation Contract
 
-## Create a workflow contract
+Use this skill only when work should execute through the SWARMS Rust runtime. Typical reasons are a
+multi-stage DAG, durable/resumable execution, provider/global concurrency caps, persisted run state,
+observer/telemetry, retries, or parallel test-time scaling.
 
-Create a plan JSON with a goal, optional project identity, budget policy and
-ordered stages. Every task must declare an id, role, route, bounded scope,
-dependencies, allowed artifacts, tools policy and deterministic verification.
+If the goal is simply to ask Codex, Gemini, Claude, OpenCode, GLM or another agent to do one or a few
+bounded tasks directly, use `$multi-provider-agent-orchestration` instead. Do not introduce the
+runtime when direct delegation is sufficient.
 
-- Use `needs` for execution dependencies; do not infer dependencies from
-  presentation nesting or task names.
-- Make concurrent writers use separate worktrees or disjoint writable paths.
-  SWARMS isolates its own prompts, logs and results, not a target repo worktree
-  per task.
-- Keep provider concurrency explicit and within the plan/router limits.
-- Route names must exist in `config/swarm_router.json` plus ignored local
-  overrides. Never place credentials in a plan, report or commit.
-- Treat historical timeout fields as read compatibility only. They do not stop
-  Rust workers. Split broad work by ownership and observe real progress instead.
+Read `AGENTS.md` before editing the SWARMS runtime itself.
 
-For Codex tasks, set the router model and task `thinking`; the adapter invokes
-`codex exec` and persists JSONL/session evidence. Before a new real-provider
-route, verify the local CLI with `codex debug models` and `codex exec --help`.
+## Hard Rules
 
-## Run safely
+- The Rust binary is the sole public SWARMS runtime. Python runtime scripts are legacy or retired.
+- Pass the exact target repo with `--workspace-root` whenever the workflow plan is outside the target
+  workspace. Run state belongs to that target workspace.
+- Use `needs` for dependencies. Dependents receive completed readable outputs; never tell a worker
+  to read another process's private log. Put reusable inputs in declared workspace-owned artifacts.
+- Use mock unless real configured providers were explicitly authorized.
+- Treat `run` as one blocking coordinator call. Do not poll its files while it is active.
+- Run only one coordinator for the same workspace/run identity at a time.
+- Never commit credentials, local routers, `.agent/`, prompts, logs, reports, worker state, or
+  generated worktrees.
+- Do not silently substitute a blocked or unavailable provider.
 
-Use this lifecycle from the repository root:
+## When Runtime Is Worth Using
+
+| Need | Use SWARMS runtime? |
+| --- | --- |
+| Ask one agent for a review or implementation | No - direct delegation skill |
+| A few independent direct agent calls you can supervise yourself | No - direct delegation skill |
+| DAG with explicit dependencies | Yes |
+| Crash-safe resume / persisted task state | Yes |
+| Global and per-provider concurrency caps | Yes |
+| Durable evidence, telemetry, observer or reports | Yes |
+| Runtime-managed retries / provider routing | Yes |
+| Best-of-N, adaptive parallel or synthesis scaling | Yes |
+
+## Workflow Contract
+
+Define a plan JSON with a goal and bounded tasks. Each task should declare the fields required by the
+current schema, including its id, role/route, scope, dependency edges, artifacts, tools policy and
+deterministic verification. Preserve repository invariants and make write ownership explicit.
+
+Use provider routes only as configured by the router. Route names are not credentials and do not
+imply that a provider is locally enabled.
+
+## Execution Lifecycle
+
+Use the same router and workspace for review, dry-run and execution.
 
 ```powershell
 cargo run --manifest-path rust/Cargo.toml -- doctor
-cargo run --manifest-path rust/Cargo.toml -- review --plan <plan.json>
-cargo run --manifest-path rust/Cargo.toml -- dry-run --plan <plan.json> --force
-cargo run --manifest-path rust/Cargo.toml -- run --plan <plan.json> --force --run-id <run-id> --global-max-concurrency <n> --provider-cap mock=<n>
+cargo run --manifest-path rust/Cargo.toml -- review --plan <plan.json> --workspace-root <target>
+cargo run --manifest-path rust/Cargo.toml -- dry-run --plan <plan.json> --workspace-root <target> --force
+cargo run --manifest-path rust/Cargo.toml -- run --plan <plan.json> --workspace-root <target> --force --global-max-concurrency <n> --provider-cap <route>=<n>
 ```
 
-Use `mock` unless the user explicitly authorizes real configured providers.
-Start exactly one coordinator run for a workspace. Treat `run` as blocking; do
-not poll its artifacts from the coordinator while it is active.
+If the plan already lives in the target workspace and the CLI derives the same root correctly, the
+explicit workspace flag may be unnecessary; prefer being explicit when operating another repo.
 
-Use `--resume` with an existing run id after interruption. It preserves only
-matching Rust checkpoints. Never combine `--resume` and `--force`.
+For an interrupted prior run, use the runtime's resume path. Never combine mutually exclusive
+resume/force semantics. Verify the current CLI help before relying on a flag that may have changed.
 
-On Windows, real CLI workers open a visible PowerShell console that tails their
-`worker.log` while the worker and coordinator remain in the background. Set
-`SWARMS_WORKER_CONSOLES=hidden` only when those windows are unwanted. Mock
-workers intentionally do not open consoles.
+## After the Blocking Run Returns
 
-## Complete with evidence
+Inspect the terminal report, persisted task states, declared artifacts and readable logs. Confirm:
 
-After the run ends, inspect the terminal report, task states, worker logs and
-required artifacts. Report the requested route and the effective route
-separately, record fallback/blocking honestly, and never equate missing token
-telemetry with zero usage.
+- requested versus effective route/model;
+- completed, failed and blocked task states;
+- deterministic verification results;
+- retries/fallbacks and quota/cap behavior;
+- final target-workspace diff and unresolved risk.
 
-After Rust changes, run every validation command in `AGENTS.md`, including
-format, Clippy, all-feature tests, release build, doctor and one mock workflow.
-Do not commit local router files, auth, `.agent/` runs, prompts, logs or reports.
+Do not report a workflow as successful merely because a worker said it succeeded.
+
+## Runtime Development
+
+When changing SWARMS itself, follow `AGENTS.md` and run the required Rust gates for the affected
+scope. In particular, preserve scheduler locks, provider-cap semantics, persisted state contracts,
+workspace boundaries and fail-closed validation.
+
+## References
+
+- `../../AGENTS.md` - runtime development contract.
+- `../../docs/CONFIG.md` - router and workspace configuration.
+- `../../docs/STATE_CONTRACT.md` - persisted run contract.
+- `../../docs/PROVIDER_STATUS.md` - implemented versus locally enabled providers.
+- `../multi-provider-agent-orchestration/SKILL.md` - direct delegation without SWARMS runtime.

@@ -3,6 +3,7 @@
 !.env.example
 
 config/*.local.json
+config/*.local.json.bak-*
 config/agentic_benchmark_report.json
 config/swarm_report.md
 config/swarm_metrics.json
@@ -43,7 +44,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-rust/target/
+rust/target*/
 
 *.log
 *.jsonl
