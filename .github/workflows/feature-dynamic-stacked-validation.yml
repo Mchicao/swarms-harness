@@ -22,6 +22,8 @@ jobs:
           fetch-depth: 0
       - name: Compose current stacked base without publishing it
         run: |
+          git config user.name "stacked-validation"
+          git config user.email "stacked-validation@localhost"
           git fetch origin feat/runtime-process-supervision
           git merge --no-edit --no-commit origin/feat/runtime-process-supervision
       - uses: dtolnay/rust-toolchain@stable
