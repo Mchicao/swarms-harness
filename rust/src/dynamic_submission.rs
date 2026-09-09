@@ -42,14 +42,8 @@ fn default_parallel() -> bool {
 
 #[derive(Debug)]
 pub enum SubmissionDecision {
-    Accepted {
-        task: Task,
-        file_name: String,
-    },
-    Rejected {
-        file_name: String,
-        error: String,
-    },
+    Accepted { task: Task, file_name: String },
+    Rejected { file_name: String, error: String },
 }
 
 fn queue_root(run_dir: &Path) -> PathBuf {
@@ -149,7 +143,10 @@ fn validate_and_build(
 /// may also be populated between attempts and consumed by the next `--resume`.
 pub fn enqueue_file(run_dir: &Path, source: &Path) -> Result<PathBuf> {
     if !run_dir.is_dir() {
-        return Err(format!("run directory does not exist: {}", run_dir.display()));
+        return Err(format!(
+            "run directory does not exist: {}",
+            run_dir.display()
+        ));
     }
     ensure_queue_dirs(run_dir)?;
     let submission = parse_submission(source)?;

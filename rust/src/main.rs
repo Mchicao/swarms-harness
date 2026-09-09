@@ -3,9 +3,7 @@
 use std::env;
 use std::io::Read;
 use std::path::Path;
-use swarms_runtime::{
-    cli, config, dynamic_submission, model::Router, observer, review, runtime,
-};
+use swarms_runtime::{cli, config, dynamic_submission, model::Router, observer, review, runtime};
 
 type Result<T> = std::result::Result<T, String>;
 

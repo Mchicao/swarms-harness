@@ -2,6 +2,7 @@
 
 use crate::acp::{self, Event};
 use crate::adapter::{self, AdapterKind, CliSpec};
+use crate::dynamic_submission::{self, SubmissionDecision};
 use crate::model::{
     find_dependency_task, ExecutionFallback, ExecutionTransport, Plan, Router, SessionMode, Task,
     ThinkingLevel,
@@ -308,6 +309,56 @@ fn init_states(
         state.checkpoint_key = Some(checkpoint_key);
     }
     Ok(states)
+}
+
+fn reconcile_dynamic_task_state(
+    run_dir: &Path,
+    states: &mut HashMap<String, TaskState>,
+    task: &Task,
+    plan: &Plan,
+) -> Result<()> {
+    let checkpoint_key = task_checkpoint_key(task, plan);
+    let legacy_checkpoint_key = task_checkpoint_key_with_attempts(task, plan);
+    let state = states.entry(task.id.clone()).or_insert_with(|| {
+        let mut state = TaskState::new(&task.id, &task.source_id, &task.stage, &task.spec.route);
+        state.effective_route = task.effective_route.clone();
+        state.provider = task.provider.provider.clone();
+        state.model = task.provider.model.clone();
+        state.role = task.spec.role.clone();
+        state.thinking = Some(task.spec.effective_thinking(plan));
+        state.checkpoint_key = Some(checkpoint_key.clone());
+        state
+    });
+    if state.effective_route.is_empty() {
+        state.effective_route = task.effective_route.clone();
+    }
+    let checkpoint_matches = state.checkpoint_key.as_deref() == Some(&checkpoint_key)
+        || state.checkpoint_key.as_deref() == Some(&legacy_checkpoint_key);
+    if !state.status.is_completed() || !checkpoint_matches {
+        state.status = TaskStatus::Pending;
+        state.error = None;
+        state.verified = None;
+        state.verify_error = None;
+        state.started_at = None;
+        state.heartbeat_unix_ms = None;
+        state.worker_log_bytes = 0;
+        state.last_progress_unix_ms = None;
+        state.worker_log_modified_unix_ms = None;
+        state.ended_at = None;
+    }
+    state.checkpoint_key = Some(checkpoint_key);
+    save_task_state(run_dir, state)
+}
+
+fn update_workflow_task_count(run_dir: &Path, task_count: usize) -> Result<()> {
+    let path = run_dir.join("workflow.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut workflow: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    workflow["task_count"] = json!(task_count);
+    write_json_value(&path, &workflow)
 }
 
 fn task_checkpoint_key(task: &Task, plan: &Plan) -> String {
@@ -625,7 +676,15 @@ pub fn execute(
 ) -> Result<Report> {
     let run_dir = workspace_root.join(".agent/swarm/runs").join(run_id);
     let _coordinator_lock = acquire_coordinator_run_lock(workspace_root, run_id)?;
-    let mut states = init_states(&run_dir, tasks, plan, force, resume)?;
+    let mut tasks = tasks.to_vec();
+    let mut states = init_states(&run_dir, &tasks, plan, force, resume)?;
+    if resume {
+        let accepted = dynamic_submission::load_accepted(&run_dir, plan, router, &tasks)?;
+        for task in accepted {
+            reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;
+            tasks.push(task);
+        }
+    }
     for state in states.values() {
         save_task_state(&run_dir, state)?;
     }
@@ -673,8 +732,37 @@ pub fn execute(
     // we re-evaluate readiness and launch whatever newly fits, so a fast task's
     // freed permit is reused immediately while unrelated slow tasks continue.
     loop {
+        for decision in dynamic_submission::drain_pending(&run_dir, plan, router, &tasks)? {
+            match decision {
+                SubmissionDecision::Accepted { task, file_name } => {
+                    reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;
+                    let task_id = task.id.clone();
+                    let source_id = task.source_id.clone();
+                    tasks.push(task);
+                    update_workflow_task_count(&run_dir, tasks.len())?;
+                    append_event(
+                        &run_dir,
+                        "dynamic_task_accepted",
+                        json!({
+                            "task_id": task_id,
+                            "source_id": source_id,
+                            "submission": file_name,
+                            "task_count": tasks.len(),
+                        }),
+                    );
+                }
+                SubmissionDecision::Rejected { file_name, error } => {
+                    append_event(
+                        &run_dir,
+                        "dynamic_task_rejected",
+                        json!({"submission": file_name, "error": error}),
+                    );
+                }
+            }
+        }
+
         let quotas = QuotaGuard::load(root, &router.quota_policy);
-        let ready = find_ready(tasks, &states, global_cap, caps, plan, router, &quotas);
+        let ready = find_ready(&tasks, &states, global_cap, caps, plan, router, &quotas);
 
         for (id, msg) in &ready.blocked {
             if let Some(state) = states.get_mut(id) {
@@ -691,7 +779,7 @@ pub fn execute(
         }
 
         for task in &ready.selected {
-            let prompt = build_task_prompt(&run_dir, workspace_root, task, tasks, &states);
+            let prompt = build_task_prompt(&run_dir, workspace_root, task, &tasks, &states);
             let work_dir = run_dir.join("results").join(&task.id);
             let _ = fs::create_dir_all(&work_dir);
             let _ = fs::write(work_dir.join("prompt.txt"), &prompt);
