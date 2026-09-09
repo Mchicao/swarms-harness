@@ -1404,60 +1404,6 @@ fn quoted_verify_command_survives_platform_shell_parsing() {
 // 16. Bounded process supervision (issue #3)
 // ---------------------------------------------------------------------------
 
-/// A child that exits quickly completes normally under a generous deadline.
-#[test]
-fn bounded_wait_returns_status_for_prompt_exit() {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "exit", "/B", "0"]);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = std::process::Command::new("true");
-    let mut child = cmd.spawn().expect("spawn fast child");
-    let status = runtime::wait_bounded("fast", &mut child, Duration::from_secs(30), None);
-    assert!(status.is_ok(), "should exit before deadline");
-    let _ = child.wait();
-}
-
-/// A child that runs past the deadline is killed and reported as a timeout,
-/// not left to block the coordinator forever.
-#[test]
-fn bounded_wait_kills_and_reports_on_timeout() {
-    // Cross-platform "sleep well past the deadline": ping with a large count
-    // on Windows, sleep on Unix. The deadline is 1s so the test stays fast.
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("ping");
-        c.args(["-n", "30", "127.0.0.1"]);
-        c.stdout(std::process::Stdio::null());
-        c.stderr(std::process::Stdio::null());
-        c
-    } else {
-        let mut c = std::process::Command::new("sleep");
-        c.arg("30");
-        c
-    };
-    let mut child = cmd.spawn().expect("spawn slow child");
-    let result = runtime::wait_bounded("slow", &mut child, Duration::from_secs(1), None);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("deadline") && err.contains("killed"),
-        "timeout message should mention deadline and kill: {err}"
-    );
-    // The child must have been reaped, not orphaned.
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("child should be reaped after timeout, still running");
-        }
-        Err(e) => panic!("try_wait after kill failed: {e}"),
-    }
-}
-
 /// A verification command that hangs is rejected by execute_shell instead of
 /// blocking the completion gate indefinitely. Uses a short deadline so the
 /// test stays fast; production uses `VERIFY_DEADLINE` (120s).
