@@ -1,0 +1,55 @@
+name: Feature runtime diagnostics
+
+on:
+  push:
+    branches:
+      - feat/runtime-process-supervision
+
+permissions:
+  contents: write
+
+jobs:
+  windows-clippy:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/runtime-process-supervision
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Capture Windows Clippy
+        shell: pwsh
+        run: |
+          cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings *> .github/windows-clippy.txt
+          $status = $LASTEXITCODE
+          Add-Content .github/windows-clippy.txt "exit_status=$status"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/windows-clippy.txt
+          git commit -m 'ci: record windows clippy diagnostics'
+          git push origin HEAD:feat/runtime-process-supervision
+          exit 0
+
+  ubuntu-tests:
+    if: github.actor != 'github-actions[bot]'
+    needs: windows-clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/runtime-process-supervision
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Capture Ubuntu tests
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path rust/Cargo.toml --all-features > .github/ubuntu-tests.txt 2>&1
+          status=$?
+          echo "exit_status=$status" >> .github/ubuntu-tests.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/ubuntu-tests.txt
+          git commit -m 'ci: record ubuntu test diagnostics'
+          git push origin HEAD:feat/runtime-process-supervision
