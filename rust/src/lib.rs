@@ -6,6 +6,7 @@ pub mod claude_stream;
 pub mod cli;
 pub mod codex_app_server;
 pub mod config;
+pub mod dynamic_submission;
 pub mod model;
 pub mod observer;
 pub mod opencode_server;
