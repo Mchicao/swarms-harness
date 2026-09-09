@@ -6,6 +6,7 @@ pub mod claude_stream;
 pub mod cli;
 pub mod codex_app_server;
 pub mod config;
+/// Durable, scheduler-owned admission for tasks submitted to an existing run.
 pub mod dynamic_submission;
 pub mod model;
 pub mod observer;
