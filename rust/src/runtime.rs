@@ -3055,7 +3055,9 @@ mod auto_resume_tests {
         assert!(!should_retry("runtime_idle_timeout: worker stalled"));
         assert!(!should_retry("runtime_output_limit: worker flooded logs"));
         assert!(!should_retry("runtime_wait_failed: wait failed"));
-        assert!(should_retry("process 'provider' exited Some(1): unavailable"));
+        assert!(should_retry(
+            "process 'provider' exited Some(1): unavailable"
+        ));
     }
 
     #[test]

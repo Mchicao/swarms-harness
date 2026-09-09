@@ -12,10 +12,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum ProcessTerminalReason {
-    Exited {
-        code: Option<i32>,
-        success: bool,
-    },
+    Exited { code: Option<i32>, success: bool },
     ProviderCompleted,
     TimedOut,
     IdleTimedOut,
@@ -312,10 +309,7 @@ mod tests {
         policy.terminate_grace = Duration::from_millis(50);
         let outcome = wait_supervised(&mut child, &log_path, policy, None);
 
-        assert!(matches!(
-            outcome.reason,
-            ProcessTerminalReason::TimedOut
-        ));
+        assert!(matches!(outcome.reason, ProcessTerminalReason::TimedOut));
         assert!(child.try_wait().unwrap().is_some());
         let _ = fs::remove_file(log_path);
     }
