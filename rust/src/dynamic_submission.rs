@@ -145,13 +145,11 @@ fn validate_and_build(
 }
 
 /// Persist a submission into a run's pending queue. This does not grant it
-/// scheduler authority; admission happens inside `runtime::execute`.
+/// scheduler authority; admission happens inside `runtime::execute`. A queue
+/// may also be populated between attempts and consumed by the next `--resume`.
 pub fn enqueue_file(run_dir: &Path, source: &Path) -> Result<PathBuf> {
     if !run_dir.is_dir() {
         return Err(format!("run directory does not exist: {}", run_dir.display()));
-    }
-    if run_dir.join("report.json").exists() {
-        return Err("run already has a final report; dynamic submission is closed".to_string());
     }
     ensure_queue_dirs(run_dir)?;
     let submission = parse_submission(source)?;
@@ -192,8 +190,12 @@ pub fn load_accepted(
     let base_len = all.len();
     for path in sorted_json_files(&queue_dir(run_dir, "accepted"))? {
         let submission = parse_submission(&path)?;
-        let task = validate_and_build(plan, router, &all, &submission)
-            .map_err(|error| format!("accepted submission {} is no longer valid: {error}", path.display()))?;
+        let task = validate_and_build(plan, router, &all, &submission).map_err(|error| {
+            format!(
+                "accepted submission {} is no longer valid: {error}",
+                path.display()
+            )
+        })?;
         all.push(task);
     }
     Ok(all.split_off(base_len))
@@ -223,7 +225,11 @@ pub fn drain_pending(
             Ok(task) => {
                 let destination = queue_dir(run_dir, "accepted").join(&file_name);
                 fs::rename(&path, &destination).map_err(|error| {
-                    format!("move {} -> {}: {error}", path.display(), destination.display())
+                    format!(
+                        "move {} -> {}: {error}",
+                        path.display(),
+                        destination.display()
+                    )
                 })?;
                 tasks.push(task.clone());
                 decisions.push(SubmissionDecision::Accepted { task, file_name });
@@ -231,7 +237,11 @@ pub fn drain_pending(
             Err(error) => {
                 let destination = queue_dir(run_dir, "rejected").join(&file_name);
                 fs::rename(&path, &destination).map_err(|move_error| {
-                    format!("move {} -> {}: {move_error}", path.display(), destination.display())
+                    format!(
+                        "move {} -> {}: {move_error}",
+                        path.display(),
+                        destination.display()
+                    )
                 })?;
                 let error_path = destination.with_extension("error.txt");
                 fs::write(&error_path, &error)
@@ -262,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_is_durable_and_rejects_closed_run() {
+    fn enqueue_is_durable_even_when_a_previous_report_exists() {
         let run_dir = temp_run("enqueue");
         let source = run_dir.join("task.json");
         fs::write(
@@ -270,13 +280,11 @@ mod tests {
             r#"{"submission_version":1,"task":{"id":"follow-up","route":"mock","task":"Inspect the result"}}"#,
         )
         .unwrap();
+        fs::write(run_dir.join("report.json"), "{}").unwrap();
 
         let queued = enqueue_file(&run_dir, &source).unwrap();
         assert!(queued.exists());
         assert_eq!(parse_submission(&queued).unwrap().task.id, "follow-up");
-
-        fs::write(run_dir.join("report.json"), "{}").unwrap();
-        assert!(enqueue_file(&run_dir, &source).unwrap_err().contains("closed"));
         fs::remove_dir_all(run_dir).unwrap();
     }
 
