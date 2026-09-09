@@ -32,11 +32,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, String>;
 
 const CANDIDATE_EXCERPT_CHARS: usize = 3_000;
+
+fn task_deadline(task: &Task, plan: &Plan) -> Option<Duration> {
+    task.spec
+        .timeout_seconds
+        .or(plan.default_timeout_seconds)
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+}
 
 // ---------------------------------------------------------------------------
 // Candidate bookkeeping
@@ -231,6 +239,7 @@ fn run_rollout(
                 &run_dir,
                 &cand_dir,
                 &plan.execution,
+                task_deadline(&task, &plan),
             )?;
             let (verified, verify_error) = run_verify_commands(&task, &worktree, &cand_dir);
             Ok((exec.usage, verified, verify_error))
@@ -449,6 +458,7 @@ fn run_aux_model(
         run_dir,
         work_dir,
         &plan.execution,
+        task_deadline(aux_task, plan),
     )
     .ok()?;
     Some((exec.output, exec.usage))
