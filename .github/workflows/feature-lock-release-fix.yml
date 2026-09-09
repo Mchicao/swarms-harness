@@ -1,0 +1,48 @@
+name: Feature lock release fix
+
+on:
+  push:
+    branches: [feat/runtime-process-supervision]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/runtime-process-supervision
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Release Unix flock explicitly on guard drop
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('rust/src/runtime.rs')
+          text = path.read_text()
+          needle = '''#[derive(Debug)]\nstruct CoordinatorRunLock {\n    _file: File,\n}\n'''
+          replacement = '''#[derive(Debug)]\nstruct CoordinatorRunLock {\n    _file: File,\n}\n\n#[cfg(unix)]\nimpl Drop for CoordinatorRunLock {\n    fn drop(&mut self) {\n        use std::os::fd::AsRawFd;\n\n        const LOCK_UN: i32 = 8;\n        extern "C" {\n            fn flock(fd: i32, operation: i32) -> i32;\n        }\n\n        // SAFETY: the guard owns a valid descriptor until this Drop returns.\n        // Unlock explicitly so a sequential coordinator does not depend on\n        // descriptor-close timing (or on duplicates inherited during spawn).\n        unsafe {\n            let _ = flock(self._file.as_raw_fd(), LOCK_UN);\n        }\n    }\n}\n'''
+          if text.count(needle) != 1:
+              raise SystemExit(f'expected one lock guard declaration, got {text.count(needle)}')
+          path.write_text(text.replace(needle, replacement))
+      - name: Remove this temporary workflow
+        run: rm .github/workflows/feature-lock-release-fix.yml
+      - name: Validate focused lifecycle and full lint
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
+          for i in 1 2 3 4 5; do cargo test --manifest-path rust/Cargo.toml resume_keeps_completed_tasks -- --exact; done
+          git diff --check
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust/src/runtime.rs .github/workflows/feature-lock-release-fix.yml
+          git commit -m "fix(runtime): release coordinator flock explicitly"
+          git push origin HEAD:feat/runtime-process-supervision
