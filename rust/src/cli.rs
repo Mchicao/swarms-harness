@@ -23,13 +23,15 @@ pub struct Args {
     pub observer_route: Option<String>,
     /// `observe` only: reasoning depth passed through verified adapter flags.
     pub observer_thinking: model::ThinkingLevel,
+    /// `submit` only: JSON file containing one dynamic task submission.
+    pub submission_file: Option<PathBuf>,
 }
 
 pub fn parse_args() -> Result<Args> {
     let mut values = std::env::args().skip(1);
-    let command = values
-        .next()
-        .ok_or("usage: swarms-rs <doctor|review|dry-run|run|singularity|observe> [options]")?;
+    let command = values.next().ok_or(
+        "usage: swarms-rs <doctor|review|dry-run|run|singularity|observe|submit> [options]",
+    )?;
 
     if command == "doctor" {
         return Ok(Args {
@@ -45,6 +47,56 @@ pub fn parse_args() -> Result<Args> {
             max_cycles: 0,
             observer_route: None,
             observer_thinking: model::ThinkingLevel::Auto,
+            submission_file: None,
+        });
+    }
+
+    if command == "submit" {
+        let mut run_id = None;
+        let mut workspace_root = None;
+        let mut submission_file = None;
+        while let Some(arg) = values.next() {
+            match arg.as_str() {
+                "--run-id" => {
+                    run_id = Some(values.next().ok_or("--run-id needs a value".to_string())?)
+                }
+                "--workspace-root" => {
+                    workspace_root = Some(PathBuf::from(
+                        values
+                            .next()
+                            .ok_or("--workspace-root needs a path".to_string())?,
+                    ))
+                }
+                "--task-file" => {
+                    submission_file = Some(PathBuf::from(
+                        values
+                            .next()
+                            .ok_or("--task-file needs a path".to_string())?,
+                    ))
+                }
+                other => return Err(format!("unknown submit argument: {other}")),
+            }
+        }
+        let run_id = run_id.ok_or("--run-id is required for submit")?;
+        if !safe_run_id(&run_id) {
+            return Err(
+                "run id must contain only letters, numbers, dot, underscore, or dash".to_string(),
+            );
+        }
+        return Ok(Args {
+            command,
+            plan: PathBuf::new(),
+            run_id,
+            force: false,
+            resume: false,
+            workspace_root: Some(workspace_root.ok_or("--workspace-root is required for submit")?),
+            global_cap: None,
+            caps: HashMap::new(),
+            router_config: None,
+            max_cycles: 0,
+            observer_route: None,
+            observer_thinking: model::ThinkingLevel::Auto,
+            submission_file: Some(submission_file.ok_or("--task-file is required for submit")?),
         });
     }
 
@@ -98,6 +150,7 @@ pub fn parse_args() -> Result<Args> {
             max_cycles: 0,
             observer_route: Some(route.ok_or("--route is required for observe")?),
             observer_thinking: thinking,
+            submission_file: None,
         });
     }
 
@@ -191,6 +244,7 @@ pub fn parse_args() -> Result<Args> {
         max_cycles,
         observer_route: None,
         observer_thinking: model::ThinkingLevel::Auto,
+        submission_file: None,
     })
 }
 
