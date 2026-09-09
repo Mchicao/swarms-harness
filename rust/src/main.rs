@@ -3,7 +3,9 @@
 use std::env;
 use std::io::Read;
 use std::path::Path;
-use swarms_runtime::{cli, config, model::Router, observer, review, runtime};
+use swarms_runtime::{
+    cli, config, dynamic_submission, model::Router, observer, review, runtime,
+};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -17,6 +19,23 @@ fn main() {
 fn run() -> Result<()> {
     let args = cli::parse_args()?;
     let root = env::current_dir().map_err(|e| e.to_string())?;
+
+    if args.command == "submit" {
+        let workspace_root = cli::resolve_workspace_root(
+            &root,
+            Path::new(""),
+            args.workspace_root.as_deref(),
+            "submit",
+        )?;
+        let source = args
+            .submission_file
+            .as_deref()
+            .ok_or_else(|| "submit task file missing".to_string())?;
+        let run_dir = cli::run_dir(&workspace_root, &args.run_id);
+        let queued = dynamic_submission::enqueue_file(&run_dir, source)?;
+        println!("{}", queued.display());
+        return Ok(());
+    }
 
     let router_path = cli::resolve_router_path(&root, &args.router_config);
     let router = config::load_router_from_path(&root, &router_path)?;
@@ -178,7 +197,7 @@ fn run_singularity_loop(
             global_cap,
             caps,
             &run_id,
-            true, // each cycle is a fresh run
+            true,
             false,
         ) {
             Ok(report) => {
@@ -192,9 +211,6 @@ fn run_singularity_loop(
             }
             Err(e) => {
                 failed = true;
-                // A cycle failure is reported but does not abort the loop; the
-                // next cycle may self-correct. Only the coordinator-aborting
-                // errors (returned as Err) reach here.
                 println!("[singularity-rs] Cycle {cycle} failed ({run_id}): {e}");
             }
         }
@@ -235,7 +251,6 @@ fn print_doctor(root: &Path, router: &Router) -> Result<()> {
         );
     }
 
-    // Check supported wrappers
     let wrappers: std::collections::HashSet<&str> = router
         .providers
         .values()
@@ -252,7 +267,6 @@ fn print_doctor(root: &Path, router: &Router) -> Result<()> {
         }
     }
 
-    // Quick plan review
     let plan_path = root.join("docs/workflow_plan_example.json");
     if plan_path.exists() {
         match config::load_plan(&plan_path) {
