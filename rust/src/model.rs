@@ -619,10 +619,12 @@ impl TaskSpec {
             .unwrap_or_default()
     }
 
-    /// Los timeouts históricos se siguen aceptando al leer planes, pero ya no
-    /// finalizan workers: la observación usa actividad real y estado `stale`.
-    pub fn effective_timeout(&self, _plan: &Plan) -> Option<u64> {
-        None
+    /// Per-task timeout overrides the plan default. Zero keeps execution
+    /// unbounded so existing plans remain long-running unless they opt in.
+    pub fn effective_timeout(&self, plan: &Plan) -> Option<u64> {
+        self.timeout_seconds
+            .or(plan.default_timeout_seconds)
+            .filter(|seconds| *seconds > 0)
     }
 
     pub fn effective_max_attempts(&self, plan: &Plan) -> u32 {
