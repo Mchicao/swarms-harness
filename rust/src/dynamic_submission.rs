@@ -91,6 +91,19 @@ fn sorted_json_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn validate_stage_policy(current_tasks: &[Task], submission: &TaskSubmission) -> Result<()> {
+    if let Some(existing) = current_tasks
+        .iter()
+        .find(|task| task.stage == submission.stage && task.stage_parallel != submission.parallel)
+    {
+        return Err(format!(
+            "submission stage '{}' declares parallel={} but existing stage uses parallel={}",
+            submission.stage, submission.parallel, existing.stage_parallel
+        ));
+    }
+    Ok(())
+}
+
 fn validation_plan(plan: &Plan, tasks: &[Task], submission: &TaskSubmission) -> Plan {
     let mut candidate = plan.clone();
     candidate.stages = tasks
@@ -115,6 +128,7 @@ fn validate_and_build(
     current_tasks: &[Task],
     submission: &TaskSubmission,
 ) -> Result<Task> {
+    validate_stage_policy(current_tasks, submission)?;
     let candidate_plan = validation_plan(plan, current_tasks, submission);
     let candidate_tasks = config::build_tasks(&candidate_plan, router)?;
     let result = review::review_plan(&candidate_plan, router, &candidate_tasks);
