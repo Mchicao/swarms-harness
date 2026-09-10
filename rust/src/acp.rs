@@ -4,6 +4,7 @@
 //! scheduler owns this process and polls the incoming stream so steering can
 //! cancel a live turn without handing control to a terminal UI.
 
+use crate::process_supervisor;
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -66,6 +67,7 @@ impl Client {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
         }
+        process_supervisor::prepare_command(&mut command)?;
         let mut child = command
             .spawn()
             .map_err(|error| format!("spawn ACP '{}': {error}", program))?;
@@ -260,8 +262,7 @@ impl Drop for Client {
         if let Some(session_id) = self.session_id.clone() {
             let _ = self.notification("session/close", json!({"sessionId": session_id}));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = process_supervisor::terminate_tree(&mut self.child, self.cancel_grace);
     }
 }
 

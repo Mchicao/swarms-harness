@@ -6,6 +6,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
+use crate::process_supervisor;
 use crate::steering;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -44,11 +45,13 @@ pub fn run(
     if !task.spec.allows_workspace_write() {
         command.arg("--pure");
     }
+    command
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process_supervisor::prepare_command(&mut command)?;
     let mut child = ChildGuard::new(
         command
-            .current_dir(cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("spawn opencode serve: {error}"))?,
     );
@@ -155,8 +158,7 @@ pub fn run(
         }
     }
     let _ = abort(&base_url, &session_id);
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.terminate_tree();
     if failed {
         return Err("OpenCode session emitted an error".to_string());
     }
