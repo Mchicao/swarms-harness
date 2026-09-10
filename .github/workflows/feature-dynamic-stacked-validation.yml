@@ -45,7 +45,7 @@ jobs:
         run: cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force --run-id ci-dry
       - name: Mock E2E
         run: cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --run-id ci-e2e --global-max-concurrency 3 --provider-cap mock=3
-      - name: Dynamic submit queue, resume, and metadata recovery E2E
+      - name: Dynamic submit, recovery, and admission E2E
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -106,4 +106,38 @@ jobs:
           dynamic = [state for state in states if state.get('source_id') == 'postcheck']
           assert len(dynamic) == 1, f'resume duplicated dynamic task state: {dynamic}'
           assert dynamic[0].get('status') == 'completed', dynamic[0]
+          PY
+          cat > "$RUNNER_TEMP/stage-policy-bypass.json" <<'JSON'
+          {
+            "submission_version": 1,
+            "stage": "Verification",
+            "parallel": true,
+            "task": {
+              "id": "serial-stage-bypass",
+              "route": "mock",
+              "task": "Run pytest",
+              "role": "general",
+              "needs": ["tests"],
+              "tools_policy": "none",
+              "artifacts": [],
+              "verify": []
+            }
+          }
+          JSON
+          cargo run --manifest-path rust/Cargo.toml -- submit --workspace-root "$PWD" --run-id ci-dynamic --task-file "$RUNNER_TEMP/stage-policy-bypass.json"
+          cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --resume --run-id ci-dynamic --global-max-concurrency 3 --provider-cap mock=3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          run = Path('.agent/swarm/runs/ci-dynamic')
+          rejected = list((run / 'submissions' / 'rejected').glob('*.json'))
+          assert len(rejected) == 1, f'expected one rejected stage-policy submission, got {rejected}'
+          error = rejected[0].with_suffix('.error.txt').read_text()
+          assert "existing stage uses parallel=false" in error, error
+          accepted = list((run / 'submissions' / 'accepted').glob('*.json'))
+          assert len(accepted) == 1, f'rejected submission altered accepted history: {accepted}'
+          states = [json.loads(path.read_text()) for path in (run / 'tasks').glob('*.json')]
+          assert not any(state.get('source_id') == 'serial-stage-bypass' for state in states), states
+          workflow = json.loads((run / 'workflow.json').read_text())
+          assert workflow.get('task_count') == 5, workflow
           PY
