@@ -3,7 +3,7 @@
 use std::env;
 use std::io::Read;
 use std::path::Path;
-use swarms_runtime::{cli, config, model::Router, observer, review, runtime};
+use swarms_runtime::{cli, config, dynamic_submission, model::Router, observer, review, runtime};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -17,6 +17,23 @@ fn main() {
 fn run() -> Result<()> {
     let args = cli::parse_args()?;
     let root = env::current_dir().map_err(|e| e.to_string())?;
+
+    if args.command == "submit" {
+        let workspace_root = cli::resolve_workspace_root(
+            &root,
+            Path::new(""),
+            args.workspace_root.as_deref(),
+            "submit",
+        )?;
+        let source = args
+            .submission_file
+            .as_deref()
+            .ok_or_else(|| "submit task file missing".to_string())?;
+        let run_dir = cli::run_dir(&workspace_root, &args.run_id);
+        let queued = dynamic_submission::enqueue_file(&run_dir, source)?;
+        println!("{}", queued.display());
+        return Ok(());
+    }
 
     let router_path = cli::resolve_router_path(&root, &args.router_config);
     let router = config::load_router_from_path(&root, &router_path)?;
