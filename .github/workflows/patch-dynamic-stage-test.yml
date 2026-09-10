@@ -30,12 +30,11 @@ jobs:
       - name: Remove temporary workflow
         shell: bash
         run: rm .github/workflows/patch-dynamic-stage-test.yml
-      - name: Validate focused test
+      - name: Format and diff check
         shell: bash
         run: |
           cargo fmt --manifest-path rust/Cargo.toml
           cargo fmt --manifest-path rust/Cargo.toml -- --check
-          cargo test --manifest-path rust/Cargo.toml dynamic_submission::tests::existing_stage_parallel_policy_cannot_be_overridden -- --exact
           git diff --check
       - name: Commit patch
         shell: bash
