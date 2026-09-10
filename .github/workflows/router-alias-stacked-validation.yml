@@ -39,6 +39,8 @@ jobs:
         run: cargo run --manifest-path rust/Cargo.toml -- doctor
       - name: Review
         run: cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json
+      - name: Validate local router example
+        run: cargo run --manifest-path rust/Cargo.toml -- review --plan docs/workflow_plan_example.json --router-config config/swarm_router.local.example.json
       - name: Dry-run
         run: cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force --run-id ci-dry
       - name: Mock E2E
