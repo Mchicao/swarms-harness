@@ -684,6 +684,7 @@ pub fn execute(
             reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;
             tasks.push(task);
         }
+        update_workflow_task_count(&run_dir, tasks.len())?;
     }
     for state in states.values() {
         save_task_state(&run_dir, state)?;
