@@ -126,8 +126,10 @@ fn validate_router_config(value: &Value) -> Result<()> {
 fn canonicalize_aliases(router: &mut Router) -> Result<()> {
     let aliases = router.aliases.clone();
     let mut canonical = HashMap::with_capacity(aliases.len());
+    let mut alias_names: Vec<String> = aliases.keys().cloned().collect();
+    alias_names.sort();
 
-    for alias in aliases.keys() {
+    for alias in alias_names {
         let mut current = alias.clone();
         let mut seen = HashSet::new();
         loop {
@@ -148,7 +150,7 @@ fn canonicalize_aliases(router: &mut Router) -> Result<()> {
                 "router config: alias '{alias}' resolves to unknown provider '{current}'"
             ));
         }
-        canonical.insert(alias.clone(), current);
+        canonical.insert(alias, current);
     }
 
     router.aliases = canonical;
@@ -170,10 +172,18 @@ fn validate_route_references(router: &Router) -> Result<()> {
     if let Some(fallback) = router.fallback_route.as_deref() {
         require_known_route(router, fallback, "fallback_route")?;
     }
-    for (role, route) in &router.role_routes {
+
+    let mut roles: Vec<&String> = router.role_routes.keys().collect();
+    roles.sort();
+    for role in roles {
+        let route = &router.role_routes[role];
         require_known_route(router, route, &format!("role_routes.{role}"))?;
     }
-    for (provider_route, provider) in &router.providers {
+
+    let mut provider_routes: Vec<&String> = router.providers.keys().collect();
+    provider_routes.sort();
+    for provider_route in provider_routes {
+        let provider = &router.providers[provider_route];
         for (index, fallback) in provider.fallback_routes.iter().enumerate() {
             require_known_route(
                 router,
@@ -413,6 +423,16 @@ mod tests {
             missing_error.contains("unknown provider 'missing'"),
             "{missing_error}"
         );
+    }
+
+    #[test]
+    fn alias_validation_error_order_is_deterministic() {
+        let mut router = router(json!({
+            "aliases": {"z_alias": "missing_z", "a_alias": "missing_a"},
+            "providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}
+        }));
+        let error = canonicalize_aliases(&mut router).expect_err("invalid aliases must fail");
+        assert!(error.contains("alias 'a_alias'"), "{error}");
     }
 
     #[test]
