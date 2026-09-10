@@ -5,6 +5,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
+use crate::process_supervisor;
 use crate::steering;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -39,13 +40,16 @@ pub fn run(
     run_dir: &Path,
 ) -> Result<SessionResult> {
     let program = which("codex").unwrap_or_else(|| "codex".to_string());
+    let mut command = Command::new(program);
+    command
+        .args(["app-server", "--stdio"])
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process_supervisor::prepare_command(&mut command)?;
     let mut child = ChildGuard::new(
-        Command::new(program)
-            .args(["app-server", "--stdio"])
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        command
             .spawn()
             .map_err(|error| format!("spawn codex app-server: {error}"))?,
     );
@@ -254,7 +258,7 @@ pub fn run(
                     )?;
                 }
                 if queued_steers.is_empty() {
-                    let _ = child.kill();
+                    let _ = child.terminate_tree();
                     return Ok(SessionResult {
                         output,
                         session_id: thread_id,
