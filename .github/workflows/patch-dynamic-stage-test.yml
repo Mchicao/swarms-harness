@@ -1,0 +1,47 @@
+name: Patch dynamic stage regression test
+
+on:
+  push:
+    branches: [feat/dynamic-task-submission]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/dynamic-task-submission
+          fetch-depth: 0
+      - name: Add permanent stage-policy regression test
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('rust/src/dynamic_submission.rs')
+          text = path.read_text()
+          text = text.replace('''mod tests {\n    use super::*;\n''', '''mod tests {\n    use super::*;\n    use serde_json::json;\n''', 1)
+          anchor = '''        assert_eq!(names, vec!["0001-a.json", "0002-b.json"]);\n        fs::remove_dir_all(run_dir).unwrap();\n    }\n}\n'''
+          replacement = '''        assert_eq!(names, vec!["0001-a.json", "0002-b.json"]);\n        fs::remove_dir_all(run_dir).unwrap();\n    }\n\n    #[test]\n    fn existing_stage_parallel_policy_cannot_be_overridden() {\n        let router: Router = serde_json::from_value(json!({\n            "providers": {\n                "mock": {\n                    "enabled": true,\n                    "provider": "mock",\n                    "wrapper": "mock"\n                }\n            }\n        }))\n        .unwrap();\n        let plan: Plan = serde_json::from_value(json!({\n            "stages": [{\n                "name": "Verification",\n                "parallel": false,\n                "tasks": [{\n                    "id": "tests",\n                    "route": "mock",\n                    "task": "Verify the result"\n                }]\n            }]\n        }))\n        .unwrap();\n        let tasks = config::build_tasks(&plan, &router).unwrap();\n        let submission: TaskSubmission = serde_json::from_value(json!({\n            "submission_version": 1,\n            "stage": "Verification",\n            "parallel": true,\n            "task": {\n                "id": "bypass",\n                "route": "mock",\n                "task": "Attempt parallel admission"\n            }\n        }))\n        .unwrap();\n\n        let error = validate_stage_policy(&tasks, &submission).unwrap_err();\n        assert!(error.contains("existing stage uses parallel=false"), "{error}");\n    }\n}\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit(f'expected one tests tail anchor, got {text.count(anchor)}')
+          path.write_text(text.replace(anchor, replacement))
+      - name: Remove temporary workflow
+        shell: bash
+        run: rm .github/workflows/patch-dynamic-stage-test.yml
+      - name: Validate focused test
+        shell: bash
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          cargo test --manifest-path rust/Cargo.toml dynamic_submission::tests::existing_stage_parallel_policy_cannot_be_overridden -- --exact
+          git diff --check
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust/src/dynamic_submission.rs .github/workflows/patch-dynamic-stage-test.yml
+          git commit -m "test(runtime): cover dynamic stage policy"
+          git push origin HEAD:feat/dynamic-task-submission
