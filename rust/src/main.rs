@@ -195,7 +195,7 @@ fn run_singularity_loop(
             global_cap,
             caps,
             &run_id,
-            true,
+            true, // each cycle is a fresh run
             false,
         ) {
             Ok(report) => {
@@ -209,6 +209,9 @@ fn run_singularity_loop(
             }
             Err(e) => {
                 failed = true;
+                // A cycle failure is reported but does not abort the loop; the
+                // next cycle may self-correct. Only the coordinator-aborting
+                // errors (returned as Err) reach here.
                 println!("[singularity-rs] Cycle {cycle} failed ({run_id}): {e}");
             }
         }
@@ -249,6 +252,7 @@ fn print_doctor(root: &Path, router: &Router) -> Result<()> {
         );
     }
 
+    // Check supported wrappers
     let wrappers: std::collections::HashSet<&str> = router
         .providers
         .values()
@@ -265,6 +269,7 @@ fn print_doctor(root: &Path, router: &Router) -> Result<()> {
         }
     }
 
+    // Quick plan review
     let plan_path = root.join("docs/workflow_plan_example.json");
     if plan_path.exists() {
         match config::load_plan(&plan_path) {
