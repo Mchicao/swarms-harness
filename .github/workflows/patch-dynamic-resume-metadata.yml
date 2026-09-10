@@ -1,0 +1,45 @@
+name: Patch dynamic resume metadata
+
+on:
+  push:
+    branches: [feat/dynamic-task-submission]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/dynamic-task-submission
+          fetch-depth: 0
+      - name: Reconcile workflow task count on resume
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('rust/src/runtime.rs')
+          text = path.read_text()
+          old = '''    if resume {\n        let accepted = dynamic_submission::load_accepted(&run_dir, plan, router, &tasks)?;\n        for task in accepted {\n            reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;\n            tasks.push(task);\n        }\n    }\n    for state in states.values() {\n'''
+          new = '''    if resume {\n        let accepted = dynamic_submission::load_accepted(&run_dir, plan, router, &tasks)?;\n        for task in accepted {\n            reconcile_dynamic_task_state(&run_dir, &mut states, &task, plan)?;\n            tasks.push(task);\n        }\n        update_workflow_task_count(&run_dir, tasks.len())?;\n    }\n    for state in states.values() {\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one resume admission block, got {text.count(old)}')
+          path.write_text(text.replace(old, new))
+      - name: Remove temporary workflow
+        shell: bash
+        run: rm .github/workflows/patch-dynamic-resume-metadata.yml
+      - name: Format and diff check
+        shell: bash
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml
+          cargo fmt --manifest-path rust/Cargo.toml -- --check
+          git diff --check
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust/src/runtime.rs .github/workflows/patch-dynamic-resume-metadata.yml
+          git commit -m "fix(runtime): reconcile dynamic task count on resume"
+          git push origin HEAD:feat/dynamic-task-submission
