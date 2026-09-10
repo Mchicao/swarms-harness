@@ -7,6 +7,63 @@ use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
 
+const ROUTER_FIELDS: &[&str] = &[
+    "_schema",
+    "version",
+    "fallback_route",
+    "quota_policy",
+    "preferences",
+    "aliases",
+    "role_routes",
+    "providers",
+];
+
+const QUOTA_POLICY_FIELDS: &[&str] = &[
+    "enabled",
+    "snapshot_path",
+    "min_remaining_percent",
+    "max_age_seconds",
+    "on_unknown",
+];
+
+// Compatibility-only metadata retained by the public router files. These fields
+// are descriptive and do not participate in route selection in the Rust runtime.
+const PREFERENCE_FIELDS: &[&str] = &[
+    "_quality_weight",
+    "quality_weight",
+    "_cost_weight",
+    "cost_weight",
+    "_quota_saving_weight",
+    "quota_saving_weight",
+];
+
+const PROVIDER_FIELDS: &[&str] = &[
+    "_doc",
+    "enabled",
+    "provider",
+    "model",
+    "canonical_model",
+    "wrapper",
+    "cost_class",
+    "host_id",
+    "key_env",
+    "base_url",
+    "base_url_env",
+    "thinking_field",
+    "quota_key",
+    "fallback_routes",
+    // Compatibility-only descriptive metadata. Keep the allowlist explicit so
+    // typos and newly invented executable-looking fields still fail closed.
+    "variant",
+    "health_key",
+    "metric_key",
+    "relative_cost",
+    "quality",
+    "scarcity",
+    "strengths",
+    "weaknesses",
+];
+
 /// Read and parse a JSON file.
 pub fn load_json(path: &Path) -> Result<Value> {
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -30,6 +87,41 @@ pub fn merge(base: &mut Value, local: Value) {
     }
 }
 
+fn validate_object_fields(value: &Value, path: &str, allowed: &[&str]) -> Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("router config: '{path}' must be an object"))?;
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("router config: unknown field '{path}.{key}'"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_router_config(value: &Value) -> Result<()> {
+    validate_object_fields(value, "router", ROUTER_FIELDS)?;
+    let root = value
+        .as_object()
+        .ok_or_else(|| "router config: 'router' must be an object".to_string())?;
+
+    if let Some(quota_policy) = root.get("quota_policy") {
+        validate_object_fields(quota_policy, "quota_policy", QUOTA_POLICY_FIELDS)?;
+    }
+    if let Some(preferences) = root.get("preferences") {
+        validate_object_fields(preferences, "preferences", PREFERENCE_FIELDS)?;
+    }
+    if let Some(providers) = root.get("providers") {
+        let providers = providers
+            .as_object()
+            .ok_or_else(|| "router config: 'providers' must be an object".to_string())?;
+        for (route, provider) in providers {
+            validate_object_fields(provider, &format!("providers.{route}"), PROVIDER_FIELDS)?;
+        }
+    }
+    Ok(())
+}
+
 /// Load router from `config/swarm_router.json` with optional
 /// `config/swarm_router.local.json` overlay.
 pub fn load_router(root: &Path) -> Result<Router> {
@@ -49,6 +141,7 @@ pub fn load_router_from_path(root: &Path, base_path: &Path) -> Result<Router> {
     if local.exists() {
         merge(&mut value, load_json(&local)?);
     }
+    validate_router_config(&value)?;
     let router: Router =
         serde_json::from_value(value).map_err(|e| format!("router config: {e}"))?;
     if router.quota_policy.enabled {
@@ -126,4 +219,81 @@ pub fn effective_caps(
         caps.insert(router.resolve_route(route).to_string(), *cap);
     }
     caps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge, validate_router_config};
+    use serde_json::json;
+
+    #[test]
+    fn router_validation_rejects_unknown_root_field() {
+        let value = json!({"providers": {}, "preferneces": {}});
+        let error = validate_router_config(&value).expect_err("unknown root field must fail");
+        assert!(error.contains("router.preferneces"), "{error}");
+    }
+
+    #[test]
+    fn router_validation_rejects_unknown_nested_fields() {
+        let quota = json!({"providers": {}, "quota_policy": {"max_age_second": 600}});
+        let quota_error =
+            validate_router_config(&quota).expect_err("unknown quota field must fail");
+        assert!(quota_error.contains("quota_policy.max_age_second"), "{quota_error}");
+
+        let provider = json!({
+            "providers": {
+                "glm": {
+                    "enabled": true,
+                    "provider": "opencode",
+                    "model": "glm",
+                    "wrapper": "opencode",
+                    "modle": "typo"
+                }
+            }
+        });
+        let provider_error =
+            validate_router_config(&provider).expect_err("unknown provider field must fail");
+        assert!(provider_error.contains("providers.glm.modle"), "{provider_error}");
+    }
+
+    #[test]
+    fn router_validation_accepts_declared_compatibility_metadata() {
+        let value = json!({
+            "_schema": "docs",
+            "version": "legacy",
+            "preferences": {
+                "_quality_weight": "doc",
+                "quality_weight": 0.5,
+                "cost_weight": 0.4,
+                "quota_saving_weight": 0.1
+            },
+            "providers": {
+                "glm": {
+                    "_doc": "route docs",
+                    "enabled": false,
+                    "provider": "opencode",
+                    "model": "glm",
+                    "canonical_model": "glm",
+                    "wrapper": "opencode",
+                    "variant": "high",
+                    "health_key": "opencode",
+                    "metric_key": "glm",
+                    "relative_cost": 0.2,
+                    "quality": 0.8,
+                    "scarcity": 0.2,
+                    "strengths": ["coding"],
+                    "weaknesses": ["vision"]
+                }
+            }
+        });
+        validate_router_config(&value).expect("declared compatibility metadata must remain accepted");
+    }
+
+    #[test]
+    fn merged_overlay_unknown_field_is_rejected() {
+        let mut base = json!({"providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}});
+        merge(&mut base, json!({"providers": {"mock": {"wrappper": "mock"}}}));
+        let error = validate_router_config(&base).expect_err("overlay typo must fail after merge");
+        assert!(error.contains("providers.mock.wrappper"), "{error}");
+    }
 }
