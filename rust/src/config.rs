@@ -238,7 +238,10 @@ mod tests {
         let quota = json!({"providers": {}, "quota_policy": {"max_age_second": 600}});
         let quota_error =
             validate_router_config(&quota).expect_err("unknown quota field must fail");
-        assert!(quota_error.contains("quota_policy.max_age_second"), "{quota_error}");
+        assert!(
+            quota_error.contains("quota_policy.max_age_second"),
+            "{quota_error}"
+        );
 
         let provider = json!({
             "providers": {
@@ -253,7 +256,10 @@ mod tests {
         });
         let provider_error =
             validate_router_config(&provider).expect_err("unknown provider field must fail");
-        assert!(provider_error.contains("providers.glm.modle"), "{provider_error}");
+        assert!(
+            provider_error.contains("providers.glm.modle"),
+            "{provider_error}"
+        );
     }
 
     #[test]
@@ -286,13 +292,17 @@ mod tests {
                 }
             }
         });
-        validate_router_config(&value).expect("declared compatibility metadata must remain accepted");
+        validate_router_config(&value)
+            .expect("declared compatibility metadata must remain accepted");
     }
 
     #[test]
     fn merged_overlay_unknown_field_is_rejected() {
         let mut base = json!({"providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}});
-        merge(&mut base, json!({"providers": {"mock": {"wrappper": "mock"}}}));
+        merge(
+            &mut base,
+            json!({"providers": {"mock": {"wrappper": "mock"}}}),
+        );
         let error = validate_router_config(&base).expect_err("overlay typo must fail after merge");
         assert!(error.contains("providers.mock.wrappper"), "{error}");
     }
