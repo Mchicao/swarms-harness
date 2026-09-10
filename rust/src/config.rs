@@ -288,9 +288,7 @@ pub fn effective_caps(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        canonicalize_aliases, merge, validate_route_references, validate_router_config,
-    };
+    use super::{canonicalize_aliases, merge, validate_route_references, validate_router_config};
     use crate::model::Router;
     use serde_json::json;
 
@@ -400,7 +398,10 @@ mod tests {
             "providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}
         }));
         let cycle_error = canonicalize_aliases(&mut cycle).expect_err("alias cycle must fail");
-        assert!(cycle_error.contains("alias cycle detected"), "{cycle_error}");
+        assert!(
+            cycle_error.contains("alias cycle detected"),
+            "{cycle_error}"
+        );
 
         let mut missing = router(json!({
             "aliases": {"cheap": "missing"},
@@ -408,7 +409,10 @@ mod tests {
         }));
         let missing_error =
             canonicalize_aliases(&mut missing).expect_err("unknown alias target must fail");
-        assert!(missing_error.contains("unknown provider 'missing'"), "{missing_error}");
+        assert!(
+            missing_error.contains("unknown provider 'missing'"),
+            "{missing_error}"
+        );
     }
 
     #[test]
@@ -424,8 +428,11 @@ mod tests {
         canonicalize_aliases(&mut router).expect("alias should resolve");
         validate_route_references(&router).expect("known references should pass");
 
-        router.providers.get_mut("mock").expect("mock provider").fallback_routes =
-            vec!["missing".to_string()];
+        router
+            .providers
+            .get_mut("mock")
+            .expect("mock provider")
+            .fallback_routes = vec!["missing".to_string()];
         let error = validate_route_references(&router).expect_err("unknown fallback must fail");
         assert!(
             error.contains("providers.mock.fallback_routes[0]"),
