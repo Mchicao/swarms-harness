@@ -33,6 +33,8 @@ jobs:
         run: cargo fmt --manifest-path rust/Cargo.toml -- --check
       - name: Clippy
         run: cargo clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Dynamic admission regression unit test
+        run: cargo test --manifest-path rust/Cargo.toml dynamic_submission::tests::existing_stage_parallel_policy_cannot_be_overridden -- --exact
       - name: Tests
         run: cargo test --manifest-path rust/Cargo.toml --all-features
       - name: Release build
