@@ -283,6 +283,7 @@ pub fn drain_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn temp_run(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -335,5 +336,49 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["0001-a.json", "0002-b.json"]);
         fs::remove_dir_all(run_dir).unwrap();
+    }
+
+    #[test]
+    fn existing_stage_parallel_policy_cannot_be_overridden() {
+        let router: Router = serde_json::from_value(json!({
+            "providers": {
+                "mock": {
+                    "enabled": true,
+                    "provider": "mock",
+                    "wrapper": "mock"
+                }
+            }
+        }))
+        .unwrap();
+        let plan: Plan = serde_json::from_value(json!({
+            "stages": [{
+                "name": "Verification",
+                "parallel": false,
+                "tasks": [{
+                    "id": "tests",
+                    "route": "mock",
+                    "task": "Verify the result"
+                }]
+            }]
+        }))
+        .unwrap();
+        let tasks = config::build_tasks(&plan, &router).unwrap();
+        let submission: TaskSubmission = serde_json::from_value(json!({
+            "submission_version": 1,
+            "stage": "Verification",
+            "parallel": true,
+            "task": {
+                "id": "bypass",
+                "route": "mock",
+                "task": "Attempt parallel admission"
+            }
+        }))
+        .unwrap();
+
+        let error = validate_stage_policy(&tasks, &submission).unwrap_err();
+        assert!(
+            error.contains("existing stage uses parallel=false"),
+            "{error}"
+        );
     }
 }
