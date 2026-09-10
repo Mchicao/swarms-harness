@@ -145,6 +145,11 @@ fn canonicalize_aliases(router: &mut Router) -> Result<()> {
             }
         }
 
+        if router.providers.contains_key(&alias) && current != alias {
+            return Err(format!(
+                "router config: alias '{alias}' shadows provider '{alias}' and resolves to '{current}'"
+            ));
+        }
         if !router.providers.contains_key(&current) {
             return Err(format!(
                 "router config: alias '{alias}' resolves to unknown provider '{current}'"
@@ -423,6 +428,19 @@ mod tests {
             missing_error.contains("unknown provider 'missing'"),
             "{missing_error}"
         );
+    }
+
+    #[test]
+    fn aliases_cannot_shadow_provider_names() {
+        let mut router = router(json!({
+            "aliases": {"mock": "other"},
+            "providers": {
+                "mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"},
+                "other": {"enabled": false, "provider": "mock", "model": "other", "wrapper": "mock"}
+            }
+        }));
+        let error = canonicalize_aliases(&mut router).expect_err("provider shadowing must fail");
+        assert!(error.contains("shadows provider 'mock'"), "{error}");
     }
 
     #[test]
