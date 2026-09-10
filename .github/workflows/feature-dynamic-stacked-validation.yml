@@ -45,7 +45,7 @@ jobs:
         run: cargo run --manifest-path rust/Cargo.toml -- dry-run --plan docs/workflow_plan_example.json --force --run-id ci-dry
       - name: Mock E2E
         run: cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --force --run-id ci-e2e --global-max-concurrency 3 --provider-cap mock=3
-      - name: Dynamic submit queue and resume E2E
+      - name: Dynamic submit queue, resume, and metadata recovery E2E
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -87,6 +87,23 @@ jobs:
           dynamic = [state for state in states if state.get('source_id') == 'postcheck']
           assert len(dynamic) == 1, f'expected one dynamic state, got {dynamic}'
           assert dynamic[0].get('status') == 'completed', dynamic[0]
-          workflow = json.loads((run / 'workflow.json').read_text())
+          workflow_path = run / 'workflow.json'
+          workflow = json.loads(workflow_path.read_text())
           assert workflow.get('task_count') == 5, workflow
+          workflow['task_count'] = 4
+          workflow_path.write_text(json.dumps(workflow, indent=2) + '\n')
+          PY
+          cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_example.json --resume --run-id ci-dynamic --global-max-concurrency 3 --provider-cap mock=3
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          run = Path('.agent/swarm/runs/ci-dynamic')
+          workflow = json.loads((run / 'workflow.json').read_text())
+          assert workflow.get('task_count') == 5, f'resume did not reconcile stale task_count: {workflow}'
+          accepted = list((run / 'submissions' / 'accepted').glob('*.json'))
+          assert len(accepted) == 1, f'resume duplicated accepted history: {accepted}'
+          states = [json.loads(path.read_text()) for path in (run / 'tasks').glob('*.json')]
+          dynamic = [state for state in states if state.get('source_id') == 'postcheck']
+          assert len(dynamic) == 1, f'resume duplicated dynamic task state: {dynamic}'
+          assert dynamic[0].get('status') == 'completed', dynamic[0]
           PY
