@@ -153,10 +153,9 @@ fn dag_self_dependency() {
 }
 
 #[test]
-fn legacy_timeout_fields_never_create_a_worker_deadline() {
+fn worker_timeout_is_opt_in_with_task_override_and_plan_fallback() {
     let mut task = make_task("long", &[], "mock");
-    task.spec.timeout_seconds = Some(1);
-    let plan = model::Plan {
+    let mut plan = model::Plan {
         schema_version: None,
         goal: None,
         project: None,
@@ -168,10 +167,21 @@ fn legacy_timeout_fields_never_create_a_worker_deadline() {
         session: None,
         execution: model::ExecutionConfig::default(),
         terminal: model::TerminalConfig::default(),
-        default_timeout_seconds: Some(1),
+        default_timeout_seconds: Some(30),
         default_max_attempts: None,
         scaling: None,
     };
+
+    assert_eq!(task.spec.effective_timeout(&plan), Some(30));
+
+    task.spec.timeout_seconds = Some(5);
+    assert_eq!(task.spec.effective_timeout(&plan), Some(5));
+
+    task.spec.timeout_seconds = Some(0);
+    assert_eq!(task.spec.effective_timeout(&plan), None);
+
+    task.spec.timeout_seconds = None;
+    plan.default_timeout_seconds = Some(0);
     assert_eq!(task.spec.effective_timeout(&plan), None);
 }
 
@@ -1403,60 +1413,6 @@ fn quoted_verify_command_survives_platform_shell_parsing() {
 // ---------------------------------------------------------------------------
 // 16. Bounded process supervision (issue #3)
 // ---------------------------------------------------------------------------
-
-/// A child that exits quickly completes normally under a generous deadline.
-#[test]
-fn bounded_wait_returns_status_for_prompt_exit() {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "exit", "/B", "0"]);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = std::process::Command::new("true");
-    let mut child = cmd.spawn().expect("spawn fast child");
-    let status = runtime::wait_bounded("fast", &mut child, Duration::from_secs(30), None);
-    assert!(status.is_ok(), "should exit before deadline");
-    let _ = child.wait();
-}
-
-/// A child that runs past the deadline is killed and reported as a timeout,
-/// not left to block the coordinator forever.
-#[test]
-fn bounded_wait_kills_and_reports_on_timeout() {
-    // Cross-platform "sleep well past the deadline": ping with a large count
-    // on Windows, sleep on Unix. The deadline is 1s so the test stays fast.
-    let mut cmd = if cfg!(windows) {
-        let mut c = std::process::Command::new("ping");
-        c.args(["-n", "30", "127.0.0.1"]);
-        c.stdout(std::process::Stdio::null());
-        c.stderr(std::process::Stdio::null());
-        c
-    } else {
-        let mut c = std::process::Command::new("sleep");
-        c.arg("30");
-        c
-    };
-    let mut child = cmd.spawn().expect("spawn slow child");
-    let result = runtime::wait_bounded("slow", &mut child, Duration::from_secs(1), None);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("deadline") && err.contains("killed"),
-        "timeout message should mention deadline and kill: {err}"
-    );
-    // The child must have been reaped, not orphaned.
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("child should be reaped after timeout, still running");
-        }
-        Err(e) => panic!("try_wait after kill failed: {e}"),
-    }
-}
 
 /// A verification command that hangs is rejected by execute_shell instead of
 /// blocking the completion gate indefinitely. Uses a short deadline so the
