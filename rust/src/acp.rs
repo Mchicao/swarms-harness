@@ -43,6 +43,7 @@ impl Client {
     pub fn launch(
         program: &str,
         args: &[String],
+        env: &[(String, String)],
         cwd: &Path,
         log_path: &Path,
         startup_timeout: Duration,
@@ -57,6 +58,7 @@ impl Client {
         let mut command = Command::new(program);
         command
             .args(args)
+            .envs(env.iter().cloned())
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -159,11 +161,17 @@ impl Client {
         };
         let id = self.request(method, params)?;
         let response = self.wait_for_response(id, timeout)?;
-        let session_id = response
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| format!("ACP {method} response did not include sessionId"))?
-            .to_string();
+        let session_id = if let Some(session_id) = response.get("sessionId").and_then(Value::as_str)
+        {
+            session_id.to_string()
+        } else if let Some(existing_session) = existing_session {
+            // ACP session/load identifies the target in the request. Agents such
+            // as zcode-acp-server return load metadata without echoing sessionId;
+            // successful completion means the requested session is the active one.
+            existing_session.to_string()
+        } else {
+            return Err(format!("ACP {method} response did not include sessionId"));
+        };
         self.session_id = Some(session_id.clone());
         Ok(session_id)
     }
@@ -374,6 +382,9 @@ while (($line = [Console]::ReadLine()) -ne $null) {
         "session/new" {
             Send-Message @{jsonrpc="2.0"; id=$message.id; result=@{sessionId="fake-session"}}
         }
+        "session/load" {
+            Send-Message @{jsonrpc="2.0"; id=$message.id; result=@{modes=@{currentModeId="yolo"}}}
+        }
         "session/prompt" {
             Send-Message @{jsonrpc="2.0"; method="session/update"; params=@{sessionId="fake-session"; update=@{sessionUpdate="agent_message_chunk"; content=@{type="text"; text="hello"}}}}
             Send-Message @{jsonrpc="2.0"; id=$message.id; result=@{stopReason="end_turn"}}
@@ -393,6 +404,7 @@ while (($line = [Console]::ReadLine()) -ne $null) {
         let mut client = Client::launch(
             "powershell",
             &args,
+            &[],
             &root,
             &log,
             CI_PROCESS_TIMEOUT,
@@ -419,6 +431,24 @@ while (($line = [Console]::ReadLine()) -ne $null) {
         assert!(error.is_none());
         assert_eq!(stop_reason(&result.unwrap()), Some("end_turn"));
         drop(client);
+
+        let mut resumed = Client::launch(
+            "powershell",
+            &args,
+            &[],
+            &root,
+            &log,
+            CI_PROCESS_TIMEOUT,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(
+            resumed
+                .open_session(&root, Some("fake-session"), CI_PROCESS_TIMEOUT)
+                .unwrap(),
+            "fake-session"
+        );
+        drop(resumed);
         std::fs::remove_dir_all(root).ok();
     }
 }

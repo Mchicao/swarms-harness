@@ -222,10 +222,31 @@ pub fn review_plan(plan: &Plan, router: &Router, tasks: &[Task]) -> ReviewResult
                 task_id: Some(task.source_id.clone()),
             });
         }
+        if kind == AdapterKind::ZCode
+            && matches!(
+                plan.execution.transport,
+                crate::model::ExecutionTransport::CliBatch
+            )
+        {
+            findings.push(Finding {
+                severity: Severity::Error,
+                code: "zcode_requires_acp".to_string(),
+                message: format!(
+                    "route '{}' uses the ACP-only ZCode wrapper; choose execution.transport 'auto' or 'acp'",
+                    route
+                ),
+                task_id: Some(task.source_id.clone()),
+            });
+        }
         if matches!(
             plan.execution.transport,
             crate::model::ExecutionTransport::Acp
-        ) && crate::adapter::build_acp_command(kind, &plan.execution.acp).is_none()
+        ) && crate::adapter::build_acp_command(
+            kind,
+            &plan.execution.acp,
+            Some(provider.model.as_str()),
+        )
+        .is_none()
         {
             findings.push(Finding {
                 severity: Severity::Error,

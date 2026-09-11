@@ -103,7 +103,7 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 ## Supported Ecosystem & Integrations
 
-- **CLIs & Agents**: Claude Code, Codex CLI, OpenCode, Kilo Code, Hermes Agent, Antigravity CLI.
+- **CLIs & Agents**: Claude Code, Codex CLI, OpenCode, Kilo Code, Hermes Agent, Antigravity CLI, and ZCode through the community `zcode-acp-server` ACP bridge.
 - **APIs & Protocols**: OpenAI-compatible HTTP, LiteLLM gateways, OpenRouter, Z.AI, Nous Portal.
 - **Offline / CI**: Self-contained `mock` provider for offline testing, demos, and CI/CD pipelines.
 - **Observability & Telemetry**: Full token normalization, cache reads/writes, reasoning effort tracking, and JSON reports in `.agent/swarm/runs/<run_id>/`.

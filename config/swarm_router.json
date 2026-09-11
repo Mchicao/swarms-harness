@@ -23,6 +23,7 @@
     "test": "mock",
     "glm": "glm52",
     "glm52": "glm52",
+    "zcode": "zcode",
     "gemini": "gemini_flash",
     "antigravity": "gemini_flash",
     "gemini37": "gemini37_flash_medium",
@@ -92,6 +93,23 @@
       "scarcity": 0.25,
       "strengths": ["backend", "frontend", "refactor", "debug", "tests", "api", "multi-file"],
       "weaknesses": ["vision", "very hard architecture"]
+    },
+    "zcode": {
+      "_doc": "ZCode desktop agent through the community zcode-acp-server bridge. ACP-only: SWARMS launches the real ZCode app-server through the bridge, uses the logged-in ZCode credentials/Coding Plan, and passes this route's model via ZCODE_MODEL. Requires Node.js >=22, ZCode CLI >=0.14.8, and zcode-acp-server installed. The bridge is community-maintained and is not an official Z.AI integration.",
+      "enabled": false,
+      "provider": "zcode",
+      "model": "GLM-5.3",
+      "canonical_model": "glm-5.3",
+      "wrapper": "zcode",
+      "quota_key": "zai:coding",
+      "fallback_routes": ["glm52", "mock"],
+      "health_key": "zcode_acp",
+      "metric_key": "zcode",
+      "relative_cost": 0.20,
+      "quality": 0.82,
+      "scarcity": 0.25,
+      "strengths": ["agentic", "coding", "multi-file", "skills", "mcp", "session-reuse", "zcode-native-tools"],
+      "weaknesses": ["community ACP bridge", "ACP-only", "token telemetry may be unavailable"]
     },
     "gemini_flash": {
       "enabled": false,

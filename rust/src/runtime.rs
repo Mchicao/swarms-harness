@@ -1495,7 +1495,8 @@ pub(crate) fn execute_adapter(
         }
     }
 
-    let acp_spec = adapter::build_acp_command(kind, &execution.acp);
+    let acp_spec =
+        adapter::build_acp_command(kind, &execution.acp, Some(task.provider.model.as_str()));
     let use_acp =
         !matches!(execution.transport, ExecutionTransport::CliBatch) && acp_spec.is_some();
     if use_acp {
@@ -1513,6 +1514,7 @@ pub(crate) fn execute_adapter(
             Ok(result) => return Ok(result),
             Err(failure)
                 if failure.safe_fallback
+                    && kind != AdapterKind::ZCode
                     && matches!(execution.fallback, ExecutionFallback::CliBatch) =>
             {
                 append_event(
@@ -1622,6 +1624,7 @@ fn execute_acp(
     let mut client = acp::Client::launch(
         &spec.program,
         &spec.args,
+        &spec.env,
         root,
         &log_path,
         startup,

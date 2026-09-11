@@ -78,6 +78,9 @@ pub fn run(
         | AdapterKind::Hermes
         | AdapterKind::Perch
         | AdapterKind::Pi => execute_cli_observer(kind, &task, prompt, thinking, &temp),
+        AdapterKind::ZCode => {
+            Err("zcode is ACP-only and is not supported as the goal observer route".to_string())
+        }
         AdapterKind::ChatGptChat => unreachable!(),
     };
     let _ = fs::remove_dir_all(&temp);

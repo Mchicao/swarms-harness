@@ -2,7 +2,7 @@
 
 `rust/` contains the self-contained, cross-platform SWARMS coordinator. It runs
 on Windows, macOS, and Linux with no Python dependency. All adapter logic —
-mock, Codex, OpenCode, Kilo, Hermes, agy, and OpenAI-compatible HTTP — is
+mock, Codex, OpenCode, Kilo, Hermes, agy, ZCode via ACP, and OpenAI-compatible HTTP — is
 implemented natively in Rust.
 
 ## Quick start
@@ -83,6 +83,12 @@ adapter without a verified flag. OpenCode2 pins the variant inside the model
 string because the V2 `run` command has no `--variant` flag; pi tops out at
 `xhigh`, so `max` maps up to it.
 
+## ZCode ACP worker
+
+The `zcode` wrapper is ACP-only and launches the community `zcode-acp-server`, which in turn drives the real `zcode app-server --stdio`. The committed route stays disabled. Install ZCode and `zcode-acp-server`, log into ZCode, then enable the route in `config/swarm_router.local.json`. SWARMS passes the configured route model as `ZCODE_MODEL`, so a route such as `GLM-5.3` is pinned by the bridge instead of relying on the desktop app's current selection.
+
+`execution.transport` must be `auto` or `acp`; explicit `cli_batch` is rejected for this wrapper. ZCode ACP sessions support SWARMS session affinity. Non-default SWARMS `thinking` levels are rejected because the runtime does not yet map them to ZCode's ACP thought-level option. The bridge is community-maintained rather than an official Z.AI ACP implementation.
+
 ## ChatGPT worker hosts
 
 ChatGPT Web routes can pin a logical execution host with provider `host_id`. This keeps host choice in the deterministic router rather than guessing from the currently active browser. For a host such as `desktop-main`, the native adapter resolves `CHATGPT_CHAT_BROKER_URL_DESKTOP_MAIN` and `CHATGPT_CHAT_BROKER_TOKEN_DESKTOP_MAIN` unless the provider supplies explicit `base_url`/`base_url_env`/`key_env`. The generic `CHATGPT_CHAT_BROKER_URL` and `CHATGPT_CHAT_BROKER_TOKEN` remain the single-host fallback.
@@ -115,11 +121,7 @@ Tasks can reuse provider sessions to leverage prompt caching:
 - `mode: reuse` — resume a prior session by key. Validated: route, model,
   adapter, and workspace must match. `on_missing: new` or `fail`.
 
-Session reuse is only supported for adapters that expose structured session IDs
-in their output: Codex (`thread_id` in JSONL), OpenCode/OpenCode2/Kilo
-(`sessionID` in JSON events), Pi (`id` in the leading `{"type":"session"}`
-event header). Hermes and agy do not expose reliably parseable session IDs in
-headless mode; review rejects `mode: reuse` for those adapters.
+Session reuse is supported for adapters that expose a stable session identity: Codex (`thread_id` in JSONL), OpenCode/OpenCode2/Kilo (`sessionID` in JSON events), Pi (`id` in the leading `{"type":"session"}` event header), and ZCode through ACP `session/new`/`session/load`. Hermes and agy do not expose reliably parseable session IDs in headless mode; review rejects `mode: reuse` for those adapters.
 
 Same-key tasks are serialised by the scheduler to prevent concurrent
 continuation of a single conversation.

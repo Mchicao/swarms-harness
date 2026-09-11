@@ -9,6 +9,7 @@ SWARMS separates route names from provider execution. A route can exist in code,
 | `mock` | Supported | Enabled | Offline worker for tests, demos, and CI. |
 | `local_tests` | Reserved | Disabled | Intended for deterministic shell/test verification tasks. |
 | `glm52` | Implemented route | Disabled | Low-cost programmer/planner route through OpenCode or Z.AI-style local setup. |
+| `zcode` | Implemented ACP route | Disabled | ZCode desktop agent through community `zcode-acp-server`; launches the real ZCode app-server, uses ZCode credentials/Coding Plan, pins the route model with `ZCODE_MODEL`, and supports ACP session reuse. ACP-only and intentionally disabled by default. |
 | `gemini_flash` | Implemented route | Disabled | Low-cost docs/review/test route through Antigravity CLI local setup. |
 | `openai_compatible` | Configurable family | Disabled | Use for OpenAI-compatible APIs or gateways when a user adds a local route. |
 | `litellm` | Configurable family | Disabled | Use for a local LiteLLM gateway when a user wants central routing. |
