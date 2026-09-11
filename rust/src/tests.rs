@@ -246,20 +246,39 @@ fn workspace_write_policy_reaches_cli_adapters() {
 
 #[test]
 fn acp_command_defaults_are_conservative_and_overrides_are_explicit() {
-    let default = adapter::build_acp_command(AdapterKind::OpenCode, &model::AcpConfig::default())
-        .expect("OpenCode has a documented ACP launcher");
+    let default =
+        adapter::build_acp_command(AdapterKind::OpenCode, &model::AcpConfig::default(), None)
+            .expect("OpenCode has a documented ACP launcher");
     assert!(default.program.contains("opencode"));
     assert_eq!(default.args, vec!["acp"]);
-    assert!(adapter::build_acp_command(AdapterKind::Codex, &model::AcpConfig::default()).is_none());
+    assert!(
+        adapter::build_acp_command(AdapterKind::Codex, &model::AcpConfig::default(), None)
+            .is_none()
+    );
 
     let explicit = model::AcpConfig {
         command: Some("codex-acp".to_string()),
         args: vec!["--stdio".to_string()],
         ..model::AcpConfig::default()
     };
-    let overridden = adapter::build_acp_command(AdapterKind::Codex, &explicit).unwrap();
+    let overridden = adapter::build_acp_command(AdapterKind::Codex, &explicit, None).unwrap();
     assert_eq!(overridden.program, "codex-acp");
     assert_eq!(overridden.args, vec!["--stdio"]);
+
+    let zcode = adapter::build_acp_command(
+        AdapterKind::ZCode,
+        &model::AcpConfig::default(),
+        Some("GLM-5.3"),
+    )
+    .expect("ZCode has a documented community ACP launcher");
+    assert!(zcode.program.contains("zcode-acp-server"));
+    assert!(zcode.args.is_empty());
+    assert!(zcode
+        .env
+        .contains(&("ZCODE_MODEL".to_string(), "GLM-5.3".to_string())));
+    assert!(AdapterKind::ZCode.supports_acp());
+    assert!(AdapterKind::ZCode.supports_session_reuse());
+    assert!(!AdapterKind::ZCode.supports_thinking());
 }
 
 #[test]
@@ -653,10 +672,12 @@ fn chatgpt_chat_capabilities_are_session_reusable_but_not_cli_or_acp() {
     assert!(AdapterKind::ChatGptChat.supports_session_reuse());
     assert!(!AdapterKind::ChatGptChat.supports_thinking());
     assert!(!AdapterKind::ChatGptChat.supports_acp());
-    assert!(
-        adapter::build_acp_command(AdapterKind::ChatGptChat, &model::AcpConfig::default())
-            .is_none()
-    );
+    assert!(adapter::build_acp_command(
+        AdapterKind::ChatGptChat,
+        &model::AcpConfig::default(),
+        None,
+    )
+    .is_none());
 }
 
 #[test]

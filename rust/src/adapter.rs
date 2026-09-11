@@ -61,6 +61,7 @@ pub enum AdapterKind {
     Agy,
     Perch,
     Pi,
+    ZCode,
     ChatGptChat,
     OpenAiCompat,
 }
@@ -78,6 +79,7 @@ impl AdapterKind {
             "gemini" => Some(Self::Agy),
             "perch" => Some(Self::Perch),
             "pi" => Some(Self::Pi),
+            "zcode" => Some(Self::ZCode),
             "chatgpt_chat" => Some(Self::ChatGptChat),
             "openai_compat" => Some(Self::OpenAiCompat),
             _ => None,
@@ -102,6 +104,7 @@ impl AdapterKind {
                 | Self::OpenCode2
                 | Self::Kilo
                 | Self::Pi
+                | Self::ZCode
                 | Self::ChatGptChat
         )
     }
@@ -194,7 +197,11 @@ pub fn build_cli_command(
 /// Build the ACP launcher command without probing or starting the provider.
 /// Explicit configuration wins; otherwise only agents with a documented ACP
 /// subcommand receive a default.
-pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpec> {
+pub fn build_acp_command(
+    kind: AdapterKind,
+    config: &AcpConfig,
+    provider_model: Option<&str>,
+) -> Option<CliSpec> {
     if !kind.supports_acp() {
         return None;
     }
@@ -208,6 +215,10 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
             AdapterKind::Kilo => (
                 which("kilo").unwrap_or_else(|| "kilo".to_string()),
                 vec!["acp".to_string()],
+            ),
+            AdapterKind::ZCode => (
+                which("zcode-acp-server").unwrap_or_else(|| "zcode-acp-server".to_string()),
+                Vec::new(),
             ),
             // The repository's gemini wrapper currently points at agy; require
             // an explicit command so a future Gemini ACP launch is intentional.
@@ -226,12 +237,51 @@ pub fn build_acp_command(kind: AdapterKind, config: &AcpConfig) -> Option<CliSpe
         },
     };
     args.extend(config.args.iter().cloned());
+    let mut launch_env = Vec::new();
+    if kind == AdapterKind::ZCode {
+        if let Some(model) = provider_model.filter(|model| !model.trim().is_empty()) {
+            launch_env.push(("ZCODE_MODEL".to_string(), model.to_string()));
+        }
+        add_zcode_windows_launch_env(&mut launch_env);
+    }
     Some(CliSpec {
         program,
         args,
-        env: Vec::new(),
+        env: launch_env,
     })
 }
+
+#[cfg(windows)]
+fn add_zcode_windows_launch_env(launch_env: &mut Vec<(String, String)>) {
+    // zcode-acp-server 0.37.0 resolves Node with the POSIX `which` command.
+    // On Windows that can leave the bundled zcode.cjs to be spawned directly,
+    // which fails with `spawn EFTYPE`. Pin the already-installed Node and ZCode
+    // bundle when the user has not supplied explicit overrides.
+    if env::var_os("ZCODE_NODE").is_none() {
+        if let Some(node) = which("node") {
+            launch_env.push(("ZCODE_NODE".to_string(), node));
+        }
+    }
+    if env::var_os("ZCODE_BIN").is_none() {
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+            let bundled = PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("ZCode")
+                .join("resources")
+                .join("glm")
+                .join("zcode.cjs");
+            if bundled.is_file() {
+                launch_env.push((
+                    "ZCODE_BIN".to_string(),
+                    bundled.to_string_lossy().to_string(),
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn add_zcode_windows_launch_env(_launch_env: &mut Vec<(String, String)>) {}
 
 fn build_claude(task: &Task, prompt_text: &str, session_id: Option<&str>) -> Result<CliSpec> {
     let program = which("claude").unwrap_or_else(|| "claude".to_string());
@@ -1425,11 +1475,17 @@ pub fn validate_url(url: &str) -> Result<()> {
 pub(crate) fn which(bin_name: &str) -> Option<String> {
     let var = if cfg!(windows) { "Path" } else { "PATH" };
     let path = env::var(var).ok()?;
-    let ext = if cfg!(windows) { ".exe" } else { "" };
+    let extensions: &[&str] = if cfg!(windows) {
+        &[".exe", ".cmd", ".bat", ""]
+    } else {
+        &[""]
+    };
     for dir in path.split(if cfg!(windows) { ';' } else { ':' }) {
-        let candidate = PathBuf::from(dir).join(format!("{bin_name}{ext}"));
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
+        for ext in extensions {
+            let candidate = PathBuf::from(dir).join(format!("{bin_name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
         }
     }
     None
