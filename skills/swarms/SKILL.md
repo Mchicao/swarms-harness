@@ -34,6 +34,8 @@ Read `AGENTS.md` before editing the SWARMS runtime itself.
 - Never commit credentials, local routers, `.agent/`, prompts, logs, reports, worker state, or
   generated worktrees.
 - Do not silently substitute a blocked or unavailable provider.
+- Keep ChatGPT chat (`chatgpt_chat`) tasks bounded: long agentic sessions stall or bug out in ChatGPT Web.
+  Prompt with `"continue"` every 15–20 minutes or rotate to fresh chats sequentially for new tasks.
 
 ## When Runtime Is Worth Using
 
@@ -56,6 +58,12 @@ deterministic verification. Preserve repository invariants and make write owners
 
 Use provider routes only as configured by the router. Route names are not credentials and do not
 imply that a provider is locally enabled.
+
+### ChatGPT Web (`chatgpt_chat`) Subagents
+
+ChatGPT Web degrades or hangs during long agentic runs. When supervising this route:
+- Prompt with `"continue"` every 15–20 minutes if a generation stalls or reaches output limits before completing.
+- Prefer sequentially spawning fresh chats for distinct tasks instead of running indefinite monolithic conversations.
 
 ## Execution Lifecycle
 
