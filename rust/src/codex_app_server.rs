@@ -5,7 +5,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
-use crate::process_supervisor;
+use crate::process_supervisor::{self, ProcessPolicy, ProcessWatch};
 use crate::steering;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -30,6 +30,7 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     task: &Task,
     prompt: &str,
@@ -38,7 +39,9 @@ pub fn run(
     cwd: &Path,
     log_path: &Path,
     run_dir: &Path,
+    deadline: Option<Duration>,
 ) -> Result<SessionResult> {
+    let mut watch = ProcessWatch::new(log_path, ProcessPolicy::worker(deadline));
     let program = which("codex").unwrap_or_else(|| "codex".to_string());
     let mut command = Command::new(program);
     command
@@ -91,6 +94,8 @@ pub fn run(
         &mut pending_events,
         next_id,
         Duration::from_secs(20),
+        &mut watch,
+        log_path,
     )?;
     send_notification(&mut stdin, "initialized", json!({}))?;
     next_id += 1;
@@ -115,6 +120,8 @@ pub fn run(
         &mut pending_events,
         next_id,
         Duration::from_secs(20),
+        &mut watch,
+        log_path,
     )?;
     let thread_id = find_string(&thread_response, &["threadId", "id"]);
 
@@ -136,6 +143,8 @@ pub fn run(
         &mut pending_events,
         next_id,
         Duration::from_secs(20),
+        &mut watch,
+        log_path,
     )?;
     let mut turn_id = find_string(&turn_response, &["turnId", "id"])
         .ok_or("Codex app-server did not return a turn id")?;
@@ -146,6 +155,7 @@ pub fn run(
     let mut queued_steers = Vec::new();
     let mut active_queued_steers = Vec::new();
     loop {
+        watch.check_runtime(log_path, "codex app-server")?;
         for steer in steering::drain(run_dir, &task.id)? {
             if steer.mode == steering::SteeringMode::Enqueue {
                 queued_steers.push(steer);
@@ -168,6 +178,8 @@ pub fn run(
                     &mut pending_events,
                     steer_id,
                     Duration::from_secs(10),
+                    &mut watch,
+                    log_path,
                 )?;
                 steer_id += 1;
                 send(
@@ -188,6 +200,8 @@ pub fn run(
                     &mut pending_events,
                     steer_id,
                     Duration::from_secs(20),
+                    &mut watch,
+                    log_path,
                 )?;
                 turn_id = find_string(&restarted, &["turnId", "id"])
                     .ok_or("Codex app-server did not return a restarted turn id")?;
@@ -209,6 +223,8 @@ pub fn run(
                     &mut pending_events,
                     steer_id,
                     Duration::from_secs(10),
+                    &mut watch,
+                    log_path,
                 )
             };
             let applied = response.is_ok();
@@ -284,6 +300,8 @@ pub fn run(
                     &mut pending_events,
                     steer_id,
                     Duration::from_secs(20),
+                    &mut watch,
+                    log_path,
                 )?;
                 turn_id = find_string(&response, &["turnId", "id"])
                     .ok_or("Codex app-server did not return a queued turn id")?;
@@ -342,16 +360,25 @@ fn wait_response(
     pending_events: &mut VecDeque<Value>,
     id: u64,
     timeout: Duration,
+    watch: &mut ProcessWatch,
+    log_path: &Path,
 ) -> Result<Value> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
+        watch.check_runtime(log_path, "codex app-server")?;
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return Err(format!("timeout waiting for app-server response {id}"));
         }
-        let message = rx
-            .recv_timeout(remaining)
-            .map_err(|error| error.to_string())?;
+        let wait_for = watch.bounded_timeout(
+            remaining.min(Duration::from_millis(100)),
+            "codex app-server",
+        )?;
+        let message = match rx.recv_timeout(wait_for) {
+            Ok(message) => message,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(error) => return Err(error.to_string()),
+        };
         append_line(log, &message)?;
         let value: Value = serde_json::from_str(&message).map_err(|error| error.to_string())?;
         if value.get("id").and_then(Value::as_u64) == Some(id) {

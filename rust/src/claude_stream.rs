@@ -6,7 +6,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
-use crate::process_supervisor;
+use crate::process_supervisor::{self, ProcessPolicy, ProcessWatch};
 use crate::steering;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -30,6 +30,7 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     task: &Task,
     prompt: &str,
@@ -38,7 +39,9 @@ pub fn run(
     cwd: &Path,
     log_path: &Path,
     run_dir: &Path,
+    deadline: Option<Duration>,
 ) -> Result<SessionResult> {
+    let mut watch = ProcessWatch::new(log_path, ProcessPolicy::worker(deadline));
     let mut resolved_session = session_id.map(str::to_string);
     let (mut child, mut stdin, mut rx) = spawn_claude(task, cwd, resolved_session.as_deref())?;
     let mut log = OpenOptions::new()
@@ -54,6 +57,7 @@ pub fn run(
     let mut queued_steers = Vec::new();
     let mut active_queued_steers = Vec::new();
     while !finished {
+        watch.check_runtime(log_path, "claude stream")?;
         for steer in steering::drain(run_dir, &task.id)? {
             if steer.mode == steering::SteeringMode::Enqueue {
                 queued_steers.push(steer);

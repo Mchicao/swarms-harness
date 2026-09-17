@@ -6,7 +6,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
-use crate::process_supervisor;
+use crate::process_supervisor::{self, ProcessPolicy, ProcessWatch};
 use crate::steering;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -30,6 +30,7 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     task: &Task,
     prompt: &str,
@@ -38,7 +39,9 @@ pub fn run(
     cwd: &Path,
     log_path: &Path,
     run_dir: &Path,
+    deadline: Option<Duration>,
 ) -> Result<SessionResult> {
+    let mut watch = ProcessWatch::new(log_path, ProcessPolicy::worker(deadline));
     let program = which("opencode").unwrap_or_else(|| "opencode".to_string());
     let mut command = Command::new(program);
     command.args(["serve", "--hostname", "127.0.0.1", "--port", "0"]);
@@ -60,21 +63,31 @@ pub fn run(
     let (startup_tx, startup_rx) = mpsc::channel::<String>();
     spawn_reader(stdout, startup_tx.clone());
     spawn_reader(stderr, startup_tx);
-    let base_url = wait_for_server(&startup_rx, Duration::from_secs(20))?;
+    let base_url = wait_for_server(&startup_rx, Duration::from_secs(20), &mut watch, log_path)?;
 
     let mut log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
         .map_err(|error| format!("open {}: {error}", log_path.display()))?;
+    watch.check_runtime(log_path, "opencode serve")?;
     let session_id = match session_id {
         Some(id) => id.to_string(),
-        None => create_session(&base_url)?,
+        None => create_session(&base_url, request_timeout(&watch)?)?,
     };
     let (event_tx, event_rx) = mpsc::channel::<Value>();
-    let event_response = http_get(&format!("{base_url}/event"))?;
+    let event_response = http_get(
+        &format!("{base_url}/event"),
+        watch.bounded_timeout(Duration::from_secs(10), "opencode serve")?,
+    )?;
     thread::spawn(move || stream_events(event_response, event_tx));
-    prompt_async(&base_url, &session_id, prompt, &task.provider.model)?;
+    prompt_async(
+        &base_url,
+        &session_id,
+        prompt,
+        &task.provider.model,
+        request_timeout(&watch)?,
+    )?;
 
     let mut output = String::new();
     let mut finished = false;
@@ -82,21 +95,29 @@ pub fn run(
     let mut queued_steers = Vec::new();
     let mut active_queued_steers = Vec::new();
     while !finished {
+        watch.check_runtime(log_path, "opencode serve")?;
         for steer in steering::drain(run_dir, &task.id)? {
             if steer.mode == steering::SteeringMode::Enqueue {
                 queued_steers.push(steer);
                 continue;
             }
             let result = if steer.mode.as_str() == "cancel_and_restart" {
-                abort(&base_url, &session_id)?;
+                abort(&base_url, &session_id, request_timeout(&watch)?)?;
                 prompt_async(
                     &base_url,
                     &session_id,
                     &format!("{prompt}\n\nUSER STEER PROMPT\n{}", steer.prompt),
                     &task.provider.model,
+                    request_timeout(&watch)?,
                 )
             } else {
-                prompt_async(&base_url, &session_id, &steer.prompt, &task.provider.model)
+                prompt_async(
+                    &base_url,
+                    &session_id,
+                    &steer.prompt,
+                    &task.provider.model,
+                    request_timeout(&watch)?,
+                )
             };
             let error = result.err();
             steering::mark_applied(
@@ -148,6 +169,7 @@ pub fn run(
                                 "USER STEER PROMPT (enqueue)\n{queued_prompt}\n\nThe previous turn completed. Apply this queued direction before finalizing the task."
                             ),
                             &task.provider.model,
+                            request_timeout(&watch)?,
                         )?;
                         active_queued_steers.append(&mut queued_steers);
                     }
@@ -157,7 +179,9 @@ pub fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    let _ = abort(&base_url, &session_id);
+    if let Ok(timeout) = request_timeout(&watch) {
+        let _ = abort(&base_url, &session_id, timeout);
+    }
     let _ = child.terminate_tree();
     if failed {
         return Err("OpenCode session emitted an error".to_string());
@@ -171,11 +195,20 @@ pub fn run(
     })
 }
 
-fn wait_for_server(rx: &Receiver<String>, timeout: Duration) -> Result<String> {
+fn wait_for_server(
+    rx: &Receiver<String>,
+    timeout: Duration,
+    watch: &mut ProcessWatch,
+    log_path: &Path,
+) -> Result<String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
+        watch.check_runtime(log_path, "opencode serve")?;
         let left = deadline.saturating_duration_since(Instant::now());
-        if let Ok(line) = rx.recv_timeout(left.min(Duration::from_millis(200))) {
+        let wait_for =
+            watch.bounded_timeout(left.min(Duration::from_millis(200)), "opencode serve")?;
+        if let Ok(line) = rx.recv_timeout(wait_for) {
+            watch.record_progress();
             if let Some(start) = line.find("http://") {
                 let url = line[start..].split_whitespace().next().unwrap_or_default();
                 if !url.is_empty() {
@@ -187,12 +220,22 @@ fn wait_for_server(rx: &Receiver<String>, timeout: Duration) -> Result<String> {
     Err("timeout waiting for opencode serve".to_string())
 }
 
-fn create_session(base: &str) -> Result<String> {
-    let value = http_json("POST", &format!("{base}/session"), json!({}))?;
+fn request_timeout(watch: &ProcessWatch) -> Result<Duration> {
+    watch.bounded_timeout(Duration::from_secs(20), "opencode serve")
+}
+
+fn create_session(base: &str, timeout: Duration) -> Result<String> {
+    let value = http_json("POST", &format!("{base}/session"), json!({}), timeout)?;
     find_string(&value, &["id"]).ok_or_else(|| "OpenCode session.create returned no id".to_string())
 }
 
-fn prompt_async(base: &str, session: &str, prompt: &str, model: &str) -> Result<()> {
+fn prompt_async(
+    base: &str,
+    session: &str,
+    prompt: &str,
+    model: &str,
+    timeout: Duration,
+) -> Result<()> {
     let model = model_selection(model);
     http_json(
         "POST",
@@ -201,6 +244,7 @@ fn prompt_async(base: &str, session: &str, prompt: &str, model: &str) -> Result<
             "model": model,
             "parts": [{"type": "text", "text": prompt}]
         }),
+        timeout,
     )?;
     Ok(())
 }
@@ -213,20 +257,21 @@ fn model_selection(model: &str) -> Value {
     }
 }
 
-fn abort(base: &str, session: &str) -> Result<()> {
+fn abort(base: &str, session: &str, timeout: Duration) -> Result<()> {
     http_json(
         "POST",
         &format!("{base}/session/{session}/abort"),
         json!({}),
+        timeout,
     )?;
     Ok(())
 }
 
-fn http_json(method: &str, url: &str, body: Value) -> Result<Value> {
+fn http_json(method: &str, url: &str, body: Value, timeout: Duration) -> Result<Value> {
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(20))
-        .timeout_write(Duration::from_secs(20))
+        .timeout_connect(timeout.min(Duration::from_secs(10)))
+        .timeout_read(timeout)
+        .timeout_write(timeout)
         .build();
     let request = match method {
         "POST" => agent.post(url),
@@ -243,8 +288,11 @@ fn http_json(method: &str, url: &str, body: Value) -> Result<Value> {
         .map_err(|error| format!("decode OpenCode HTTP {url}: {error}"))
 }
 
-fn http_get(url: &str) -> Result<ureq::Response> {
-    ureq::get(url)
+fn http_get(url: &str, connect_timeout: Duration) -> Result<ureq::Response> {
+    ureq::AgentBuilder::new()
+        .timeout_connect(connect_timeout)
+        .build()
+        .get(url)
         .call()
         .map_err(|error| format!("OpenCode event stream {url}: {error}"))
 }
