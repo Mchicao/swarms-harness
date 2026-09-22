@@ -2,15 +2,47 @@
 
 ![SWARMS workflow cover](images/swarms-cover.png)
 
-> **Local-First Multi-Agent Orchestration for Coding Swarms.**  
-> Spend intelligence on planning and review. Let deterministic Rust coordinate fast, zero-cost, and open-weight models in parallel.
+> **Orchestrate coding-agent swarms across different harnesses, models, and providers.**
+> SWARMS is the deterministic coordination layer above the agents you already use.
 
 [![Website](https://img.shields.io/badge/Website-swarms--orchestrator.vercel.app-gold)](https://swarms-orchestrator.vercel.app/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![SwDD](https://img.shields.io/badge/Spec--Driven-SwDD-blueviolet)](https://github.com/Mchicao/swarm-driven-development)
 [![Español](https://img.shields.io/badge/Docs-Espa%C3%B1ol-orange)](README.es.md)
 
-SWARMS is a local-first agent orchestrator that lets you decide **which model plans, which model codes, which model reviews, and how much concurrency each provider gets**. It runs completely offline out of the box with simulated mocks, and connects to real CLI/API routes only when you configure them.
+SWARMS is not another agent harness. It coordinates **multiple agent harnesses and provider routes in one workflow**. A planner can run through one tool, programmers through another, and reviewers through a third while the Rust runtime handles dependencies, concurrency, isolated Git worktrees, budgets, verification, and run state.
+
+## Why SWARMS
+
+The idea is simple: **build one swarm from the AI access you already have instead of rebuilding your workflow around one vendor**.
+
+- Mix agents from different harnesses in the same DAG.
+- Reuse the subscriptions, plans, quotas, and API access you already pay for.
+- Connect routes exposed through a **CLI, HTTP API, SDK-backed adapter, or ACP bridge**.
+- Choose which route plans, codes, reviews, or verifies.
+- Put per-provider concurrency and budget limits around the whole swarm.
+- Keep the committed default offline and safe until you explicitly configure real providers.
+
+For example:
+
+```text
+goal
+  -> planner: strong model through one CLI/API
+  -> programmers: parallel agents through other harnesses
+  -> reviewer: another route
+  -> deterministic tests and verification
+  -> validated result
+```
+
+This is especially useful when one AI plan gives you strong planning or review, while another gives you cheaper or higher-quota workers. SWARMS lets them work together instead of forcing the entire workflow through one harness.
+
+## Origin
+
+SWARMS started as a personal workflow around January-February 2026. I was working under student-plan constraints and wanted to stretch the models I could access: Gemini in Antigravity for worker loops, Opus for plans, and later GLM 5.2 and Codex for stronger planner/critic paths.
+
+The idea grew from Ralph-style coding loops: keep scarce or expensive models on planning and review, then let cheaper or faster agents handle implementation, QA, issue triage, and repeated validation.
+
+The principle is still the same: **spend scarce model capacity on decisions, not repetitive work**.
 
 ---
 
@@ -34,50 +66,30 @@ SWARMS is a local-first agent orchestrator that lets you decide **which model pl
 
 ---
 
-## Verified Zero-Cost & Budget Routes (Tested August 2026)
-
-Take advantage of promotional and zero-cost agent routes with zero credit card lock-in:
-
-| Route | Model | Source | Cost / Quota |
-|---|---|---|---|
-| `ox_alpha_free` | `opencode/x-preview-f-free` — Ox Alpha Free | OpenCode Zen | **$0 (Unlimited)** |
-| `ox_alpha_hermes` | `stealth/ox-alpha` — Ox Alpha Promo | Nous Portal via Hermes Agent | **$0 ("Quadrillion tokens/day")** |
-| `gemini37_flash_medium` | Gemini 3.7 Flash (Medium) | Antigravity CLI | **$0 (Verified)** |
-| `muse_spark_free` | `opencode/muse-spark-1.2-contributor-free` (1M ctx) | OpenCode Zen | **$0 (Free)** |
-| `deepseek_v4_flash` | DeepSeek V4 Flash | OpenRouter / DeepSeek API | **~$0.05 / task** |
-| `glm_53` | GLM 5.3 (`zai-coding-plan/glm-5.3`) | Z.AI Coding Plan via OpenCode | High-IQ Plan/Code |
-
-Run 4 parallel zero-cost workers instantly:
-```bash
-cargo run --manifest-path rust/Cargo.toml -- run --force \
-  --plan my_plan.json --global-max-concurrency 4 --provider-cap ox_alpha_free=4
-```
-
----
-
 ## Core Capabilities & Features
 
 ### Parallel Test-Time Scaling
 Run N candidate solutions simultaneously in parallel across isolated Git worktrees.
 1. **Objective First**: Automated tests (`pytest`, `cargo test`, linters) run per candidate. If exactly one candidate passes, it wins with **zero extra LLM calls**.
-2. **LLM-as-a-Verifier**: On ties, a fast verifier model scores candidates.
-3. **Escalation**: Ambiguous cases escalate to a synthesis or review route within strictly bounded token budgets.
+2. **LLM-as-a-Verifier**: On ties, a verifier model can score candidates.
+3. **Escalation**: Ambiguous cases can escalate to synthesis or review routes within bounded token budgets.
 
-### Anti-Slop Architecture & Role Specialization
-- **Smart Planner**: Spend high-intelligence models (Claude Fable, GPT-5.6, GLM) strictly on formulating DAG workflow plans.
-- **Static Critic**: Validates DAG dependencies, cycles, routes, and budget constraints *before* any execution begins.
-- **Budget Programmer Workers**: Offload heavy coding sub-tasks to ultra-fast, zero-cost workers (Ox Alpha, DeepSeek V4 Flash, Gemini Flash).
-- **Deterministic Verifier**: Grade code with objective compiler checks, unit tests, and SHA256 integrity hashes.
+### Role Specialization
+- **Planner**: Reserve your strongest route for workflow planning and difficult decisions.
+- **Static Critic**: Validate DAG dependencies, cycles, routes, and budget constraints before execution begins.
+- **Programmer Workers**: Fan implementation work out across faster, cheaper, or higher-quota routes.
+- **Deterministic Verifier**: Grade code with compiler checks, unit tests, and SHA256 integrity hashes before relying on model judgment.
 
 ### Zero Workspace Contamination
 Every programmer worker operates inside a detached, temporary Git worktree. Changes are cryptographically verified with SHA256 pre/post signatures before being merged to the primary workspace.
 
 ### Runaway & Silent-Hang Protection
-Active log watchers monitor worker stdout and file activity. If a task goes silent or hangs, SWARMS triggers immediate warnings and enforces timeouts, preventing zombie processes from burning your API credits.
+Active log watchers monitor worker stdout and file activity. If a task goes silent or hangs, SWARMS triggers warnings and enforces timeouts, preventing zombie processes from consuming provider quota indefinitely.
 
 ### Swarm-Driven Development (SwDD)
 Integrate with [SwDD](https://github.com/Mchicao/swarm-driven-development) to connect OpenSpec specifications, SWARMS execution, Gentle-AI orchestration, and Engram memory behind a unified workflow:
-$$	ext{Specification} \longrightarrow 	ext{Swarm Execution} \longrightarrow 	ext{Receipt-Backed Delivery}$$
+
+$$\text{Specification} \longrightarrow \text{Swarm Execution} \longrightarrow \text{Receipt-Backed Delivery}$$
 
 ---
 
@@ -101,12 +113,18 @@ cargo run --manifest-path rust/Cargo.toml -- run --plan docs/workflow_plan_examp
 
 ---
 
-## Supported Ecosystem & Integrations
+## Supported Access Paths & Integrations
 
-- **CLIs & Agents**: Claude Code, Codex CLI, OpenCode, Kilo Code, Hermes Agent, Antigravity CLI, and ZCode through the community `zcode-acp-server` ACP bridge.
-- **APIs & Protocols**: OpenAI-compatible HTTP, LiteLLM gateways, OpenRouter, Z.AI, Nous Portal.
+SWARMS adapts to how your AI access is exposed. You configure routes locally and assign them to roles in the swarm.
+
+- **Harnesses & CLIs**: Claude Code, Codex CLI, OpenCode, Kilo Code, Hermes Agent, Antigravity CLI.
+- **HTTP APIs**: OpenAI-compatible endpoints, LiteLLM gateways, OpenRouter, Z.AI, Nous Portal.
+- **ACP**: ZCode through the community `zcode-acp-server` bridge.
+- **SDK-backed adapters**: Provider-specific SDK integrations can sit behind the same adapter boundary when a generic CLI or HTTP route is not enough.
 - **Offline / CI**: Self-contained `mock` provider for offline testing, demos, and CI/CD pipelines.
-- **Observability & Telemetry**: Full token normalization, cache reads/writes, reasoning effort tracking, and JSON reports in `.agent/swarm/runs/<run_id>/`.
+- **Observability & Telemetry**: Token normalization, cache reads/writes, reasoning effort tracking, and JSON reports in `.agent/swarm/runs/<run_id>/`.
+
+SWARMS does not bundle model access or require one provider. Your own local configuration decides which plans, APIs, CLIs, SDK-backed adapters, and ACP routes are available to the swarm.
 
 ---
 
