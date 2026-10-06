@@ -1063,6 +1063,10 @@ pub(crate) fn run_task(
 
     let last_error = loop {
         attempt += 1;
+        let exec_deadline = match remaining_worker_deadline(started, deadline) {
+            Ok(deadline) => deadline,
+            Err(error) => break error,
+        };
         let exec_result = execute_adapter(
             task,
             prompt,
@@ -1072,7 +1076,7 @@ pub(crate) fn run_task(
             run_dir,
             &work_dir,
             &plan.execution,
-            deadline,
+            exec_deadline,
         );
 
         match exec_result {
@@ -1148,6 +1152,19 @@ pub(crate) fn run_task(
                         );
                         let previous_log =
                             fs::read_to_string(work_dir.join("worker.log")).unwrap_or_default();
+                        let steer_deadline = match remaining_worker_deadline(started, deadline) {
+                            Ok(deadline) => deadline,
+                            Err(error) => {
+                                return failed_state(
+                                    task,
+                                    thinking,
+                                    started,
+                                    attempt,
+                                    &error,
+                                    &exec.usage,
+                                );
+                            }
+                        };
                         let steered = execute_adapter(
                             task,
                             &steer_prompt,
@@ -1157,7 +1174,7 @@ pub(crate) fn run_task(
                             run_dir,
                             &work_dir,
                             &plan.execution,
-                            deadline,
+                            steer_deadline,
                         );
                         match steered {
                             Ok(next) => {
@@ -1341,7 +1358,12 @@ pub(crate) fn run_task(
                             "reason": retry_reason(&e),
                         }),
                     );
-                    thread::sleep(delay);
+                    let sleep_for = match remaining_worker_deadline(started, deadline) {
+                        Ok(Some(remaining)) => delay.min(remaining),
+                        Ok(None) => delay,
+                        Err(error) => break error,
+                    };
+                    thread::sleep(sleep_for);
                     continue;
                 }
                 break e;
@@ -1360,6 +1382,23 @@ pub(crate) fn run_task(
     state.session_resume_count = session_resume_count;
     state.session_id = active_session_id;
     state
+}
+
+fn remaining_worker_deadline(
+    started: Instant,
+    deadline: Option<Duration>,
+) -> Result<Option<Duration>> {
+    let Some(deadline) = deadline else {
+        return Ok(None);
+    };
+    let remaining = deadline.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(format!(
+            "runtime_timeout: task exceeded its {}ms deadline",
+            deadline.as_millis()
+        ));
+    }
+    Ok(Some(remaining))
 }
 
 fn should_retry(error: &str) -> bool {
@@ -1502,7 +1541,7 @@ pub(crate) fn execute_adapter(
         let log_path = work_dir.join("worker.log");
         if kind == AdapterKind::Codex && codex_app_server::enabled() {
             let result = codex_app_server::run(
-                task, prompt, thinking, session_id, root, &log_path, run_dir,
+                task, prompt, thinking, session_id, root, &log_path, run_dir, deadline,
             )?;
             return Ok(AdapterExec {
                 output: result.output,
@@ -1512,8 +1551,9 @@ pub(crate) fn execute_adapter(
             });
         }
         if kind == AdapterKind::OpenCode && opencode_server::enabled() {
-            let result =
-                opencode_server::run(task, prompt, thinking, session_id, root, &log_path, run_dir)?;
+            let result = opencode_server::run(
+                task, prompt, thinking, session_id, root, &log_path, run_dir, deadline,
+            )?;
             return Ok(AdapterExec {
                 output: result.output,
                 usage: Usage::missing(),
@@ -1522,8 +1562,9 @@ pub(crate) fn execute_adapter(
             });
         }
         if kind == AdapterKind::Claude && claude_stream::enabled() {
-            let result =
-                claude_stream::run(task, prompt, thinking, session_id, root, &log_path, run_dir)?;
+            let result = claude_stream::run(
+                task, prompt, thinking, session_id, root, &log_path, run_dir, deadline,
+            )?;
             let output = result.output;
             return Ok(AdapterExec {
                 usage: adapter::parse_cli_usage(kind, &output),
@@ -1549,6 +1590,7 @@ pub(crate) fn execute_adapter(
             work_dir,
             &execution.acp,
             &spec,
+            deadline,
         ) {
             Ok(result) => return Ok(result),
             Err(failure)
@@ -1643,6 +1685,13 @@ impl AcpFailure {
             safe_fallback: false,
         }
     }
+
+    fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            safe_fallback: false,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1655,24 +1704,57 @@ fn execute_acp(
     work_dir: &Path,
     config: &crate::model::AcpConfig,
     spec: &CliSpec,
+    deadline: Option<Duration>,
 ) -> std::result::Result<AdapterExec, AcpFailure> {
     let log_path = work_dir.join("worker.log");
     let _ = fs::File::create(&log_path);
     let startup = Duration::from_secs(config.startup_timeout_seconds);
     let cancel_grace = Duration::from_secs(config.cancel_grace_seconds);
-    let mut client = acp::Client::launch(
+    let mut watch =
+        process_supervisor::ProcessWatch::new(&log_path, ProcessPolicy::worker(deadline));
+    let launch_timeout = watch
+        .bounded_timeout(startup, "ACP")
+        .map_err(AcpFailure::runtime)?;
+    let mut client = match acp::Client::launch(
         &spec.program,
         &spec.args,
         &spec.env,
         root,
         &log_path,
-        startup,
+        launch_timeout,
         cancel_grace,
-    )
-    .map_err(AcpFailure::safe)?;
-    let session_id = client
-        .open_session(root, existing_session, startup)
-        .map_err(AcpFailure::safe)?;
+    ) {
+        Ok(client) => client,
+        Err(_error) if watch.deadline_expired() => {
+            return Err(AcpFailure::runtime(
+                process_supervisor::runtime_failure_message(
+                    "ACP",
+                    &ProcessTerminalReason::TimedOut,
+                    watch.elapsed(),
+                ),
+            ));
+        }
+        Err(error) => return Err(AcpFailure::safe(error)),
+    };
+    watch
+        .check_runtime(&log_path, "ACP")
+        .map_err(AcpFailure::runtime)?;
+    let session_timeout = watch
+        .bounded_timeout(startup, "ACP")
+        .map_err(AcpFailure::runtime)?;
+    let session_id = match client.open_session(root, existing_session, session_timeout) {
+        Ok(session_id) => session_id,
+        Err(_error) if watch.deadline_expired() => {
+            return Err(AcpFailure::runtime(
+                process_supervisor::runtime_failure_message(
+                    "ACP",
+                    &ProcessTerminalReason::TimedOut,
+                    watch.elapsed(),
+                ),
+            ));
+        }
+        Err(error) => return Err(AcpFailure::safe(error)),
+    };
     append_event(
         run_dir,
         "acp_session_opened",
@@ -1686,15 +1768,22 @@ fn execute_acp(
     let mut continuation_started = false;
 
     loop {
+        watch
+            .check_runtime(&log_path, "ACP")
+            .map_err(AcpFailure::runtime)?;
         if cancel_sent && cancel_deadline.is_some_and(|deadline| Instant::now() > deadline) {
             return Err(AcpFailure::unsafe_after_prompt(
                 "ACP agent did not acknowledge cancellation within the configured grace period",
             ));
         }
+        let event_timeout = watch
+            .bounded_timeout(Duration::from_millis(250), "ACP")
+            .map_err(AcpFailure::runtime)?;
         if let Some(event) = client
-            .next_event(Duration::from_millis(250))
+            .next_event(event_timeout)
             .map_err(AcpFailure::unsafe_after_prompt)?
         {
+            watch.record_progress();
             match event {
                 Event::Update(params) => {
                     append_acp_log(&log_path, &params);
@@ -3037,6 +3126,19 @@ mod auto_resume_tests {
         assert_eq!(retry_reason(error), "adapter_error");
         assert_eq!(retry_delay(error, 1), Duration::from_millis(100));
         assert_eq!(retry_delay(error, 8), Duration::from_millis(3200));
+    }
+
+    #[test]
+    fn worker_deadline_is_remaining_budget_not_a_resettable_timeout() {
+        let deadline = Duration::from_millis(100);
+        let started = Instant::now() - Duration::from_millis(80);
+        let remaining = remaining_worker_deadline(started, Some(deadline))
+            .unwrap()
+            .unwrap();
+        assert!(remaining <= Duration::from_millis(20));
+        let expired = Instant::now() - Duration::from_millis(150);
+        let error = remaining_worker_deadline(expired, Some(deadline)).unwrap_err();
+        assert!(error.starts_with("runtime_timeout:"));
     }
 
     #[test]

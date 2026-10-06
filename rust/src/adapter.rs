@@ -5,6 +5,7 @@
 //! `openai_compat` uses [`ureq`] for native HTTPS.
 
 use crate::model::{AcpConfig, Provider, Task, ThinkingLevel};
+use crate::process_supervisor;
 use crate::telemetry::Usage;
 use serde_json::{json, Value};
 use std::env;
@@ -12,6 +13,7 @@ use std::fs;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::time::Duration;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -21,6 +23,10 @@ pub(crate) struct ChildGuard(Child);
 impl ChildGuard {
     pub(crate) fn new(child: Child) -> Self {
         Self(child)
+    }
+
+    pub(crate) fn terminate_tree(&mut self) -> Result<()> {
+        process_supervisor::terminate_tree(&mut self.0, Duration::from_secs(1))
     }
 }
 
@@ -40,8 +46,7 @@ impl DerefMut for ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.terminate_tree();
     }
 }
 

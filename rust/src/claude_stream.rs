@@ -6,6 +6,7 @@
 
 use crate::adapter::{which, ChildGuard};
 use crate::model::{Task, ThinkingLevel};
+use crate::process_supervisor::{self, ProcessPolicy, ProcessWatch};
 use crate::steering;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -29,6 +30,7 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     task: &Task,
     prompt: &str,
@@ -37,7 +39,9 @@ pub fn run(
     cwd: &Path,
     log_path: &Path,
     run_dir: &Path,
+    deadline: Option<Duration>,
 ) -> Result<SessionResult> {
+    let mut watch = ProcessWatch::new(log_path, ProcessPolicy::worker(deadline));
     let mut resolved_session = session_id.map(str::to_string);
     let (mut child, mut stdin, mut rx) = spawn_claude(task, cwd, resolved_session.as_deref())?;
     let mut log = OpenOptions::new()
@@ -53,14 +57,14 @@ pub fn run(
     let mut queued_steers = Vec::new();
     let mut active_queued_steers = Vec::new();
     while !finished {
+        watch.check_runtime(log_path, "claude stream")?;
         for steer in steering::drain(run_dir, &task.id)? {
             if steer.mode == steering::SteeringMode::Enqueue {
                 queued_steers.push(steer);
                 continue;
             }
             let result = if steer.mode.as_str() == "cancel_and_restart" {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.terminate_tree();
                 let restarted_prompt = format!("{prompt}\n\nUSER STEER PROMPT\n{}", steer.prompt);
                 match spawn_claude(task, cwd, resolved_session.as_deref()) {
                     Ok((next_child, next_stdin, next_rx)) => {
@@ -137,10 +141,12 @@ pub fn run(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    let _ = child.kill();
-    let status = child.wait().map_err(|error| error.to_string())?;
-    if !status.success() && output.is_empty() {
-        return Err(format!("claude stream exited {:?}", status.code()));
+    if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+        if !status.success() && output.is_empty() {
+            return Err(format!("claude stream exited {:?}", status.code()));
+        }
+    } else {
+        child.terminate_tree()?;
     }
     if failed {
         return Err("Claude stream reported an error result".to_string());
@@ -181,6 +187,7 @@ fn spawn_claude(
     if task.spec.tools_policy == "full" {
         command.arg("--dangerously-skip-permissions");
     }
+    process_supervisor::prepare_command(&mut command)?;
     let mut child = ChildGuard::new(
         command
             .spawn()

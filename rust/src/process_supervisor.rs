@@ -76,6 +76,119 @@ pub struct SupervisedOutcome {
     pub elapsed: Duration,
 }
 
+/// Shared wall-clock/output/idle budget for transports that must keep driving
+/// their own protocol loop while the runtime remains the lifecycle authority.
+pub struct ProcessWatch {
+    policy: ProcessPolicy,
+    started: Instant,
+    last_progress: Instant,
+    last_log_len: u64,
+}
+
+impl ProcessWatch {
+    pub fn new(log_path: &Path, policy: ProcessPolicy) -> Self {
+        let now = Instant::now();
+        Self {
+            policy,
+            started: now,
+            last_progress: now,
+            last_log_len: fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(0),
+        }
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    pub fn record_progress(&mut self) {
+        self.last_progress = Instant::now();
+    }
+
+    pub fn remaining_deadline(&self) -> Option<Duration> {
+        self.policy
+            .deadline
+            .map(|deadline| deadline.saturating_sub(self.elapsed()))
+    }
+
+    pub fn bounded_timeout(&self, requested: Duration, process: &str) -> Result<Duration, String> {
+        match self.remaining_deadline() {
+            Some(remaining) if remaining.is_zero() => Err(format!(
+                "runtime_timeout: process '{process}' exceeded its {}ms deadline",
+                self.elapsed().as_millis()
+            )),
+            Some(remaining) => Ok(requested.min(remaining)),
+            None => Ok(requested),
+        }
+    }
+
+    pub fn deadline_expired(&self) -> bool {
+        self.remaining_deadline()
+            .is_some_and(|remaining| remaining.is_zero())
+    }
+
+    pub fn check_runtime(&mut self, log_path: &Path, process: &str) -> Result<(), String> {
+        if let Some(reason) = self.poll_reason(log_path) {
+            return Err(runtime_failure_message(process, &reason, self.elapsed()));
+        }
+        Ok(())
+    }
+
+    fn poll_reason(&mut self, log_path: &Path) -> Option<ProcessTerminalReason> {
+        let current_len = fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(0);
+        if current_len != self.last_log_len {
+            self.last_log_len = current_len;
+            self.last_progress = Instant::now();
+        }
+
+        if self.policy.output_limit_bytes > 0 && current_len > self.policy.output_limit_bytes {
+            return Some(ProcessTerminalReason::OutputLimitExceeded);
+        }
+        if self
+            .policy
+            .deadline
+            .is_some_and(|deadline| self.elapsed() >= deadline)
+        {
+            return Some(ProcessTerminalReason::TimedOut);
+        }
+        if self
+            .policy
+            .idle_deadline
+            .is_some_and(|deadline| self.last_progress.elapsed() >= deadline)
+        {
+            return Some(ProcessTerminalReason::IdleTimedOut);
+        }
+        None
+    }
+}
+
+pub fn runtime_failure_message(
+    process: &str,
+    reason: &ProcessTerminalReason,
+    elapsed: Duration,
+) -> String {
+    match reason {
+        ProcessTerminalReason::TimedOut => format!(
+            "runtime_timeout: process '{process}' exceeded its {}ms deadline",
+            elapsed.as_millis()
+        ),
+        ProcessTerminalReason::IdleTimedOut => format!(
+            "runtime_idle_timeout: process '{process}' produced no log progress for the configured idle window"
+        ),
+        ProcessTerminalReason::OutputLimitExceeded => format!(
+            "runtime_output_limit: process '{process}' exceeded the configured output limit"
+        ),
+        ProcessTerminalReason::WaitFailed(error) => {
+            format!("runtime_wait_failed: wait '{process}': {error}")
+        }
+        ProcessTerminalReason::Exited { code, .. } => {
+            format!("process '{process}' exited {code:?}")
+        }
+        ProcessTerminalReason::ProviderCompleted => {
+            format!("process '{process}' reported provider completion")
+        }
+    }
+}
+
 fn env_duration(name: &str) -> Option<Duration> {
     env_u64(name)
         .filter(|seconds| *seconds > 0)
@@ -121,9 +234,7 @@ pub fn wait_supervised(
     policy: ProcessPolicy,
     completion_probe: Option<&dyn Fn() -> bool>,
 ) -> SupervisedOutcome {
-    let started = Instant::now();
-    let mut last_progress = started;
-    let mut last_log_len = fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(0);
+    let mut watch = ProcessWatch::new(log_path, policy);
     let mut provider_terminal_seen = None;
 
     loop {
@@ -135,7 +246,7 @@ pub fn wait_supervised(
                         success: status.success(),
                     },
                     status: Some(status),
-                    elapsed: started.elapsed(),
+                    elapsed: watch.elapsed(),
                 };
             }
             Ok(None) => {}
@@ -144,47 +255,17 @@ pub fn wait_supervised(
                 return SupervisedOutcome {
                     reason: ProcessTerminalReason::WaitFailed(error.to_string()),
                     status: None,
-                    elapsed: started.elapsed(),
+                    elapsed: watch.elapsed(),
                 };
             }
         }
 
-        let current_len = fs::metadata(log_path).map(|meta| meta.len()).unwrap_or(0);
-        if current_len != last_log_len {
-            last_log_len = current_len;
-            last_progress = Instant::now();
-        }
-
-        if policy.output_limit_bytes > 0 && current_len > policy.output_limit_bytes {
+        if let Some(reason) = watch.poll_reason(log_path) {
             let _ = terminate_tree(child, policy.terminate_grace);
             return SupervisedOutcome {
-                reason: ProcessTerminalReason::OutputLimitExceeded,
+                reason,
                 status: None,
-                elapsed: started.elapsed(),
-            };
-        }
-
-        if policy
-            .deadline
-            .is_some_and(|deadline| started.elapsed() >= deadline)
-        {
-            let _ = terminate_tree(child, policy.terminate_grace);
-            return SupervisedOutcome {
-                reason: ProcessTerminalReason::TimedOut,
-                status: None,
-                elapsed: started.elapsed(),
-            };
-        }
-
-        if policy
-            .idle_deadline
-            .is_some_and(|deadline| last_progress.elapsed() >= deadline)
-        {
-            let _ = terminate_tree(child, policy.terminate_grace);
-            return SupervisedOutcome {
-                reason: ProcessTerminalReason::IdleTimedOut,
-                status: None,
-                elapsed: started.elapsed(),
+                elapsed: watch.elapsed(),
             };
         }
 
@@ -195,7 +276,7 @@ pub fn wait_supervised(
                 return SupervisedOutcome {
                     reason: ProcessTerminalReason::ProviderCompleted,
                     status: None,
-                    elapsed: started.elapsed(),
+                    elapsed: watch.elapsed(),
                 };
             }
         } else {
