@@ -9,6 +9,7 @@ pub mod config;
 pub mod model;
 pub mod observer;
 pub mod opencode_server;
+pub mod process_supervisor;
 pub mod quota;
 pub mod resources;
 pub mod review;
