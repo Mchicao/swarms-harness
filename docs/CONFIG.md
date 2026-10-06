@@ -13,16 +13,23 @@ Copy-Item config\swarm_router.local.example.json config\swarm_router.local.json
 
 Edit only the local file.
 
-Las rutas OpenCode pueden fijar una variante de razonamiento en el proveedor:
+Router configuration is validated after the local overlay is merged. Unknown
+root, quota-policy, preference, and provider fields fail closed with the full
+field path. This is intentional: a typo such as `providers.glm52.modle` must
+not look like accepted configuration.
 
-```jsonc
-{
-  // SWARMS-CONFIG-001: Solicita el esfuerzo high sin cambiar el model id.
-  "providers": {
-    "glm52": {"enabled": true, "variant": "high"}
-  }
-}
-```
+Some fields remain in the committed router files only for compatibility with
+older configuration and documentation: top-level `preferences` and provider
+metadata such as `variant`, `health_key`, `metric_key`, `relative_cost`,
+`quality`, `scarcity`, `strengths`, and `weaknesses`. The current Rust runtime
+does **not** use those fields for route selection or reasoning configuration.
+They are explicitly allowlisted so they are not confused with arbitrary
+unknown configuration, but new behavior must not be inferred from them.
+
+For reasoning depth, use the plan/task `thinking` setting. OpenCode translates
+that setting to its verified `--variant` CLI surface, while OpenCode V2 encodes
+the variant in the model string as documented in `AGENTS.md` and
+`docs/RUST_RUNTIME.md`.
 
 Para ejecutar workers con herramientas sobre otro repositorio, usa
 `--workspace-root`. El router y el código del harness permanecen en SWARMS;
@@ -39,7 +46,8 @@ launcher (`<launcher>/.agent/swarm/runs/<id>`), incluso con
 ninguna combinación de flags; para recuperarlos, mueve el estado una vez:
 
 ```
-move <launcher>\.agent\swarmuns\<id> <workspace>\.agent\swarmuns```
+move <launcher>\.agent\swarm\runs\<id> <workspace>\.agent\swarm\runs
+```
 
 y resume desde ese workspace con `--workspace-root <workspace>`.
 
@@ -50,15 +58,17 @@ dentro del workspace objetivo.
 
 ## Token-Saving Defaults
 
-The router scores providers with:
+The current Rust runtime uses explicit route configuration rather than a
+quality/cost/scarcity scoring function. To protect expensive quota:
 
-- quality: expected task capability;
-- relative cost: API or plan quota cost;
-- scarcity: how strongly to protect that plan;
-- role match: deterministic role preferences;
-- health: optional `swarm_limits.yaml` status.
+- keep scarce providers disabled unless they are intentionally enabled locally;
+- use `quota_policy` and provider `quota_key` for fail-closed quota checks;
+- use typed `cost_class` plus plan `review_policy.premium_allowed` for premium routes;
+- configure provider `fallback_routes` and the router `fallback_route` deliberately;
+- select cheap routes explicitly in plans for routine work.
 
-For saving expensive quota, keep scarce models disabled or route them only with explicit directives.
+Legacy `preferences`, `quality`, `relative_cost`, `scarcity`, and health/metric
+metadata are descriptive compatibility fields only in the current Rust runtime.
 
 Example:
 
