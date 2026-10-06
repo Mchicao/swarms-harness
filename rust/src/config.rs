@@ -2,6 +2,7 @@
 
 use crate::model::{self, Plan, Router};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -122,6 +123,83 @@ fn validate_router_config(value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn canonicalize_aliases(router: &mut Router) -> Result<()> {
+    let aliases = router.aliases.clone();
+    let mut canonical = HashMap::with_capacity(aliases.len());
+    let mut alias_names: Vec<String> = aliases.keys().cloned().collect();
+    alias_names.sort();
+
+    for alias in alias_names {
+        let mut current = alias.clone();
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return Err(format!(
+                    "router config: alias cycle detected while resolving '{alias}' at '{current}'"
+                ));
+            }
+            match aliases.get(&current) {
+                Some(next) if next == &current => break,
+                Some(next) => current = next.clone(),
+                None => break,
+            }
+        }
+
+        if router.providers.contains_key(&alias) && current != alias {
+            return Err(format!(
+                "router config: alias '{alias}' shadows provider '{alias}' and resolves to '{current}'"
+            ));
+        }
+        if !router.providers.contains_key(&current) {
+            return Err(format!(
+                "router config: alias '{alias}' resolves to unknown provider '{current}'"
+            ));
+        }
+        canonical.insert(alias, current);
+    }
+
+    router.aliases = canonical;
+    Ok(())
+}
+
+fn require_known_route(router: &Router, route: &str, path: &str) -> Result<()> {
+    let resolved = router.resolve_route(route);
+    if router.providers.contains_key(resolved) {
+        Ok(())
+    } else {
+        Err(format!(
+            "router config: '{path}' references unknown route '{route}' (resolved: '{resolved}')"
+        ))
+    }
+}
+
+fn validate_route_references(router: &Router) -> Result<()> {
+    if let Some(fallback) = router.fallback_route.as_deref() {
+        require_known_route(router, fallback, "fallback_route")?;
+    }
+
+    let mut roles: Vec<&String> = router.role_routes.keys().collect();
+    roles.sort();
+    for role in roles {
+        let route = &router.role_routes[role];
+        require_known_route(router, route, &format!("role_routes.{role}"))?;
+    }
+
+    let mut provider_routes: Vec<&String> = router.providers.keys().collect();
+    provider_routes.sort();
+    for provider_route in provider_routes {
+        let provider = &router.providers[provider_route];
+        for (index, fallback) in provider.fallback_routes.iter().enumerate() {
+            require_known_route(
+                router,
+                fallback,
+                &format!("providers.{provider_route}.fallback_routes[{index}]"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Load router from `config/swarm_router.json` with optional
 /// `config/swarm_router.local.json` overlay.
 pub fn load_router(root: &Path) -> Result<Router> {
@@ -142,8 +220,10 @@ pub fn load_router_from_path(root: &Path, base_path: &Path) -> Result<Router> {
         merge(&mut value, load_json(&local)?);
     }
     validate_router_config(&value)?;
-    let router: Router =
+    let mut router: Router =
         serde_json::from_value(value).map_err(|e| format!("router config: {e}"))?;
+    canonicalize_aliases(&mut router)?;
+    validate_route_references(&router)?;
     if router.quota_policy.enabled {
         let policy = &router.quota_policy;
         if !(0.0..=100.0).contains(&policy.min_remaining_percent) {
@@ -223,8 +303,13 @@ pub fn effective_caps(
 
 #[cfg(test)]
 mod tests {
-    use super::{merge, validate_router_config};
+    use super::{canonicalize_aliases, merge, validate_route_references, validate_router_config};
+    use crate::model::Router;
     use serde_json::json;
+
+    fn router(value: serde_json::Value) -> Router {
+        serde_json::from_value(value).expect("valid test router")
+    }
 
     #[test]
     fn router_validation_rejects_unknown_root_field() {
@@ -305,5 +390,91 @@ mod tests {
         );
         let error = validate_router_config(&base).expect_err("overlay typo must fail after merge");
         assert!(error.contains("providers.mock.wrappper"), "{error}");
+    }
+
+    #[test]
+    fn aliases_are_canonicalized_transitively() {
+        let mut router = router(json!({
+            "aliases": {"cheap": "glm", "glm": "glm52", "glm52": "glm52"},
+            "providers": {
+                "glm52": {"enabled": true, "provider": "opencode", "model": "glm", "wrapper": "opencode"}
+            }
+        }));
+        canonicalize_aliases(&mut router).expect("alias chain should resolve");
+        assert_eq!(router.resolve_route("cheap"), "glm52");
+        assert_eq!(router.resolve_route("glm"), "glm52");
+        assert_eq!(router.resolve_route("glm52"), "glm52");
+    }
+
+    #[test]
+    fn alias_cycles_and_unknown_targets_fail_closed() {
+        let mut cycle = router(json!({
+            "aliases": {"a": "b", "b": "a"},
+            "providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}
+        }));
+        let cycle_error = canonicalize_aliases(&mut cycle).expect_err("alias cycle must fail");
+        assert!(
+            cycle_error.contains("alias cycle detected"),
+            "{cycle_error}"
+        );
+
+        let mut missing = router(json!({
+            "aliases": {"cheap": "missing"},
+            "providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}
+        }));
+        let missing_error =
+            canonicalize_aliases(&mut missing).expect_err("unknown alias target must fail");
+        assert!(
+            missing_error.contains("unknown provider 'missing'"),
+            "{missing_error}"
+        );
+    }
+
+    #[test]
+    fn aliases_cannot_shadow_provider_names() {
+        let mut router = router(json!({
+            "aliases": {"mock": "other"},
+            "providers": {
+                "mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"},
+                "other": {"enabled": false, "provider": "mock", "model": "other", "wrapper": "mock"}
+            }
+        }));
+        let error = canonicalize_aliases(&mut router).expect_err("provider shadowing must fail");
+        assert!(error.contains("shadows provider 'mock'"), "{error}");
+    }
+
+    #[test]
+    fn alias_validation_error_order_is_deterministic() {
+        let mut router = router(json!({
+            "aliases": {"z_alias": "missing_z", "a_alias": "missing_a"},
+            "providers": {"mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock"}}
+        }));
+        let error = canonicalize_aliases(&mut router).expect_err("invalid aliases must fail");
+        assert!(error.contains("alias 'a_alias'"), "{error}");
+    }
+
+    #[test]
+    fn route_references_must_resolve_to_known_providers() {
+        let mut router = router(json!({
+            "fallback_route": "mock",
+            "aliases": {"offline": "mock"},
+            "role_routes": {"backend": "offline"},
+            "providers": {
+                "mock": {"enabled": true, "provider": "mock", "model": "mock", "wrapper": "mock", "fallback_routes": ["offline"]}
+            }
+        }));
+        canonicalize_aliases(&mut router).expect("alias should resolve");
+        validate_route_references(&router).expect("known references should pass");
+
+        router
+            .providers
+            .get_mut("mock")
+            .expect("mock provider")
+            .fallback_routes = vec!["missing".to_string()];
+        let error = validate_route_references(&router).expect_err("unknown fallback must fail");
+        assert!(
+            error.contains("providers.mock.fallback_routes[0]"),
+            "{error}"
+        );
     }
 }
