@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "goal": "Realizar reviews adversariales multi-angulo (seguridad clinica, contratos SAP PI, Ley 21.719 y arquitectura de alta disponibilidad) sobre el Sistema de Navegacion Oncologica de Clinica Alemana de Osorno.",
+  "project": {
+    "id": "alemana-oncologia-swarm",
+    "name": "Clinica Alemana Osorno - Adversarial Reviews"
+  },
+  "planner": {
+    "route": "glm53",
+    "model": "GLM-5.3"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": false,
+    "premium_allowed": true
+  },
+  "budget_policy": {
+    "max_total_workers": 8,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "mock": 3,
+      "glm53": 3,
+      "codex_astra": 1,
+      "codex": 1
+    }
+  },
+  "thinking": "high",
+  "stages": [
+    {
+      "name": "Adversarial Reviews GLM 5.3 Max",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "glm_security_review",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Auditar adversariamente el codigo en C:/Proyectos/Transafety/Alemana/app/backend/auth.py y main.py buscando vectores de ataque en salud: fuga de datos sensibles (PHI/Ley 21.719), inyecciones en SQLite/Postgres, bypass de tokens JWT y manipulacion de cookies HttpOnly. Escribir informe en docs/reviews/review_seguridad_glm.md",
+          "artifacts": [
+            "docs/reviews/review_seguridad_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        },
+        {
+          "id": "glm_sap_contract_review",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Analizar adversariamente la integracion con SAP PI en C:/Proyectos/Transafety/Alemana/app/backend (main.py, state_engine.py, models.py, SapOutbox, ColaAsignacion): evaluar concurrencia de eventos clinicos, desempate de prestaciones ambiguas (RN-004, RN-005) y resiliencia ante caidas de SAP PI. Escribir informe en docs/reviews/review_sap_contratos_glm.md",
+          "artifacts": [
+            "docs/reviews/review_sap_contratos_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        },
+        {
+          "id": "glm_clinical_fsm_review",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Revisar adversariamente la maquina de estados finita EST-01 a EST-13 y el motor de garantias GES en C:/Proyectos/Transafety/Alemana/app/backend (ges_tracker.py, state_engine.py): buscar bucles infinitos, transiciones ilegales de pacientes fallecidos o de alta (RN-013) y desviaciones en plazos legales. Escribir informe en docs/reviews/review_clinica_ges_glm.md",
+          "artifacts": [
+            "docs/reviews/review_clinica_ges_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        }
+      ]
+    },
+    {
+      "name": "High-Value Enterprise Architecture - GPT-6-Astra-Medium",
+      "parallel": false,
+      "tasks": [
+        {
+          "id": "astra_enterprise_architecture",
+          "role": "programmer",
+          "route": "codex_astra",
+          "task": "Tarea de Alto Valor Estrategico: Disenar la arquitectura de produccion de grado hospitalario de mision critica para Clinica Alemana de Osorno basandote en la implementacion de C:/Proyectos/Transafety/Alemana/app. Definir el plan de migracion de SQLite a PostgreSQL 16 con particionamiento, esquema mTLS/VPN con SAP PO/PI, federacion OAuth2 OIDC con Microsoft Entra ID institucional y estrategia de alta disponibilidad (RTO < 5m, RPO 0). Escribir el informe tecnico directivo en docs/reviews/arquitectura_produccion_astra.md",
+          "artifacts": [
+            "docs/reviews/arquitectura_produccion_astra.md"
+          ],
+          "needs": [
+            "glm_security_review",
+            "glm_sap_contract_review",
+            "glm_clinical_fsm_review"
+          ],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "max"
+        }
+      ]
+    }
+  ]
+}
