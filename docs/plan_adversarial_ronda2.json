@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "goal": "Ronda 2: Auditoria adversarial y verificacion de remediaciones aplicadas en el Backend Oncologico de Clinica Alemana de Osorno exclusivamente con agentes GLM 5.3 Max.",
+  "project": {
+    "id": "alemana-oncologia-swarm-ronda2",
+    "name": "Clinica Alemana Osorno - Adversarial Round 2"
+  },
+  "planner": {
+    "route": "glm53",
+    "model": "GLM-5.3"
+  },
+  "review_policy": {
+    "static_review_required": true,
+    "critic_review_required": false,
+    "premium_allowed": false
+  },
+  "budget_policy": {
+    "max_total_workers": 4,
+    "global_max_concurrency": 3,
+    "provider_concurrency": {
+      "mock": 3,
+      "glm53": 3
+    }
+  },
+  "thinking": "high",
+  "stages": [
+    {
+      "name": "Ronda 2 - Adversarial Verification GLM 5.3 Max",
+      "parallel": true,
+      "tasks": [
+        {
+          "id": "glm_security_ronda2",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Verificar y auditar adversariamente las remediaciones de seguridad en C:/Proyectos/Transafety/Alemana/app/backend (auth.py y main.py): validar que el bloqueo 401 Unauthorized sin token sea inquebrantable, que la proteccion de JWT_SECRET en produccion no pueda saltarse, y evaluar la eficacia de enmascarar_rut() para PHI y Ley 21.719. Guardar dictamen en docs/reviews/ronda2_seguridad_glm.md",
+          "artifacts": [
+            "docs/reviews/ronda2_seguridad_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        },
+        {
+          "id": "glm_sap_outbox_ronda2",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Auditar adversariamente el nuevo subsistema SapOutbox y endpoints /api/sap/outbox y /api/sap/procesar-outbox en C:/Proyectos/Transafety/Alemana/app/backend/main.py: evaluar el comportamiento del circuit breaker con 5 reintentos maximos, transaccionalidad al encolar desde resolver_cola_asignacion, e idempotencia ante reintentos concurrentes. Guardar dictamen en docs/reviews/ronda2_sap_outbox_glm.md",
+          "artifacts": [
+            "docs/reviews/ronda2_sap_outbox_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        },
+        {
+          "id": "glm_fsm_terminal_ronda2",
+          "role": "verifier",
+          "route": "glm53",
+          "task": "Auditar adversariamente la Regla RN-013 de bloqueo de estados terminales en C:/Proyectos/Transafety/Alemana/app/backend/state_engine.py: intentar romper la logica de evaluar_transicion() para casos en EST-09 (Fallecido), EST-10 (Descarte) y EST-12 (Alta Definitiva), verificando que ningun evento asistencial (EVG-001 a EVG-025) pueda reactivar el caso. Guardar dictamen en docs/reviews/ronda2_fsm_terminal_glm.md",
+          "artifacts": [
+            "docs/reviews/ronda2_fsm_terminal_glm.md"
+          ],
+          "needs": [],
+          "verify": [
+            "rustc --version"
+          ],
+          "thinking": "high"
+        }
+      ]
+    }
+  ]
+}
